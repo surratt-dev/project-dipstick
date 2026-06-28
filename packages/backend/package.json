@@ -8,6 +8,7 @@
     "dev": "dotenv -e ../../.env -- tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage",
     "db:migrate": "dotenv -e ../../.env -- node-pg-migrate -m migrations up",
     "db:migrate:down": "dotenv -e ../../.env -- node-pg-migrate -m migrations down"
   },

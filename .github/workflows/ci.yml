@@ -46,4 +46,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build --workspace=packages/shared
-      - run: npm run test
+      - run: npm run test:coverage -w packages/shared
+      - run: npm run test:coverage -w packages/backend
+      - run: npm run test:coverage -w packages/frontend

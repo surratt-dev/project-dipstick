@@ -7,12 +7,14 @@
   "scripts": {
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/backend && npm run build --workspace=packages/frontend",
     "dev": "concurrently --names \"backend,frontend\" --prefix-colors \"cyan,magenta\" \"npm run dev --workspace=packages/backend\" \"npm run dev --workspace=packages/frontend\"",
-    "test": "vitest run --project packages/backend --project packages/frontend",
+    "test": "npm run test -w packages/shared && npm run test -w packages/backend && npm run test -w packages/frontend",
+    "test:coverage": "npm run test:coverage -w packages/shared && npm run test:coverage -w packages/backend && npm run test:coverage -w packages/frontend",
     "lint": "eslint ."
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "concurrently": "^9.0.0",
     "eslint": "^9.0.0",
     "typescript": "^5.5.0",

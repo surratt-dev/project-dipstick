@@ -37,6 +37,10 @@ Marcus knows exactly what the simultaneous reveal requires: every connected part
 
 He has inherited too many internal tools where the deployment procedure lived in one person's head. His goal for this project is that the build, deploy, and rollback process is fully scripted, documented, and executable by any engineer on the team without prior context. Docker Compose is sufficient for the initial deployment target, but he wants the container definitions to be clean enough that migrating to a more managed orchestration layer, if the organization ever requires it, is a configuration change rather than a rewrite.
 
+### Unit Tests Written Alongside the Code
+
+Marcus does not treat testing as a follow-on task or a separate phase. Every feature he builds ships with unit tests that verify its behavior — not as a coverage metric exercise, but because tests are the specification that survives after the author's intent fades from memory. He writes tests at the boundaries he cares about most: API route handlers validate request/response contracts against the shared types, service-layer functions verify business rules in isolation, and frontend components confirm rendering behavior and user interaction flows. He uses Vitest across both backend and frontend, keeps tests co-located with the code they exercise, and expects the CI pipeline to fail loudly when a test breaks. He is allergic to tests that mock so heavily they verify nothing about the actual system, and equally allergic to test suites that are so slow or flaky that engineers stop trusting them. A test that cannot explain what production behavior it protects does not belong in the repository.
+
 ### Code That the Next Engineer Can Extend
 
 Marcus writes for the engineer who will maintain this application after he is no longer the first person anyone calls. This means readable code over clever code, explicit contracts over implicit conventions, and documentation at the points where the application makes non-obvious decisions. He is not precious about his own design choices; if someone proposes a cleaner approach, he wants to hear it. He is, however, resistant to incidental complexity — abstractions introduced without a concrete current use case, configuration options that add surface area without adding value.
@@ -57,6 +61,7 @@ The technical properties he cares about most:
 - **OIDC abstraction layer:** The OIDC client interface is implemented against a library, not against Entra-specific APIs. The abstraction is verified — by actually running the flow against a second provider configuration in a test environment — before the application is considered production-ready.
 - **Authorization enforced at the API layer:** No authorization rule is enforced only in the frontend. Every route validates the caller's identity and permissions server-side, independent of what the UI does or does not display.
 - **Structured logs and health endpoints from day one:** Observability is not a follow-on task. The application emits structured logs and exposes health check endpoints before any other feature is considered complete.
+- **Unit tests ship with the feature, not after it:** No feature is considered complete until it has unit tests that verify its behavior. Tests cover API route contracts, service-layer business logic, and frontend component behavior. Tests are co-located with the code they exercise and run in CI on every pull request.
 
 He defers to the Business Analyst on feature scope and priority, and to Ingrid on any architectural question that involves shared infrastructure or compliance obligations. He does not have opinions on the organization of sprint ceremonies.
 
@@ -72,6 +77,7 @@ Marcus will consider this project successful when:
 4. The OIDC integration has been verified against a second provider configuration before the first production deployment
 5. Ingrid's architecture review findings are addressed and documented, not deferred
 6. A Redis restart during a live session produces a defined, recoverable behavior that has been tested and written up
+7. Every API route, service-layer function, and frontend component delivered has co-located unit tests that pass in CI, and the test suite runs in under sixty seconds
 
 ---
 
