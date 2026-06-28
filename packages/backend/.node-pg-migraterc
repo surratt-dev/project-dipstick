@@ -1,0 +1,6 @@
+{
+  "migrations-dir": "migrations",
+  "database-url-var": "DATABASE_URL",
+  "migration-file-language": "sql",
+  "decamelize": true
+}

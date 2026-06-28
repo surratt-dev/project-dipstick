@@ -1,0 +1,9 @@
+{
+  "name": "dipstick-oidc-provider",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "dependencies": {
+    "oidc-provider": "^8.0.0"
+  }
+}
