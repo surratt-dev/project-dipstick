@@ -17,8 +17,6 @@ COPY --from=build /app/packages/frontend/dist /app/frontend
 
 FROM base AS production
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/backend/node_modules ./packages/backend/node_modules
-COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=build /app/packages/backend/dist ./packages/backend/dist
 COPY --from=build /app/packages/backend/package.json ./packages/backend/
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
