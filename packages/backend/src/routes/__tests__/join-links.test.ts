@@ -31,7 +31,7 @@ function buildApp(sessionData: Record<string, unknown> = {}) {
   // Decorate request with a mock session
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (request) => {
-    (request as any).session = {
+    (request as unknown as Record<string, unknown>).session = {
       userId: "user-1",
       ...sessionData,
     };

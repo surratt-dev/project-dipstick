@@ -24,16 +24,16 @@ vi.mock("../../config.js", () => ({
 import { authMiddleware } from "../middleware.js";
 
 function createMockApp() {
-  const hooks: Array<(req: any, reply: any) => Promise<any>> = [];
+  const hooks: Array<(req: unknown, reply: unknown) => Promise<unknown>> = [];
   return {
-    addHook: (_name: string, fn: any) => {
+    addHook: (_name: string, fn: (req: unknown, reply: unknown) => Promise<unknown>) => {
       hooks.push(fn);
     },
     getHook: () => hooks[0],
   };
 }
 
-function createMockRequest(overrides: Record<string, any> = {}) {
+function createMockRequest(overrides: Record<string, unknown> = {}) {
   return {
     url: overrides.url ?? "/api/something",
     session: {
@@ -52,7 +52,7 @@ function createMockRequest(overrides: Record<string, any> = {}) {
 }
 
 function createMockReply() {
-  const reply: any = {};
+  const reply: Record<string, unknown> = {};
   reply.code = vi.fn(() => reply);
   reply.send = vi.fn(() => reply);
   return reply;
@@ -71,7 +71,7 @@ describe("authMiddleware", () => {
 
   it("should skip public routes", async () => {
     const app = createMockApp();
-    await authMiddleware(app as any);
+    await authMiddleware(app as unknown as Parameters<typeof authMiddleware>[0]);
     const hook = app.getHook()!;
     const reply = createMockReply();
 
@@ -84,7 +84,7 @@ describe("authMiddleware", () => {
 
   it("should return 401 when session has no userId", async () => {
     const app = createMockApp();
-    await authMiddleware(app as any);
+    await authMiddleware(app as unknown as Parameters<typeof authMiddleware>[0]);
     const hook = app.getHook()!;
     const reply = createMockReply();
     const req = createMockRequest({ session: { userId: undefined } });
@@ -95,7 +95,7 @@ describe("authMiddleware", () => {
 
   it("should return 401 when absolute lifetime exceeded", async () => {
     const app = createMockApp();
-    await authMiddleware(app as any);
+    await authMiddleware(app as unknown as Parameters<typeof authMiddleware>[0]);
     const hook = app.getHook()!;
     const reply = createMockReply();
 
@@ -123,7 +123,7 @@ describe("authMiddleware", () => {
 
   it("should refresh token when near expiry", async () => {
     const app = createMockApp();
-    await authMiddleware(app as any);
+    await authMiddleware(app as unknown as Parameters<typeof authMiddleware>[0]);
     const hook = app.getHook()!;
     const reply = createMockReply();
 
@@ -162,7 +162,7 @@ describe("authMiddleware", () => {
 
   it("should destroy session on token revocation (invalid_grant)", async () => {
     const app = createMockApp();
-    await authMiddleware(app as any);
+    await authMiddleware(app as unknown as Parameters<typeof authMiddleware>[0]);
     const hook = app.getHook()!;
     const reply = createMockReply();
 
@@ -195,7 +195,7 @@ describe("authMiddleware", () => {
 
   it("should touch session when token is not near expiry", async () => {
     const app = createMockApp();
-    await authMiddleware(app as any);
+    await authMiddleware(app as unknown as Parameters<typeof authMiddleware>[0]);
     const hook = app.getHook()!;
     const reply = createMockReply();
 

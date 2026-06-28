@@ -67,7 +67,7 @@ function buildApp(sessionOverrides: Record<string, unknown> = {}) {
 
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (request) => {
-    const sess: any = {
+    const sess: Record<string, unknown> = {
       userId: "user-1",
       sessionCreatedAt: new Date().toISOString(),
       encryptedAccessToken: "enc(token)",
@@ -78,7 +78,7 @@ function buildApp(sessionOverrides: Record<string, unknown> = {}) {
       touch: vi.fn(),
       ...sessionOverrides,
     };
-    (request as any).session = sess;
+    (request as unknown as Record<string, unknown>).session = sess;
   });
 
   app.register(authRoutes, { prefix: "/auth" });

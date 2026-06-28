@@ -4,7 +4,7 @@ import { emitAuditEvent } from "../audit-logger.js";
 describe("emitAuditEvent", () => {
   const mockInfo = vi.fn();
   const mockChild = vi.fn(() => ({ info: mockInfo }));
-  const mockLogger = { child: mockChild } as any;
+  const mockLogger = { child: mockChild } as unknown as Parameters<typeof emitAuditEvent>[0];
 
   beforeEach(() => {
     vi.clearAllMocks();

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 
 // We can't easily test loadConfig() because it runs at import time and calls process.exit.
 // Instead we test isPrivateAddress by extracting its logic. Since it's not exported,

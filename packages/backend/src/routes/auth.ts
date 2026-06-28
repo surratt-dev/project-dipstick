@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { randomBytes } from "node:crypto";
 import * as oidcClient from "openid-client";
 import { redis } from "../redis.js";
@@ -372,7 +372,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 async function executeJoinFlow(
   userId: string,
   token: string,
-  logger: import("fastify").FastifyBaseLogger,
+  logger: FastifyBaseLogger,
 ): Promise<{ redirectUrl: string | null }> {
   // Validate join link
   const linkResult = await db.query(
