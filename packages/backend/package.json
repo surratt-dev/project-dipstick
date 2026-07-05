@@ -1,0 +1,35 @@
+{
+  "name": "@dipstick/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "dotenv -e ../../.env -- tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage",
+    "db:migrate": "dotenv -e ../../.env -- node-pg-migrate -m migrations up",
+    "db:migrate:down": "dotenv -e ../../.env -- node-pg-migrate -m migrations down"
+  },
+  "dependencies": {
+    "@dipstick/shared": "*",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/sensible": "^6.0.0",
+    "@fastify/session": "^11.1.1",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.0.0",
+    "node-pg-migrate": "^7.0.0",
+    "openid-client": "^6.8.4",
+    "pg": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.0.0",
+    "dotenv-cli": "^11.0.0",
+    "tsx": "^4.0.0",
+    "vitest": "^2.0.0"
+  }
+}

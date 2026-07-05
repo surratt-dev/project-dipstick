@@ -1,0 +1,62 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: dipstick
+          POSTGRES_USER: dipstick
+          POSTGRES_PASSWORD: dipstick
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U dipstick -d dipstick"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://dipstick:dipstick@localhost:5433/dipstick
+      REDIS_URL: redis://localhost:6380
+      SESSION_SECRET: ci-test-session-secret
+      OIDC_ISSUER: http://localhost:4011
+      OIDC_CLIENT_ID: dipstick-local
+      OIDC_CLIENT_SECRET: dipstick-local-secret
+      OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
+      NODE_ENV: development
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace=packages/shared
+      - run: npm run db:migrate --workspace=packages/backend
+      - run: npm run test
