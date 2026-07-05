@@ -1,15 +1,31 @@
-import { RedisStore } from "connect-redis";
+import type { SessionStore } from "@fastify/session";
 import type { Redis } from "ioredis";
 import { encryptToken, decryptToken } from "./token-encryption.js";
 
 const SESSION_TTL_SECONDS = 2 * 60 * 60; // 2 hours
+const PREFIX = "dipstick:session:";
 
-export function createRedisStore(redisClient: Redis): RedisStore {
-  return new RedisStore({
-    client: redisClient,
-    prefix: "dipstick:session:",
-    ttl: SESSION_TTL_SECONDS,
-  });
+export function createRedisStore(redisClient: Redis): SessionStore {
+  return {
+    set(sessionId, session, callback) {
+      redisClient
+        .setex(PREFIX + sessionId, SESSION_TTL_SECONDS, JSON.stringify(session))
+        .then(() => callback())
+        .catch(callback);
+    },
+    get(sessionId, callback) {
+      redisClient
+        .get(PREFIX + sessionId)
+        .then((data) => callback(null, data ? JSON.parse(data) : null))
+        .catch((err) => callback(err, null));
+    },
+    destroy(sessionId, callback) {
+      redisClient
+        .del(PREFIX + sessionId)
+        .then(() => callback())
+        .catch(callback);
+    },
+  };
 }
 
 export interface SessionTokenData {
