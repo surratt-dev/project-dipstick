@@ -1,7 +1,7 @@
 # Design: First Access
 **Change:** first-access
 **Date:** 2026-07-05
-**Status:** Initial — documents existing implementation, identifies gaps
+**Status:** Reviewed — incorporates engineering and security review findings
 
 ---
 
@@ -49,11 +49,15 @@ The callback handler is the entry point for the entire first-access flow. The se
 9. Execute the pending join flow if a `pendingJoinToken` was stored in state.
 10. Redirect.
 
-**Confirmed gap — missing claims validation:** Step 3 does not include an explicit application-level check that `claims.sub` and `claims.iss` are non-empty strings. The OIDC library (`openid-client`) will reject tokens that are structurally invalid, but an empty-string `sub` or `iss` may pass library validation while failing the application requirement. The finalized acceptance criterion is explicit: if either claim is missing or empty, the application must reject the authentication, create no account, establish no session, and log the failure without PII. This validation must be added to the callback handler before the call to `resolveOrCreateAccount`.
+**Confirmed gap — missing claims validation:** Step 3 does not include an explicit application-level check that `claims.sub` and `claims.iss` are non-empty strings. The OIDC library (`openid-client`) will reject tokens that are structurally invalid, but an empty-string `sub` or `iss` may pass library validation while failing the application requirement. An IDP returning `sub: ""` would cause the upsert to create a record keyed on `("", "")` — a genuine identity confusion risk where any future empty-claim authentication resolves to that account. The finalized acceptance criterion is explicit: if either claim is missing or empty, the application must reject the authentication, create no account, establish no session, and log the failure without PII. This validation must be added to the callback handler before the call to `resolveOrCreateAccount`.
+
+**Implementation detail — typed MissingClaimError:** The missing-claims validation should use a typed `MissingClaimError` class with a `claim` field (the name of the missing or empty claim, e.g. `"sub"` or `"iss"`). This enables the catch block to emit a structured log entry naming the missing claim without including any PII. The `mapAuthError` function must be updated to recognize and handle this error type.
 
 **Confirmed gap — no-team redirect is client-side:** Step 10 redirects to `/` by default. Team membership routing is currently performed client-side in `AuthenticatedLanding` (see Router section below). The finalized requirement states that the team membership check and the redirect to `/no-team` or `/team/:teamId` must be server-side, in the callback handler. This means: after account resolution, the callback must query the user's current team memberships and redirect to `/no-team` if there are none, or to `/team/:teamId` if there are. The client-side `AuthenticatedLanding` component may be retained as a fallback for direct navigation to `/`, but it must not be the primary routing mechanism for this decision.
 
 **Session creation ordering:** The session is populated and saved only after `resolveOrCreateAccount` completes successfully. If `resolveOrCreateAccount` throws, execution falls to the `catch` block, which redirects to the error page without establishing a session. This satisfies the "no account, no session" constraint.
+
+**Security finding — session fixation pattern:** The current implementation uses `session.destroy()` (in a callback that always resolves, swallowing errors) followed by `session.regenerate()`. This is redundant and unsafe: if `destroy()` fails silently (e.g. a Redis error), the old session remains live in the store while the new session is also created. The correct pattern is `session.regenerate()` alone — it is the idiomatic express-session/connect approach, atomically invalidates the old session ID, and does not have the error-swallowing risk. The implementation must be updated to replace the `destroy()` + `regenerate()` pair with `regenerate()` alone.
 
 ---
 
@@ -92,6 +96,8 @@ The `/no-team` route is defined as:
 
 **Confirmed gap — no redirect away from `/no-team` for users with teams:** If a user who has joined a team bookmarks `/no-team` and navigates there directly, the page renders. There is no guard in `NoTeamPage` or in the `/no-team` route that redirects away when the user has active team memberships. This must be added. The guard should read the current session's `teamMemberships` and redirect to `/team/:teamId` if any memberships exist.
 
+**Engineering finding — NoTeamPage loading state:** The bookmark guard reads `teamMemberships` from the session. The current `NoTeamPage` does not handle the loading state — if `session` is null while `AuthContext` is fetching, any membership check will throw. The component must add an explicit `if (loading) return <AuthLoadingPage />` guard before the membership check, matching the pattern already used by `AuthenticatedLanding`.
+
 **`AuthenticatedLanding` at `/`:** The root route renders `AuthenticatedLanding`, which reads team memberships from the session and navigates client-side to `/no-team` or `/team/:teamId`. Once the server-side redirect gap is closed, users arriving at `/` after a fresh authentication will be rare (only direct navigation to root). `AuthenticatedLanding` can remain as a fallback but should not be the primary routing path.
 
 ---
@@ -126,6 +132,10 @@ The event includes the user's internal ID, OIDC subject, and OIDC issuer. It doe
 
 The `auth.failure` event used for error cases includes `sourceIp`, `failureCategory`, and `correlationId`. It does not include claim values. This satisfies the no-PII logging requirement for failure cases.
 
+**Security finding — incomplete `first_access_created` event:** The `first_access_created` event is currently emitted without `sourceIp` or `correlationId`. Every other security-relevant audit event in the system includes both. The event must be updated to include `sourceIp` (from `request.ip`) and `correlationId` (the UUID already in scope at that point in the callback handler).
+
+**Security finding — audit log level independence:** The current `emitAuditEvent` function writes at `info` level via a child logger. If the application log level is ever raised to `warn` or `error` in production, all audit events are silently suppressed. Audit logging must be independent of the application log level. This is an application-wide concern beyond the scope of this change, but it must be resolved before production deployment. A task is included to evaluate the current logger implementation and propose a fix.
+
 Once the missing-claims validation gap is closed (Capability 5), the failure log entry for missing/empty claims must identify which claim was absent without logging the values of other claims that may be present in the token.
 
 ---
@@ -138,3 +148,11 @@ The following design decisions are structural, not incidental. Any future refact
 2. **The upsert pattern must not be replaced with check-then-insert.** The only safe replacement for the upsert is a pattern that derives `isNewUser` from the upsert result itself.
 3. **Session creation happens after, and only after, account resolution succeeds.** Any refactor that moves session creation earlier in the callback violates the "no account, no session" constraint.
 4. **The `/no-team` route must not be rendered inside a layout that contributes navigation elements.** This is enforced by the routing structure, not by the component. Tests at the routing layer must catch regressions.
+5. **Session fixation must be handled by `regenerate()` alone**, not `destroy()` + `regenerate()`. The destroy-then-regenerate pattern swallows Redis errors silently.
+6. **Audit events for first-access must include `sourceIp` and `correlationId`.** Consistency with all other security-relevant events in the audit trail is a hard requirement.
+
+---
+
+## Schema Note
+
+Confirm the column types for `display_name` and `email` in the `users` table before closing this change. If either is `VARCHAR(n)`-constrained, add truncation logic in `resolveOrCreateAccount` before the upsert — an oversized `sub` claim (used as the `display_name` fallback) would otherwise produce a database error with no specific log mapping to the `display_name` field.

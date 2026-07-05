@@ -2,7 +2,7 @@
 
 ---
 
-# Use Case: Sign In
+# Use Case: Sign In (complete)
 
 ## Summary
 **Actor:** Engineer | Facilitator | Engineering Manager

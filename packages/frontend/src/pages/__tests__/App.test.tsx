@@ -121,4 +121,30 @@ describe("App routing", () => {
     render(<TestApp initialEntry="/" />);
     expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
+
+  // Task 18: Routing layer test — /no-team renders no navigation elements.
+  //
+  // This test locks in the constraint from Task 9 / design.md: the /no-team
+  // route must never be rendered inside a layout component that contributes
+  // navigation elements. If any future change wraps this route in a <Layout>,
+  // <AppShell>, or similar, this test will fail and make the regression visible.
+  it("Task 18 — renders no navigation elements at /no-team", () => {
+    const session: AuthSession = {
+      user: { id: "u1", displayName: "Alice", email: "a@b.com" },
+      teamMemberships: [],
+      sessionCreatedAt: "",
+      expiresAt: "",
+    };
+    mockUseAuth.mockReturnValue({ session, loading: false });
+    render(<TestApp initialEntry="/no-team" />);
+
+    // No <nav> element
+    expect(document.querySelector("nav")).toBeNull();
+
+    // No element with the navigation landmark role
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+
+    // The no-team content IS rendered (verify the page loaded correctly)
+    expect(screen.getByText(/Welcome, Alice/)).toBeInTheDocument();
+  });
 });

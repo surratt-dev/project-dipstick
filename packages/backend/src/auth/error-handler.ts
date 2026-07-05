@@ -1,4 +1,5 @@
 import type { AuthErrorCategory } from "@dipstick/shared";
+import { MissingClaimError } from "./errors.js";
 
 interface AuthErrorResponse {
   category: AuthErrorCategory;
@@ -6,6 +7,17 @@ interface AuthErrorResponse {
 }
 
 export function mapAuthError(err: unknown): AuthErrorResponse {
+  // Missing or empty required claim: treat as an authentication failure with a
+  // generic message. The claim name is safe to carry in the error class (it
+  // identifies which field was absent, not any value), so no PII leaks here.
+  if (err instanceof MissingClaimError) {
+    return {
+      category: "authentication_failed",
+      message:
+        "Sign-in failed: the identity provider did not return a valid identity token. Please try signing in again.",
+    };
+  }
+
   if (err instanceof Error) {
     const message = err.message.toLowerCase();
 
