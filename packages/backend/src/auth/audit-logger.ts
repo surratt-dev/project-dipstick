@@ -19,7 +19,19 @@ export function emitAuditEvent(
   event: AuditEventName,
   fields: Record<string, unknown>,
 ): void {
+  // Audit events must be written regardless of the application log level.
+  //
+  // Risk evaluated (Task 8): if the application log level is raised to 'warn'
+  // or 'error' in production, a child logger that inherits the parent's level
+  // would silently suppress 'info' audit events — causing the entire audit
+  // trail to go dark without any indication that events were dropped.
+  //
+  // Fix: explicitly set the child logger's level to 'info' before emitting.
+  // In pino, each logger instance owns its own level independently of its
+  // parent; overriding it on the child ensures audit events are always emitted
+  // regardless of the application-wide log level configured at startup.
   const auditLogger = logger.child({ audit: true });
+  auditLogger.level = "info";
   auditLogger.info({
     event,
     timestamp: new Date().toISOString(),

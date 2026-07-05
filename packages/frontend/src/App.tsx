@@ -29,6 +29,19 @@ export function App() {
         <Routes>
           <Route path="/auth/error" element={<AuthErrorPage />} />
           <Route path="/auth/loading" element={<AuthLoadingPage />} />
+          {/*
+           * Task 9 verification: The /no-team route is intentionally NOT
+           * wrapped in any layout component that contributes navigation
+           * elements (no <Layout>, <AppShell>, <Shell>, <Navigation>, or
+           * similar). Users who arrive at /no-team have no team memberships
+           * and must not see application navigation that presupposes
+           * membership. This is a structural requirement enforced at the
+           * routing layer — the NoTeamPage component alone cannot guarantee
+           * isolation if a layout wrapper is added here. A regression test in
+           * src/pages/__tests__/App.test.tsx locks this state so that future
+           * additions of layout wrappers to other routes do not silently
+           * include this route.
+           */}
           <Route
             path="/no-team"
             element={

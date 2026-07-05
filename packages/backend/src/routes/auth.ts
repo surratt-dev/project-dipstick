@@ -14,6 +14,7 @@ import { buildSessionData, getDecryptedTokens } from "../auth/session-store.js";
 import type { SessionData } from "../auth/session-store.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { mapAuthError } from "../auth/error-handler.js";
+import { MissingClaimError } from "../auth/errors.js";
 import type { AuthSession } from "@dipstick/shared";
 
 const STATE_TTL_SECONDS = 600; // 10 minutes
@@ -114,9 +115,22 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         stateData.codeVerifier,
       );
 
+      // Task 4: Validate required claims before account resolution.
+      //
+      // An absent or empty sub/iss would cause resolveOrCreateAccount to upsert
+      // a record keyed on ("", "") — a genuine identity confusion risk where any
+      // future empty-claim authentication resolves to that phantom account.
+      // Reject the authentication here, before any database write, and without
+      // logging any claim values (only the claim name is safe to log).
       const claims = tokens.claims();
       if (!claims) {
-        throw new Error("No ID token claims returned");
+        throw new MissingClaimError("sub");
+      }
+      if (!claims.sub) {
+        throw new MissingClaimError("sub");
+      }
+      if (!claims.iss) {
+        throw new MissingClaimError("iss");
       }
 
       // Resolve or create user account
@@ -127,20 +141,28 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         email: claims.email as string | undefined,
       });
 
+      // Task 7: Emit first_access_created with sourceIp and correlationId,
+      // matching the complete event shape used by every other security-relevant
+      // audit event in the system.
       if (user.isNewUser) {
         emitAuditEvent(request.log, "auth.first_access_created", {
           userId: user.id,
           oidcSubject: user.oidcSubject,
           oidcIssuer: user.oidcIssuer,
+          sourceIp: request.ip,
+          correlationId,
         });
       }
 
-      // Session fixation prevention: destroy pre-auth session, create fresh one
-      await new Promise<void>((resolve) => {
-        request.session.destroy(() => resolve());
-      });
-
-      // Regenerate session
+      // Task 3: Session fixation prevention via regenerate() alone.
+      //
+      // The previous implementation called session.destroy() (in an
+      // always-resolve callback) followed by session.regenerate(). This was
+      // redundant and unsafe: a Redis error inside destroy() is silently
+      // swallowed by the always-resolve callback, leaving the old session live
+      // in the store while a new one is created. regenerate() alone atomically
+      // invalidates the old session ID and creates a fresh one — no error
+      // swallowing, no double operation.
       await request.session.regenerate();
 
       // Populate session with user data and encrypted tokens
@@ -173,7 +195,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       });
 
       // Handle pending join token
-      let redirectUrl = "/";
+      let redirectUrl: string | null = null;
       if (stateData.pendingJoinToken) {
         const joinResult = await executeJoinFlow(
           user.id,
@@ -182,6 +204,28 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         );
         if (joinResult.redirectUrl) {
           redirectUrl = joinResult.redirectUrl;
+        }
+      }
+
+      // Task 5: Server-side redirect based on live team membership data.
+      //
+      // If the join flow already produced a specific redirect (to a team page
+      // or an active session), use it. Otherwise query the user's current team
+      // memberships and route to /no-team (no memberships) or /team/:teamId
+      // (has at least one). This replaces the former default redirect to "/",
+      // ensuring the routing decision is made server-side against live data.
+      if (!redirectUrl) {
+        const membershipsResult = await db.query(
+          `SELECT team_id FROM team_memberships
+           WHERE user_id = $1 AND removed_at IS NULL
+           LIMIT 1`,
+          [user.id],
+        );
+        if ((membershipsResult.rows as { team_id: string }[]).length > 0) {
+          const firstTeam = membershipsResult.rows[0] as { team_id: string };
+          redirectUrl = `/team/${firstTeam.team_id}`;
+        } else {
+          redirectUrl = "/no-team";
         }
       }
 
@@ -197,11 +241,19 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         event: "auth.callback_error",
       });
 
-      emitAuditEvent(request.log, "auth.failure", {
+      const auditFields: Record<string, unknown> = {
         sourceIp: request.ip,
         failureCategory: authError.category,
         correlationId,
-      });
+      };
+
+      // Include the specific missing claim name in the audit event so operators
+      // can identify which claim was absent without any PII appearing in the log.
+      if (err instanceof MissingClaimError) {
+        auditFields.missingClaim = err.claim;
+      }
+
+      emitAuditEvent(request.log, "auth.failure", auditFields);
 
       return reply.redirect(
         `/auth/error?category=${authError.category}&message=${encodeURIComponent(authError.message)}&correlationId=${correlationId}`,

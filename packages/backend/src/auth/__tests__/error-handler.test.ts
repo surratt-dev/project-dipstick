@@ -1,5 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { mapAuthError } from "../error-handler.js";
+import { MissingClaimError } from "../errors.js";
+
+describe("MissingClaimError", () => {
+  it("maps to authentication_failed with a generic message", () => {
+    const result = mapAuthError(new MissingClaimError("sub"));
+    expect(result.category).toBe("authentication_failed");
+    // Message must be generic — must not contain any claim value
+    expect(result.message).toContain("identity provider");
+  });
+
+  it("does not leak the claim value into the message", () => {
+    const claimValue = "some-sensitive-subject-value";
+    // Even if someone passes a value as the claim name (shouldn't happen),
+    // the message must not include raw claim values.
+    const result = mapAuthError(new MissingClaimError("iss"));
+    expect(result.message).not.toContain(claimValue);
+  });
+
+  it("maps iss MissingClaimError to authentication_failed", () => {
+    const result = mapAuthError(new MissingClaimError("iss"));
+    expect(result.category).toBe("authentication_failed");
+  });
+});
 
 describe("mapAuthError", () => {
   describe("authentication_failed — user cancelled/denied", () => {
