@@ -5,6 +5,7 @@ import { NoTeamPage } from "./pages/NoTeamPage.js";
 import { TeamPage } from "./pages/TeamPage.js";
 import { AuthErrorPage } from "./pages/AuthErrorPage.js";
 import { AuthLoadingPage } from "./pages/AuthLoadingPage.js";
+import { JoinErrorPage } from "./pages/JoinErrorPage.js";
 
 function AuthenticatedLanding() {
   const { session, loading } = useAuth();
@@ -29,6 +30,13 @@ export function App() {
         <Routes>
           <Route path="/auth/error" element={<AuthErrorPage />} />
           <Route path="/auth/loading" element={<AuthLoadingPage />} />
+          {/*
+           * /join-error is intentionally NOT wrapped in ProtectedRoute. A user
+           * whose join link failed after OIDC authentication may not have an
+           * active session; requiring auth here would send them into another
+           * redirect loop. Analogous to /auth/error.
+           */}
+          <Route path="/join-error" element={<JoinErrorPage />} />
           {/*
            * Task 9 verification: The /no-team route is intentionally NOT
            * wrapped in any layout component that contributes navigation

@@ -78,10 +78,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      // Retrieve and delete state from Redis (single-use)
+      // Retrieve and delete state from Redis atomically (single-use).
+      // redis.getdel performs both operations in a single atomic command,
+      // eliminating the non-atomic window between a separate redis.get and
+      // redis.del where a concurrent second callback for the same OIDC state
+      // key could read the token before the first request deletes it.
       const stateKey = `${STATE_PREFIX}${stateParam}`;
-      const stateDataRaw = await redis.get(stateKey);
-      await redis.del(stateKey);
+      const stateDataRaw = await redis.getdel(stateKey);
 
       if (!stateDataRaw) {
         emitAuditEvent(request.log, "auth.failure", {
@@ -194,17 +197,21 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         isFirstAccess: user.isNewUser,
       });
 
-      // Handle pending join token
+      // Handle pending join token.
+      // executeJoinFlow always returns a non-null redirectUrl — it owns both
+      // success redirect URLs (/team/:teamId, /session/:sessionId) and failure
+      // redirect URLs (/join-error?joinError=...). The callback handler
+      // redirects unconditionally; the user is never routed to /no-team when a
+      // pendingJoinToken was present.
       let redirectUrl: string | null = null;
       if (stateData.pendingJoinToken) {
         const joinResult = await executeJoinFlow(
           user.id,
           stateData.pendingJoinToken,
           request.log,
+          request.ip,
         );
-        if (joinResult.redirectUrl) {
-          redirectUrl = joinResult.redirectUrl;
-        }
+        redirectUrl = joinResult.redirectUrl;
       }
 
       // Task 5: Server-side redirect based on live team membership data.
@@ -420,12 +427,23 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   });
 }
 
-// Helper for executing join flow during callback
+// Helper for executing join flow during callback.
+//
+// The sourceIp parameter must be the real requester IP from request.ip at the
+// call site. It is a required parameter (not optional) so omitting it at a
+// future call site is a type error — callers cannot silently drop it and
+// produce audit events without a real IP.
+//
+// Return type is Promise<{ redirectUrl: string }> (never null). The function
+// owns all redirect URL construction — both success destinations and failure
+// destinations — so the callback handler can redirect unconditionally to
+// joinResult.redirectUrl without inspecting an error discriminant.
 async function executeJoinFlow(
   userId: string,
   token: string,
   logger: FastifyBaseLogger,
-): Promise<{ redirectUrl: string | null }> {
+  sourceIp: string,
+): Promise<{ redirectUrl: string }> {
   // Validate join link
   const linkResult = await db.query(
     `SELECT id, team_id, expires_at, revoked_at FROM join_links WHERE token = $1`,
@@ -434,11 +452,11 @@ async function executeJoinFlow(
 
   if (linkResult.rows.length === 0) {
     emitAuditEvent(logger, "join.link_rejected", {
-      sourceIp: "callback",
+      sourceIp,
       linkId: null,
       reason: "not_found",
     });
-    return { redirectUrl: null };
+    return { redirectUrl: "/join-error?joinError=invalid" };
   }
 
   const link = linkResult.rows[0] as {
@@ -450,26 +468,42 @@ async function executeJoinFlow(
 
   if (link.revoked_at || new Date(link.expires_at) < new Date()) {
     emitAuditEvent(logger, "join.link_rejected", {
-      sourceIp: "callback",
+      sourceIp,
       linkId: link.id,
       reason: link.revoked_at ? "revoked" : "expired",
     });
-    return { redirectUrl: null };
+    return { redirectUrl: "/join-error?joinError=expired" };
   }
 
-  // Add user to team (idempotent)
-  await db.query(
+  // Add user to team (idempotent).
+  // "participant" is the membership_role enum value corresponding to what the
+  // use case calls "Engineer." The membership_role enum is distinct from the
+  // global user_role enum on the users table. Do NOT change this value to
+  // 'engineer' — that value does not exist in membership_role and would cause
+  // a database constraint error.
+  //
+  // RETURNING id lets us distinguish a new insertion (rows.length > 0) from a
+  // conflict-suppressed no-op (rows.length === 0, user was already a member).
+  // The distinction drives the outcome signal appended to the redirect URL and
+  // gates the join.link_redeemed audit event.
+  const insertResult = await db.query(
     `INSERT INTO team_memberships (user_id, team_id, role)
      VALUES ($1, $2, 'participant')
-     ON CONFLICT (user_id, team_id) DO NOTHING`,
+     ON CONFLICT (user_id, team_id) DO NOTHING
+     RETURNING id`,
     [userId, link.team_id],
   );
 
-  emitAuditEvent(logger, "join.link_redeemed", {
-    userId,
-    teamId: link.team_id,
-    linkId: link.id,
-  });
+  // Emit audit event only when a new row was actually inserted — not for
+  // existing-member cases where ON CONFLICT suppressed the insert.
+  if (insertResult.rows.length > 0) {
+    emitAuditEvent(logger, "join.link_redeemed", {
+      userId,
+      teamId: link.team_id,
+      linkId: link.id,
+      sourceIp,
+    });
+  }
 
   // Check for active session
   const sessionResult = await db.query(
@@ -477,10 +511,16 @@ async function executeJoinFlow(
     [link.team_id],
   );
 
+  // Append outcome signal so the frontend can surface the correct notification.
+  // ?newMember=true  — first-time join (new row inserted)
+  // ?alreadyMember=true — idempotent re-join (conflict suppressed, no new row)
+  const outcomeSuffix =
+    insertResult.rows.length > 0 ? "?newMember=true" : "?alreadyMember=true";
+
   if (sessionResult.rows.length > 0) {
     const activeSession = sessionResult.rows[0] as { id: string };
-    return { redirectUrl: `/session/${activeSession.id}` };
+    return { redirectUrl: `/session/${activeSession.id}${outcomeSuffix}` };
   }
 
-  return { redirectUrl: `/team/${link.team_id}` };
+  return { redirectUrl: `/team/${link.team_id}${outcomeSuffix}` };
 }

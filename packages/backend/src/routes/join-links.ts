@@ -118,9 +118,10 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
         linkId: null,
         reason: "not_found",
       });
-      return reply.redirect(
-        `/auth/error?category=invalid_request&message=${encodeURIComponent("This link is not valid.")}`,
-      );
+      // Both the direct join path and the through-auth path converge on
+      // /join-error?joinError=... so users see the same error page regardless
+      // of which code path their browser followed.
+      return reply.redirect("/join-error?joinError=invalid");
     }
 
     const link = linkResult.rows[0] as {
@@ -136,9 +137,7 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
         linkId: link.id,
         reason: "revoked",
       });
-      return reply.redirect(
-        `/auth/error?category=invalid_request&message=${encodeURIComponent("This link has expired. Ask your facilitator for a new one.")}`,
-      );
+      return reply.redirect("/join-error?joinError=expired");
     }
 
     if (new Date(link.expires_at) < new Date()) {
@@ -147,9 +146,7 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
         linkId: link.id,
         reason: "expired",
       });
-      return reply.redirect(
-        `/auth/error?category=invalid_request&message=${encodeURIComponent("This link has expired. Ask your facilitator for a new one.")}`,
-      );
+      return reply.redirect("/join-error?joinError=expired");
     }
 
     // Unauthenticated flow: redirect to login with join token context
@@ -157,7 +154,13 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
       return reply.redirect(`/auth/login?joinToken=${token}`);
     }
 
-    // Authenticated flow: join team
+    // Authenticated flow: join team.
+    // "participant" is the membership_role enum value corresponding to what the
+    // use case calls "Engineer." The membership_role enum is distinct from the
+    // global user_role enum on the users table (which has values like "engineer",
+    // "facilitator", "engineering_manager"). Do NOT change this value to
+    // 'engineer' — that value does not exist in membership_role and would cause
+    // a database constraint error.
     const insertResult = await db.query(
       `INSERT INTO team_memberships (user_id, team_id, role)
        VALUES ($1, $2, 'participant')
@@ -170,6 +173,7 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
 
     if (!isAlreadyMember) {
       emitAuditEvent(request.log, "join.link_redeemed", {
+        sourceIp: request.ip,
         userId: session.userId,
         teamId: link.team_id,
         linkId: link.id,

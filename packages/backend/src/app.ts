@@ -16,6 +16,13 @@ const isProduction = config.NODE_ENV === "production";
 
 export async function buildApp() {
   const app = Fastify({
+    // trustProxy: 1 causes request.ip to resolve from X-Forwarded-For (the real
+    // client IP) rather than the raw socket's remoteAddress (the proxy IP in
+    // production deployments behind a load balancer or Kubernetes ingress).
+    // The value 1 means a single-layer proxy hop is trusted, which matches this
+    // application's deployment topology. Without this, every sourceIp field in
+    // every audit event carries the proxy IP instead of the client IP.
+    trustProxy: 1,
     logger: {
       serializers: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -23,7 +30,9 @@ export async function buildApp() {
           const url = typeof request.url === "string" ? request.url : "";
           return {
             method: request.method,
-            url: url.replace(/\/api\/join\/[^/?#]+/, "/api/join/[REDACTED]"),
+            url: url
+              .replace(/\/api\/join\/[^/?#]+/, "/api/join/[REDACTED]")
+              .replace(/(\/auth\/login\?.*joinToken=)[^&]+/, "$1[REDACTED]"),
             hostname: request.hostname,
             remoteAddress: request.remoteAddress,
           };
