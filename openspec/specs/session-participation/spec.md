@@ -10,22 +10,22 @@ Defines requirements for recording users as active participants in a session, in
 
 Engineering Managers MUST NOT be recorded as session participants. This check MUST be performed server-side at the session participation endpoint — the endpoint that records a user as an active participant in a session. It MUST NOT be enforced at join time.
 
-**Enforcement point:** The session participation endpoint MUST query BOTH `users.global_role` AND `team_memberships.role` for the requesting user directly from the database before recording them as a participant. If `global_role = 'engineering_manager'` OR if `team_memberships.role = 'engineering_manager'` for the team whose session they are attempting to join, the request SHALL be rejected. The check is not skippable and not configurable; it must be structural (server-enforced), not preferential (a UI toggle or admin override).
+**Enforcement point:** The session participation endpoint MUST query BOTH `users.global_role` AND `team_memberships.role` for the requesting user directly from the database before recording them as a participant. If `users.global_role = 'engineering_manager'` OR if `team_memberships.role = 'engineering_manager'` for the team whose session they are attempting to join, the request SHALL be rejected. The check is not skippable and not configurable; it must be structural (server-enforced), not preferential (a UI toggle or admin override).
 
-**Why both fields must be checked:** The `assign-role-to-team-member` change creates a working path to set `team_memberships.role = 'engineering_manager'` without modifying `users.global_role`. A user may have `global_role = 'engineer'` and `team_memberships.role = 'engineering_manager'` for their team. Checking only `global_role` would allow this user to participate in the session, violating the no-manager rule. The access control use case defines an Engineering Manager as "a user with an active `engineering_manager` team membership for the relevant team." The enforcement check must match this definition.
+**Why both fields must be checked:** The `role-assignment` change creates a working path to set `team_memberships.role = 'engineering_manager'` without modifying `users.global_role`. A user may have `users.global_role = 'engineer'` and `team_memberships.role = 'engineering_manager'` for their team. Checking only `users.global_role` would allow this user to participate in the session, violating the no-manager rule. The access control use case defines an Engineering Manager as "a user with an active `engineering_manager` team membership for the relevant team." The enforcement check must match this definition.
+
+**Why not at join time:** The join link flow correctly admits EMs to team membership with `team_memberships.role = 'participant'`. Filtering EMs at join time would create a state where an EM is associated with a team but not listed as a member, which is inconsistent. The enforcement point is session participation, not team membership.
 
 **Mid-session role change — post-change lock-in:** If a user's `team_memberships.role` is changed to `engineering_manager` during an active session, any lock-in request submitted by that user after the change takes effect MUST be rejected at the session participation endpoint. The server MUST read `team_memberships.role` directly from the database on each lock-in request, not from a cached value established at connection time.
 
 **Mid-session role change — pre-change locked-in votes:** A role change does not retroactively invalidate votes that have already been locked in before the change took effect. Locked-in votes are preserved and counted at reveal regardless of subsequent role changes.
 
-**Why not at join time:** The join link flow correctly admits EMs to team membership with `role = 'participant'`. Filtering EMs at join time would create a state where an EM is associated with a team but not listed as a member, which is inconsistent. The enforcement point is session participation, not team membership.
-
 #### Scenario: Engineering Manager attempts to join a session as a participant — global_role check
-- **WHEN** a user with `global_role = 'engineering_manager'` calls the session participation endpoint
+- **WHEN** a user with `users.global_role = 'engineering_manager'` calls the session participation endpoint
 - **THEN** the endpoint rejects the request
 - **AND** the user is not recorded as a session participant
 
-#### Scenario: Engineering Manager attempts to join a session as a participant — team membership role check
+#### Scenario: Engineering Manager attempts to join a session as a participant — membership_role check
 - **WHEN** a user with `team_memberships.role = 'engineering_manager'` for the relevant team calls the session participation endpoint
 - **AND** that user's `users.global_role` is not `engineering_manager`
 - **THEN** the endpoint rejects the request
@@ -47,7 +47,7 @@ Engineering Managers MUST NOT be recorded as session participants. This check MU
 - **THEN** the already-locked-in vote is not invalidated
 - **AND** the vote is included in the reveal count
 
-#### Scenario: User with only participant membership role can join a session
+#### Scenario: User with only participant membership_role can join a session
 - **WHEN** a user with `users.global_role = 'engineer'` and `team_memberships.role = 'participant'` for the relevant team calls the session participation endpoint
 - **THEN** the endpoint permits the request
 - **AND** the user is recorded as a session participant
