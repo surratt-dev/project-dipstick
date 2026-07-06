@@ -254,6 +254,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     // Transaction client
     const client = makeMockClient([
       { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
       { rows: [] }, // UPDATE
       { rows: [{ participant_count: "1" }] }, // count check — 1 Engineer remains
       { rows: [] }, // INSERT audit log
@@ -301,6 +302,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
       { rows: [] }, // UPDATE
       { rows: [{ participant_count: "2" }] }, // 2 engineers remain after demotion
       { rows: [] }, // INSERT audit log
@@ -338,6 +340,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     // Transaction: count returns 0 after update, no confirmation flag
     const client = makeMockClient([
       { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
       { rows: [] }, // UPDATE
       { rows: [{ participant_count: "0" }] }, // 0 engineers remain — trigger 422
       { rows: [] }, // ROLLBACK
@@ -373,6 +376,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
       { rows: [] }, // UPDATE
       { rows: [{ participant_count: "0" }] }, // 0 engineers — but confirmed
       { rows: [] }, // INSERT audit log
@@ -413,11 +417,12 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       });
 
     const client = makeMockClient([
-      { rows: [] },
-      { rows: [] },
-      { rows: [{ participant_count: "2" }] },
+      { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
+      { rows: [] }, // UPDATE
+      { rows: [{ participant_count: "2" }] }, // count check
       { rows: [] }, // audit INSERT
-      { rows: [] },
+      { rows: [] }, // COMMIT
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
 
@@ -428,8 +433,8 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       payload: { role: "engineering_manager" },
     });
 
-    // The 4th call to client.query is the audit INSERT (index 3)
-    const auditInsertCall = client.query.mock.calls[3];
+    // The 5th call to client.query is the audit INSERT (index 4)
+    const auditInsertCall = client.query.mock.calls[4];
     expect(auditInsertCall).toBeDefined();
     const auditValues = auditInsertCall[1] as unknown[];
     // Values: actorUserId, actorGlobalRole, actorIp, subjectUserId, teamId, fromRole, toRole
@@ -461,11 +466,12 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       });
 
     const client = makeMockClient([
-      { rows: [] },
-      { rows: [] },
-      { rows: [{ participant_count: "1" }] },
-      { rows: [] },
-      { rows: [] },
+      { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
+      { rows: [] }, // UPDATE
+      { rows: [{ participant_count: "1" }] }, // count check
+      { rows: [] }, // audit INSERT
+      { rows: [] }, // COMMIT
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
 
@@ -476,11 +482,11 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       payload: { role: "engineering_manager" },
     });
 
-    // The route only has 5 DB interactions (BEGIN, UPDATE, COUNT, AUDIT, COMMIT)
+    // The route has 6 DB interactions (BEGIN, SELECT FOR UPDATE, UPDATE, COUNT, AUDIT, COMMIT)
     // If TEAM-006 were invoked it would be an additional network call outside
     // our mocked DB layer, which would fail — this test implicitly verifies it.
     expect(res.statusCode).toBe(200);
-    expect(client.query).toHaveBeenCalledTimes(5);
+    expect(client.query).toHaveBeenCalledTimes(6);
   });
 
   // Task 4.6 — users.global_role is NOT written
@@ -500,11 +506,12 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       });
 
     const client = makeMockClient([
-      { rows: [] },
-      { rows: [] },
-      { rows: [{ participant_count: "1" }] },
-      { rows: [] },
-      { rows: [] },
+      { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
+      { rows: [] }, // UPDATE
+      { rows: [{ participant_count: "1" }] }, // count check
+      { rows: [] }, // audit INSERT
+      { rows: [] }, // COMMIT
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
 
