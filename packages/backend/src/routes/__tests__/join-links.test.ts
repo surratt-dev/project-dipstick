@@ -135,7 +135,10 @@ describe("joinLinkRoutes", () => {
   });
 
   describe("GET /api/join/:token", () => {
-    it("should redirect to error when token not found", async () => {
+    // Task 6.4: direct path now redirects to /join-error?joinError=... so both
+    // the direct and through-auth paths converge on the same error destination.
+
+    it("should redirect to /join-error?joinError=invalid when token not found (Task 6.4 / 11.7)", async () => {
       mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
       const app = await buildApp();
@@ -145,7 +148,9 @@ describe("joinLinkRoutes", () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toContain("/auth/error");
+      // Task 6.4: must use /join-error?joinError=invalid, NOT /auth/error
+      expect(res.headers.location).toBe("/join-error?joinError=invalid");
+      expect(res.headers.location).not.toContain("/auth/error");
       expect(mockEmitAuditEvent).toHaveBeenCalledWith(
         expect.anything(),
         "join.link_rejected",
@@ -153,7 +158,7 @@ describe("joinLinkRoutes", () => {
       );
     });
 
-    it("should redirect to error when link is revoked", async () => {
+    it("should redirect to /join-error?joinError=expired when link is revoked (Task 6.4 / 11.7)", async () => {
       mockDbQuery.mockResolvedValueOnce({
         rows: [
           {
@@ -172,10 +177,11 @@ describe("joinLinkRoutes", () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toContain("/auth/error");
+      expect(res.headers.location).toBe("/join-error?joinError=expired");
+      expect(res.headers.location).not.toContain("/auth/error");
     });
 
-    it("should redirect to error when link is expired", async () => {
+    it("should redirect to /join-error?joinError=expired when link is expired (Task 6.4 / 11.7)", async () => {
       mockDbQuery.mockResolvedValueOnce({
         rows: [
           {
@@ -194,7 +200,8 @@ describe("joinLinkRoutes", () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toContain("/auth/error");
+      expect(res.headers.location).toBe("/join-error?joinError=expired");
+      expect(res.headers.location).not.toContain("/auth/error");
     });
 
     it("should redirect to login when user is not authenticated", async () => {
@@ -245,7 +252,11 @@ describe("joinLinkRoutes", () => {
       expect(mockEmitAuditEvent).toHaveBeenCalledWith(
         expect.anything(),
         "join.link_redeemed",
-        expect.objectContaining({ userId: "user-1", teamId: "team-1" }),
+        expect.objectContaining({
+          sourceIp: expect.any(String),
+          userId: "user-1",
+          teamId: "team-1",
+        }),
       );
     });
 
