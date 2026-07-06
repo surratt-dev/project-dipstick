@@ -47,7 +47,10 @@ async function checkAssignRolesAuthorization(
     return { authorized: false, actorGlobalRole: "" };
   }
 
-  const { global_role, membership_role } = result.rows[0];
+  const { global_role, membership_role } = result.rows[0] as {
+    global_role: string;
+    membership_role: string | null;
+  };
 
   const authorized =
     global_role === "application_admin" ||
@@ -97,7 +100,10 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { global_role, is_member } = actorResult.rows[0];
+    const { global_role, is_member } = actorResult.rows[0] as {
+      global_role: string;
+      is_member: boolean;
+    };
     if (!is_member && global_role !== "application_admin") {
       return reply.code(403).send({
         error: {
@@ -124,7 +130,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const teamName = teamResult.rows[0].name;
+    const teamName = (teamResult.rows[0] as { name: string }).name;
 
     // Fetch active members with their display names and current roles
     const membersResult = await db.query<{
@@ -252,7 +258,11 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       display_name: displayName,
       email,
       current_role: fromRole,
-    } = subjectCheckResult.rows[0];
+    } = subjectCheckResult.rows[0] as {
+      display_name: string;
+      email: string;
+      current_role: string;
+    };
 
     // No-op: role is already the requested value
     if (fromRole === newRole) {
@@ -308,7 +318,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       );
 
       const participantCount = parseInt(
-        countResult.rows[0].participant_count,
+        (countResult.rows[0] as { participant_count: string }).participant_count,
         10,
       );
 

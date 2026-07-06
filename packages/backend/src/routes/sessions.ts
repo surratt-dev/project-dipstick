@@ -60,8 +60,11 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const sessionRow = sessionResult.rows[0];
-    const { team_id: teamId, status } = sessionRow;
+    const { team_id: teamId, status } = sessionResult.rows[0] as {
+      id: string;
+      team_id: string;
+      status: string;
+    };
 
     if (status !== "active") {
       return reply.code(422).send({
@@ -102,7 +105,10 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { global_role, membership_role } = roleCheckResult.rows[0];
+    const { global_role, membership_role } = roleCheckResult.rows[0] as {
+      global_role: string;
+      membership_role: string | null;
+    };
 
     // Reject if EITHER global_role OR membership_role indicates EM
     if (
@@ -185,11 +191,12 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const {
-        session_status,
-        team_id: teamId,
-        topic_status,
-      } = sessionTopicResult.rows[0];
+      const { session_status, team_id: teamId, topic_status } =
+        sessionTopicResult.rows[0] as {
+          session_status: string;
+          team_id: string;
+          topic_status: string;
+        };
 
       if (session_status !== "active") {
         return reply.code(422).send({
@@ -245,7 +252,10 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const { global_role, membership_role } = roleCheckResult.rows[0];
+      const { global_role, membership_role } = roleCheckResult.rows[0] as {
+        global_role: string;
+        membership_role: string | null;
+      };
 
       // Reject if EITHER global_role OR membership_role is 'engineering_manager'.
       // A user promoted to EM after the connection was opened is caught here.
@@ -294,7 +304,7 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         [sessionId, sessionTopicId, session.userId, voteValue, voteType],
       );
 
-      return reply.code(201).send({ voteId: voteResult.rows[0].id });
+      return reply.code(201).send({ voteId: (voteResult.rows[0] as { id: string }).id });
     },
   );
 }
