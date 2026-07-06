@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { SignOutButton } from "../components/SignOutButton.js";
+import { MemberManagement } from "../components/MemberManagement.js";
 
 export function TeamPage() {
   const { session } = useAuth();
+  const { teamId } = useParams<{ teamId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [showAlreadyMemberNotification, setShowAlreadyMemberNotification] =
     useState(false);
@@ -81,6 +83,13 @@ export function TeamPage() {
           </li>
         ))}
       </ul>
+
+      {/* Member management view — shown for the team identified by the URL param */}
+      {teamId && (
+        <div style={{ marginTop: "2rem" }}>
+          <MemberManagement teamId={teamId} />
+        </div>
+      )}
 
       <div style={{ marginTop: "2rem" }}>
         <SignOutButton />

@@ -173,57 +173,66 @@
 # Use Case: Assign a Role to a Team Member
 
 ## Summary
-**Actor:** Facilitator
+**Actor:** Application Admin | Engineering Manager (for their own team only)
 
-**Trigger:** A facilitator needs to change a team member's role from the default (Engineer) to a different role, or needs to designate a user as the Engineering Manager for the team.
+*Q1 resolved — Option A selected (Rachel Okonkwo, VP Engineering). Facilitators cannot assign roles. Edit 1 (remove Facilitator as assignable role) applied; Edit 2 (actor field and stale AC update) applied simultaneously.*
 
-**Goal:** As a facilitator, I want to assign or change a team member's role so that the application enforces the correct access and capabilities for that person.
+**Trigger:** An authorized actor needs to change a team member's role from the default (Engineer) to Engineering Manager, or needs to demote an Engineering Manager back to Engineer.
+
+**Goal:** As an authorized actor (Application Admin or Engineering Manager for this team), I want to assign or change a team member's membership role so that the application enforces the correct access and capabilities for that person.
 
 ---
 
 ## Preconditions
-- The facilitator is authenticated.
-- The facilitator is a member of a different team than the one being modified (consistent with the facilitator constraint).
-- The target user is an existing member of the team.
-- The role being assigned is a valid application role: Engineer, Facilitator, or Engineering Manager.
+- The actor is authenticated.
+- The actor is an Application Admin (any team) OR an Engineering Manager with an active membership on the specific team being modified.
+- The target user is an existing active member of the team.
+- The role being assigned is one of the valid assignable membership roles: **Engineer** (`membership_role = 'participant'`) or **Engineering Manager** (`membership_role = 'engineering_manager'`).
 
 ## Main Flow
-1. The facilitator navigates to the team's member management view.
-2. The facilitator selects a team member.
-3. The facilitator selects a new role from the available options (Engineer, Facilitator, Engineering Manager).
-4. The application validates that the role change is permitted (valid role, valid actor making the request).
-5. The application updates the team member's role.
-6. The application confirms the change.
+1. The actor navigates to the team's member management view.
+2. The actor selects a new role for a team member from the available options (Engineer or Engineering Manager).
+3. The application validates that the role change is permitted (valid role, authorized actor, per-team verification from the database).
+4. If the change would leave the team with no Engineer-role members, the application displays a warning message before the actor confirms: "This change will leave [team name] with no Engineers. A session cannot start without at least one Engineer. You can still make this change."
+5. The actor confirms the change (or cancels at the warning step).
+6. The application updates the team member's `membership_role` in a database transaction that also writes an audit log entry.
+7. The application confirms the change with a plain-language message: "[Member name] is now an Engineering Manager for this team" or "[Member name] is now an Engineer for this team."
 
 ## Alternate Flows
 - **Invalid role selection:** The application rejects the change and displays an error.
-- **Facilitator attempts to assign a role on their own team:** The application rejects the change. Facilitators manage sessions for other teams, not their own.
-- **Role change creates a conflict (e.g., a team would have no engineers):** The application may warn but does not block the change, as team composition is the facilitator's responsibility.
+- **Unauthorized actor:** A Facilitator, Engineer, or Engineering Manager not affiliated with this team attempts to change a role. The application rejects the request with 403. If the actor is a Facilitator viewing the member management view, the application displays a plain-language explanation: "Only an Application Admin or an Engineering Manager for this team can change roles. Contact your admin to update this before the session."
+- **Role change would leave zero Engineers:** The application returns 422 on the first submission and requires explicit confirmation before applying the change (see Main Flow step 4–5).
 
 ## Postconditions
-- **Success:** The team member's role is updated. The new role takes effect immediately for any subsequent application interactions.
+- **Success:** The team member's `membership_role` is updated. The new role takes effect immediately on the next authenticated request from the affected user. An audit log entry is written in the same transaction.
 - **Failure:** The team member's role is unchanged. An error is shown.
 
 ---
 
 ## Acceptance Criteria
-- [ ] A facilitator can change a team member's role to Engineer, Facilitator, or Engineering Manager.
-- [ ] The role change takes effect immediately.
-- [ ] A facilitator cannot change roles for members of their own team.
-- [ ] An unauthorized actor (Engineer, Engineering Manager) cannot change team member roles.
-- [ ] The application displays confirmation after a successful role change.
+- [x] AC1: An Application Admin or an Engineering Manager for this specific team can change a team member's `membership_role` between `participant` (Engineer) and `engineering_manager` (Engineering Manager).
+- [x] AC2: The role change takes effect immediately. No cached role value is used.
+- [x] AC3: An actor who does not hold the required authorization sees a plain-language explanation of why the action is unavailable. A grayed-out control with no explanation does not satisfy this criterion.
+- [x] AC4: A role change to `engineering_manager` that would leave the team with zero `participant`-role members displays the message "This change will leave [team name] with no Engineers. A session cannot start without at least one Engineer. You can still make this change." before the confirmation step.
+- [x] AC5: Every role change produces an audit log entry containing: actor user ID, actor's `global_role` at the time of the change, actor IP, subject user ID, team ID, from-role, to-role, and timestamp.
+- [x] AC6: A user whose `membership_role` is updated to `engineering_manager` cannot lock in a vote in that team's next session.
+- [x] AC7: A user whose `membership_role` is updated from `engineering_manager` to `participant` loses access to that team's session history on their next request (403).
+- [x] AC8: A role change applied during an active session does not retroactively invalidate votes already locked in. A lock-in request submitted after the role change is rejected.
 
 ## Out of Scope
-- Role changes performed by Engineers or Engineering Managers — they do not have this capability.
-- Removing a user from a team — that is a separate use case.
-- Defining new role types — the set of roles is fixed.
+- Facilitator designation (`users.global_role = 'facilitator'`) — deferred; see "Designate a Facilitator — Deferral" stub.
+- `TEAM-006` (`POST /api/v1/teams/:teamId/managers`) — not called as part of this change. TEAM-005 alone is sufficient for all `membership_role` writes.
+- Modification of `users.global_role` for any role — this change writes only to `team_memberships.role`.
+- Removing a user from a team — separate use case.
+- Defining new role types — the set of membership roles is fixed: `participant` and `engineering_manager`.
 
 ## Dependencies
 - UC: Join a Team via Invite Link — a user must be a team member before a role can be assigned.
 
 ## Notes
-- It is an open question whether any authenticated user (not just a facilitator) should be able to manage team roles, given that team creation requires no admin role. This should be clarified before implementation.
-- The Engineering Manager role carries read-only access to session history; that access is enforced by the application based on the assigned role.
+- This change operates exclusively on `team_memberships.role`. It does not touch `users.global_role`.
+- The Engineering Manager role carries read-only access to session history for that team; that access is enforced by the application based on the membership role value, checked at each request from the database.
+- Bootstrapping the first Application Admin account is a named follow-on item. Owner: Marcus Delgado (BA). Target: Q3 2026. See proposal.md for options (seed migration, bootstrap endpoint, IdP role claims in First Access).
 
 ---
 

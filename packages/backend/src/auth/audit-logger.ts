@@ -12,7 +12,12 @@ export type AuditEventName =
   | "auth.token_refresh_failure"
   | "join.link_created"
   | "join.link_redeemed"
-  | "join.link_rejected";
+  | "join.link_rejected"
+  // team.role_changed is the structured-log counterpart to the role_change_audit
+  // DB row. Both are written: the DB row is in-transaction and is the authoritative
+  // audit record; this log event is the operational alert path and carries the
+  // same fields so operators can correlate them.
+  | "team.role_changed";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

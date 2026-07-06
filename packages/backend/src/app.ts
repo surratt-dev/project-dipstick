@@ -7,6 +7,8 @@ import helmet from "@fastify/helmet";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { joinLinkRoutes } from "./routes/join-links.js";
+import { teamRoutes } from "./routes/teams.js";
+import { sessionRoutes } from "./routes/sessions.js";
 import { config } from "./config.js";
 import { redis } from "./redis.js";
 import { createRedisStore } from "./auth/session-store.js";
@@ -49,7 +51,7 @@ export async function buildApp() {
       ? [config.APP_ORIGIN ?? ""]
       : ["http://localhost:5173", "http://localhost:3000"],
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   });
 
@@ -89,6 +91,8 @@ export async function buildApp() {
   await app.register(healthRoutes);
   await app.register(authRoutes, { prefix: "/auth" });
   await app.register(joinLinkRoutes);
+  await app.register(teamRoutes);
+  await app.register(sessionRoutes);
 
   return app;
 }
