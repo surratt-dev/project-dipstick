@@ -24,7 +24,20 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
 
    Derive a kebab-case change name from the description.
 
-2. **Stage 1: Explore** (`opsx:explore`)
+2. **Create an isolated branch**
+
+   Before any work begins, run the following git commands to create a fresh branch off of main:
+
+   ```bash
+   git fetch origin
+   git checkout main
+   git pull origin main
+   git checkout -b agent-team/[name]
+   ```
+
+   Report the branch name to the user so they know where changes will land.
+
+3. **Stage 1: Explore** (`opsx:explore`)
 
    Spawn an **executor agent** with this prompt structure:
 
@@ -88,7 +101,7 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
    on suggestions that would compromise core constraints.
    ```
 
-3. **Stage 2: Propose** (`opsx:propose`)
+4. **Stage 2: Propose** (`opsx:propose`)
 
    Spawn **executor agent — Internal Champion (Devon Calloway):**
    ```
@@ -136,7 +149,7 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
 
    After reviewers finish, spawn **executor** to incorporate proposal feedback and update proposal.md.
 
-4. **Stage 3: Design Review**
+5. **Stage 3: Design Review**
 
    The design.md was created during the propose step. Spawn **two reviewer agents in parallel**:
 
@@ -171,7 +184,7 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
 
    After reviewers finish, spawn **Solution Architect (Ingrid Sollenberger)** to incorporate design feedback and update design.md.
 
-5. **Stage 4: Task Review**
+6. **Stage 4: Task Review**
 
    The tasks.md was created during the propose step. Spawn **two reviewer agents in parallel**:
 
@@ -206,7 +219,7 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
 
    After reviewers finish, spawn **Full Stack Engineer (Marcus Oyelaran)** to incorporate task feedback and update tasks.md.
 
-6. **Stage 5: Implement** (`opsx:apply`)
+7. **Stage 5: Implement** (`opsx:apply`)
 
    Spawn **executor agent — Full Stack Engineer (Marcus Oyelaran):**
    ```
@@ -232,7 +245,7 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
 
    If the design flagged security-sensitive tasks, also spawn **Security Analyst (Tomás Ferreira)** to review those specific areas.
 
-7. **Stage 6: Sync Specs** (`opsx:sync`)
+8. **Stage 6: Sync Specs** (`opsx:sync`)
 
    Spawn **executor agent — Business Analyst (Marcus Delgado):**
    ```
@@ -245,7 +258,7 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
 
    After sync, spawn **Solution Architect (Ingrid Sollenberger)** to verify no drift between docs and code.
 
-8. **Stage 7: Archive** (`opsx:archive`)
+9. **Stage 7: Archive** (`opsx:archive`)
 
    Spawn **executor agent — Business Analyst (Marcus Delgado):**
    ```
