@@ -1,10 +1,25 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { SignOutButton } from "../components/SignOutButton.js";
+import { MemberManagement } from "../components/MemberManagement.js";
+import type { MembershipRole } from "@dipstick/shared";
+
+// ---------------------------------------------------------------------------
+// Vocabulary mapping (Decision 8):
+// Database enum values MUST NOT appear as visible UI labels on any
+// role-displaying surface — including session.teamMemberships list below.
+// 'participant'         → 'Engineer'
+// 'engineering_manager' → 'Engineering Manager'
+// ---------------------------------------------------------------------------
+const ROLE_LABELS: Record<MembershipRole, string> = {
+  participant: "Engineer",
+  engineering_manager: "Engineering Manager",
+};
 
 export function TeamPage() {
   const { session } = useAuth();
+  const { teamId } = useParams<{ teamId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [showAlreadyMemberNotification, setShowAlreadyMemberNotification] =
     useState(false);
@@ -77,10 +92,18 @@ export function TeamPage() {
       <ul>
         {session.teamMemberships.map((m) => (
           <li key={m.teamId}>
-            {m.teamName} ({m.role})
+            {/* Decision 8: render mapped label, never raw DB enum value */}
+            {m.teamName} ({ROLE_LABELS[m.role] ?? m.role})
           </li>
         ))}
       </ul>
+
+      {/* Member management view — shown for the team identified by the URL param */}
+      {teamId && (
+        <div style={{ marginTop: "2rem" }}>
+          <MemberManagement teamId={teamId} />
+        </div>
+      )}
 
       <div style={{ marginTop: "2rem" }}>
         <SignOutButton />
