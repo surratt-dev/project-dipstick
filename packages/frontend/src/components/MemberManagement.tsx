@@ -205,6 +205,19 @@ export function MemberManagement({ teamId }: Props) {
           Escalation message (Task 5.7 / Decision 3 Option A hard req.)
           Shown when canAssignRoles is false. A grayed-out control with
           no explanation is NOT acceptable per the spec.
+
+          TRACKED RISK — escalation UX incomplete (architect finding #3):
+          The current message satisfies the minimum spec (plain-language
+          explanation is present and non-dismissible). It does NOT satisfy
+          the preferred spec: surfacing the admin contact or an in-app
+          request path. Rachel Okonkwo's (VP Engineering) sign-off on
+          Option A was conditioned on the escalation path being built in,
+          not deferred indefinitely. If facilitators hit a dead end with
+          no admin contact surfaced, the adoption risk named in Decision 3
+          will materialize. This is not a stretch goal — it is a required
+          follow-on with a named stakeholder condition attached.
+          Owner: Marcus Oyelaran. Must complete before declaring Option A
+          fully implemented.
       --------------------------------------------------------------- */}
       {!canAssignRoles && (
         <p

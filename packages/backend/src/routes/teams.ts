@@ -273,7 +273,24 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     try {
       await client.query("BEGIN");
 
-      // Lock the membership row and update the role
+      // Acquire a team-level lock before any reads or writes within this
+      // transaction. By locking every active membership row for this team,
+      // a concurrent transaction that also targets this team's memberships
+      // will block here until the current transaction commits or rolls back.
+      // This ensures the subsequent participant count check is evaluated on
+      // fully committed state, closing the race condition identified in
+      // Decision 5: two concurrent admins promoting the two participants of a
+      // two-person team would otherwise each read count=1, both pass the zero-
+      // participant guard, and leave the team with no participants and no 422.
+      // (Architect finding #1 — required before ship.)
+      await client.query(
+        `SELECT id FROM team_memberships WHERE team_id = $1 AND removed_at IS NULL FOR UPDATE`,
+        [teamId],
+      );
+
+      // Update the role (the team-level lock above serializes all concurrent
+      // role changes for this team, so the post-update count below reflects
+      // fully committed state from all prior transactions)
       await client.query(
         `UPDATE team_memberships
          SET role = $1
