@@ -911,7 +911,7 @@ describe("POST /api/v1/teams/:teamId/managers", () => {
 
     // Transaction: upsert succeeds but audit INSERT throws
     let callIndex = 0;
-    const mockClientQuery = vi.fn((...args: unknown[]) => {
+    const mockClientQuery = vi.fn((..._args: unknown[]) => {
       callIndex++;
       if (callIndex === 1) return Promise.resolve({ rows: [] }); // BEGIN
       if (callIndex === 2) return Promise.resolve({ rows: [{ id: "m-frank", is_new_row: true }] }); // upsert succeeds

@@ -127,7 +127,7 @@ export async function emViewRoutes(app: FastifyInstance): Promise<void> {
     const { teamId } = request.params;
 
     // Dual authorization check (Decision 14) — both checks are independent
-    const { authorized, reason, globalRole } = await checkEmAuthorization(
+    const { authorized, globalRole } = await checkEmAuthorization(
       session.userId,
       teamId,
     );
