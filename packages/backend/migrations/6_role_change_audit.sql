@@ -32,5 +32,4 @@ CREATE INDEX idx_role_change_audit_actor ON role_change_audit(actor_user_id);
 CREATE INDEX idx_role_change_audit_subject ON role_change_audit(subject_user_id);
 CREATE INDEX idx_role_change_audit_changed_at ON role_change_audit(changed_at);
 
--- Down
-DROP TABLE role_change_audit;
+-- Down: DROP TABLE role_change_audit; (execute via db:migrate:down — do not place runnable SQL here)

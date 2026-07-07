@@ -52,31 +52,45 @@ CREATE INDEX idx_audit_log_timestamp  ON audit_log (timestamp);
 -- to audit_log. The operation value 'team.role_changed' matches the structured
 -- log event name used by emitAuditEvent — consistent across DB and log records.
 -- from_role and to_role are preserved in the metadata JSONB column.
-INSERT INTO audit_log (
-    actor_user_id,
-    actor_global_role,
-    actor_ip,
-    operation,
-    target_user_id,
-    team_id,
-    timestamp,
-    metadata
-)
-SELECT
-    actor_user_id,
-    actor_global_role,
-    actor_ip::inet,
-    'team.role_changed',
-    subject_user_id,
-    team_id,
-    changed_at,
-    jsonb_build_object('from_role', from_role, 'to_role', to_role)
-FROM role_change_audit;
+--
+-- IF EXISTS guard: migration 6 had a runnable -- Down section that node-pg-migrate
+-- v7 executed as part of Up (the entire SQL file is treated as Up). On a fresh DB
+-- where migration 6 ran and immediately dropped role_change_audit, this block is
+-- skipped — there are no records to migrate. On an existing DB where role_change_audit
+-- holds data, the block runs normally.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'role_change_audit'
+  ) THEN
+    INSERT INTO audit_log (
+        actor_user_id,
+        actor_global_role,
+        actor_ip,
+        operation,
+        target_user_id,
+        team_id,
+        timestamp,
+        metadata
+    )
+    SELECT
+        actor_user_id,
+        actor_global_role,
+        actor_ip::inet,
+        'team.role_changed',
+        subject_user_id,
+        team_id,
+        changed_at,
+        jsonb_build_object('from_role', from_role, 'to_role', to_role)
+    FROM role_change_audit;
 
--- Step 3: Drop role_change_audit — must happen in the same migration as the
--- INSERT above so both changes are atomic. If the INSERT fails, the DROP does
--- not execute and no audit records are lost.
-DROP TABLE role_change_audit;
+    -- Step 3: Drop role_change_audit in the same block as the INSERT above so
+    -- both changes are atomic. If the INSERT fails, the DROP does not execute
+    -- and no audit records are lost.
+    DROP TABLE role_change_audit;
+  END IF;
+END $$;
 
 -- Down (reference — execute manually or via 8_rollback.sql)
 -- See migration 8_rollback.sql for the validated rollback procedure.
