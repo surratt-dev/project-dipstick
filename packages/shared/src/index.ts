@@ -3,12 +3,26 @@ export type {
   Team,
   TeamMembership,
   TeamMember,
+  LegacyTeamMembersResponse,
   TeamMembersResponse,
   RoleChangeRequest,
   RoleChangeResponse,
+  EstablishManagerRequest,
+  EstablishManagerResponse,
 } from "./types/team.js";
 export type { Session, SessionStatus, SessionTopic, SessionTopicStatus, SessionParticipant } from "./types/session.js";
 export type { Vote, VoteType } from "./types/vote.js";
 export type { Topic, TopicStatus } from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";
+export type {
+  VoteDistributionBucket,
+  EmSessionHistoryEntry,
+  EmSessionTopicSummary,
+  EmSessionHistoryResponse,
+  EmTopicTrend,
+  EmTopicSessionDataPoint,
+  EmTrendResponse,
+  EmActionItem,
+  EmActionItemsResponse,
+} from "./types/em-views.js";
 export type { AuthSession, JoinLink, AuthErrorCategory, AuthError } from "./types/auth.js";

@@ -9,6 +9,7 @@ import { authRoutes } from "./routes/auth.js";
 import { joinLinkRoutes } from "./routes/join-links.js";
 import { teamRoutes } from "./routes/teams.js";
 import { sessionRoutes } from "./routes/sessions.js";
+import { emViewRoutes } from "./routes/em-views.js";
 import { config } from "./config.js";
 import { redis } from "./redis.js";
 import { createRedisStore } from "./auth/session-store.js";
@@ -93,6 +94,7 @@ export async function buildApp() {
   await app.register(joinLinkRoutes);
   await app.register(teamRoutes);
   await app.register(sessionRoutes);
+  await app.register(emViewRoutes);
 
   return app;
 }

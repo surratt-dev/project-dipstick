@@ -396,7 +396,21 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
   });
 
   // Task 4.4 — audit log is written with correct fields
-  it("4.4: writes audit log with actor global_role, actor IP, from-role, to-role", async () => {
+  // Updated by task 2a.5 (establish-manager-team-relationship): TEAM-005 now
+  // writes to audit_log instead of role_change_audit (Decision 9, design.md).
+  // The audit_log INSERT has a different column layout: operation, target_user_id,
+  // team_id, and metadata (JSONB with from_role/to_role) instead of
+  // subject_user_id, from_role, to_role as positional columns.
+  //
+  // New audit_log INSERT parameters for TEAM-005:
+  //   $1 = actor_user_id
+  //   $2 = actor_global_role
+  //   $3 = actor_ip
+  //   $4 = operation     ('team.role_changed')
+  //   $5 = target_user_id (subject_user_id in the old schema)
+  //   $6 = team_id
+  //   $7 = metadata JSONB (contains from_role and to_role)
+  it("4.4: writes audit_log with correct fields for TEAM-005 role change", async () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [
@@ -421,7 +435,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       { rows: [] }, // SELECT FOR UPDATE (team-level lock)
       { rows: [] }, // UPDATE
       { rows: [{ participant_count: "2" }] }, // count check
-      { rows: [] }, // audit INSERT
+      { rows: [] }, // audit INSERT into audit_log
       { rows: [] }, // COMMIT
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
@@ -436,13 +450,28 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     // The 5th call to client.query is the audit INSERT (index 4)
     const auditInsertCall = client.query.mock.calls[4];
     expect(auditInsertCall).toBeDefined();
+
+    // Verify the INSERT targets audit_log (not role_change_audit)
+    const auditSql = (auditInsertCall[0] as string).toLowerCase();
+    expect(auditSql).toContain("audit_log");
+    expect(auditSql).not.toContain("role_change_audit");
+
     const auditValues = auditInsertCall[1] as unknown[];
-    // Values: actorUserId, actorGlobalRole, actorIp, subjectUserId, teamId, fromRole, toRole
-    expect(auditValues[1]).toBe("engineering_manager"); // actor_global_role
-    expect(auditValues[3]).toBe("user-carol"); // subject_user_id
-    expect(auditValues[4]).toBe("team-1"); // team_id
-    expect(auditValues[5]).toBe("participant"); // from_role
-    expect(auditValues[6]).toBe("engineering_manager"); // to_role
+    // $1 = actor_user_id
+    expect(auditValues[0]).toBe("actor-1");
+    // $2 = actor_global_role
+    expect(auditValues[1]).toBe("engineering_manager");
+    // $3 = actor_ip (may vary in test context)
+    // $4 = operation
+    expect(auditValues[3]).toBe("team.role_changed");
+    // $5 = target_user_id (was subject_user_id in role_change_audit)
+    expect(auditValues[4]).toBe("user-carol");
+    // $6 = team_id
+    expect(auditValues[5]).toBe("team-1");
+    // $7 = metadata JSONB — stored as a JSON string in the parameterized query;
+    // must be parsed before structural comparison.
+    const metadata = JSON.parse(auditValues[6] as string) as Record<string, unknown>;
+    expect(metadata).toMatchObject({ from_role: "participant", to_role: "engineering_manager" });
   });
 
   // Task 4.5 — TEAM-006 is NOT called
@@ -530,5 +559,459 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       // Must not UPDATE the users table at all
       expect(sql).not.toMatch(/update\s+users\b/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/teams/:teamId   (TEAM-003)
+// Task 2a.6 / 2a.10 — establish-manager-team-relationship
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns 403 when actor is not a team member and not application_admin", async () => {
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "engineer", is_member: false }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/team-1",
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toContain("not a member");
+  });
+
+  it("returns participants and engineeringManagers split arrays — not a flat members array", async () => {
+    // 1) actor check — admin
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "application_admin", is_member: false }],
+    });
+    // 2) team name
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ name: "Delta Team" }] });
+    // 3) members with roles
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [
+        { user_id: "u1", display_name: "Alice", email: "alice@test.com", role: "participant" },
+        { user_id: "u2", display_name: "Bob", email: "bob@test.com", role: "participant" },
+        { user_id: "u3", display_name: "Carol EM", email: "carol@test.com", role: "engineering_manager" },
+      ],
+    });
+    // 4) canAssignRoles check
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "application_admin", membership_role: null }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/team-1",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    // Must NOT have a flat members array
+    expect(body.members).toBeUndefined();
+
+    // Must have split arrays
+    expect(body.participants).toHaveLength(2);
+    expect(body.engineeringManagers).toHaveLength(1);
+
+    expect(body.participants[0].role).toBe("participant");
+    expect(body.participants[1].role).toBe("participant");
+    expect(body.engineeringManagers[0].role).toBe("engineering_manager");
+    expect(body.engineeringManagers[0].displayName).toBe("Carol EM");
+  });
+
+  it("returns canAssociateManagers: true for application_admin", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] })
+      .mockResolvedValueOnce({ rows: [{ name: "Team X" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().canAssociateManagers).toBe(true);
+  });
+
+  it("returns canAssociateManagers: false for a non-admin member", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", is_member: true }] })
+      .mockResolvedValueOnce({ rows: [{ name: "Team Y" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().canAssociateManagers).toBe(false);
+  });
+
+  // Task 2a.10 — EM created by TEAM-006 appears in engineeringManagers, not participants
+  it("2a.10: EM user appears in engineeringManagers, not participants", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] })
+      .mockResolvedValueOnce({ rows: [{ name: "Team Z" }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { user_id: "u-em", display_name: "Eve EM", email: "eve@test.com", role: "engineering_manager" },
+          { user_id: "u-p", display_name: "Frank", email: "frank@test.com", role: "participant" },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-z" });
+
+    const body = res.json();
+    expect(body.engineeringManagers).toHaveLength(1);
+    expect(body.engineeringManagers[0].userId).toBe("u-em");
+    expect(body.participants).toHaveLength(1);
+    expect(body.participants[0].userId).toBe("u-p");
+
+    // u-em must NOT appear in participants
+    const emInParticipants = (body.participants as Array<{ userId: string }>).some(
+      (m) => m.userId === "u-em",
+    );
+    expect(emInParticipants).toBe(false);
+  });
+
+  it("2a.10: user previously a participant who becomes EM appears only in engineeringManagers", async () => {
+    // This covers the case where team_memberships.role was updated in-place by TEAM-006
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] })
+      .mockResolvedValueOnce({ rows: [{ name: "Team W" }] })
+      .mockResolvedValueOnce({
+        rows: [
+          // Grace was a participant, now is engineering_manager — appears only in EM array
+          { user_id: "u-grace", display_name: "Grace", email: "grace@test.com", role: "engineering_manager" },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-w" });
+
+    const body = res.json();
+    expect(body.engineeringManagers).toHaveLength(1);
+    expect(body.engineeringManagers[0].userId).toBe("u-grace");
+    expect(body.participants).toHaveLength(0);
+
+    // Grace must not appear in participants at all
+    expect((body.participants as unknown[]).some(
+      (m) => (m as { userId: string }).userId === "u-grace",
+    )).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/teams/:teamId/managers   (TEAM-006)
+// Tasks 3.1 – 3.9 — establish-manager-team-relationship
+// ---------------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/managers", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Task 3.5 — 403 for unauthorized actor
+  it("3.5: returns 403 when actor is not an application_admin", async () => {
+    // Actor check: engineering_manager (not admin)
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "engineering_manager" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-user-1" },
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("3.5: returns 403 when actor is a regular engineer", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "engineer" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-user-1" },
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  // Task 3.4 — 404 for unknown teamId
+  it("3.4: returns 404 for unknown teamId", async () => {
+    // Actor is admin
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] });
+    // Team not found
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/nonexistent-team/managers",
+      payload: { engineeringManagerUserId: "em-user-1" },
+    });
+
+    expect(res.statusCode).toBe(404);
+    // Must NOT return 409 for this condition
+    expect(res.statusCode).not.toBe(409);
+  });
+
+  // Task 3.2 — 409 for global_role precondition failure
+  it("3.2: returns 409 with GLOBAL_ROLE_PRECONDITION_NOT_MET error code when target lacks EM role", async () => {
+    // Actor is admin
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] });
+    // Team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    // Target user has global_role = 'engineer' (not engineering_manager)
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "engineer", display_name: "Regular User" }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "not-an-em" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.error.code).toBe("GLOBAL_ROLE_PRECONDITION_NOT_MET");
+    // No team_memberships row should be created — this is pre-transaction,
+    // no DB write has occurred at this point
+  });
+
+  // Task 3.1 + 3.3 — 201 on create-new with xmax
+  it("3.1 / 3.3: returns 201 Created for a new EM/team association (xmax = 0 → is_new_row = true)", async () => {
+    // Actor is admin
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] });
+    // Team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    // Target user is an EM
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "engineering_manager", display_name: "Erin EM" }],
+    });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "membership-1", is_new_row: true }] }, // upsert — new row (xmax = 0)
+      { rows: [] }, // audit INSERT into audit_log
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-user-1" },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.engineeringManagerUserId).toBe("em-user-1");
+    expect(body.engineeringManagerDisplayName).toBe("Erin EM");
+    expect(body.teamId).toBe("team-1");
+  });
+
+  // Task 3.3 — 200 on idempotent update (xmax != 0 → is_new_row = false)
+  it("3.3: returns 200 OK for an idempotent re-association (xmax != 0 → is_new_row = false)", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "engineering_manager", display_name: "Erin EM" }],
+    });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "membership-1", is_new_row: false }] }, // upsert — updated row (xmax != 0)
+      { rows: [] }, // audit INSERT
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-user-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // Response body must be identical to 201 case
+    expect(body.engineeringManagerUserId).toBe("em-user-1");
+  });
+
+  // Task 3.9 — verify response body is identical for 201 and 200 cases
+  it("3.9: response body shape is identical for both 201 and 200 cases", async () => {
+    // Build 201 response
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "team-1" }] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineering_manager", display_name: "Dana" }] });
+
+    const client201 = makeMockClient([
+      { rows: [] },
+      { rows: [{ id: "m1", is_new_row: true }] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client201);
+
+    const app = await buildApp();
+    const res201 = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-dana" },
+    });
+
+    // Build 200 response
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "team-1" }] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineering_manager", display_name: "Dana" }] });
+
+    const client200 = makeMockClient([
+      { rows: [] },
+      { rows: [{ id: "m1", is_new_row: false }] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client200);
+
+    const res200 = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-dana" },
+    });
+
+    // Verify same body keys regardless of status code
+    const keys201 = Object.keys(res201.json() as object).sort();
+    const keys200 = Object.keys(res200.json() as object).sort();
+    expect(keys201).toEqual(keys200);
+  });
+
+  // Task 3.6 — audit rollback on audit write failure
+  it("3.6: rolls back team_memberships if audit INSERT fails", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "engineering_manager", display_name: "Frank EM" }],
+    });
+
+    // Transaction: upsert succeeds but audit INSERT throws
+    let callIndex = 0;
+    const mockClientQuery = vi.fn((..._args: unknown[]) => {
+      callIndex++;
+      if (callIndex === 1) return Promise.resolve({ rows: [] }); // BEGIN
+      if (callIndex === 2) return Promise.resolve({ rows: [{ id: "m-frank", is_new_row: true }] }); // upsert succeeds
+      if (callIndex === 3) return Promise.reject(new Error("audit INSERT failed")); // audit THROWS
+      if (callIndex === 4) return Promise.resolve({ rows: [] }); // ROLLBACK
+      return Promise.resolve({ rows: [] });
+    });
+    const mockClientRelease = vi.fn();
+    mockDbConnect.mockResolvedValueOnce({ query: mockClientQuery, release: mockClientRelease });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-frank" },
+    });
+
+    // The handler should throw (no 200/201) — the error propagates
+    expect(res.statusCode).toBe(500);
+
+    // ROLLBACK must have been called
+    const rollbackCall = Array.from({ length: callIndex }, (_, i) => i + 1).find(
+      (i) => {
+        const call = mockClientQuery.mock.calls[i - 1];
+        return call && typeof call[0] === "string" && call[0].toUpperCase() === "ROLLBACK";
+      },
+    );
+    expect(rollbackCall).toBeDefined();
+  });
+
+  // Task 3.9 — writes audit_log entry with correct fields
+  it("3.9: writes audit_log entry with operation = 'team.manager_established'", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "engineering_manager", display_name: "Gina EM" }],
+    });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "m-gina", is_new_row: true }] }, // upsert
+      { rows: [] }, // audit INSERT
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-gina" },
+    });
+
+    // audit INSERT is the 3rd client.query call (index 2)
+    const auditCall = client.query.mock.calls[2];
+    expect(auditCall).toBeDefined();
+
+    const auditSql = (auditCall[0] as string).toLowerCase();
+    expect(auditSql).toContain("audit_log");
+
+    const auditValues = auditCall[1] as unknown[];
+    // $4 = operation
+    expect(auditValues[3]).toBe("team.manager_established");
+    // $5 = target_user_id
+    expect(auditValues[4]).toBe("em-gina");
+    // $6 = team_id
+    expect(auditValues[5]).toBe("team-1");
+  });
+
+  // Task 3.3 — verify xmax-based idempotency (the ON CONFLICT clause must reference the partial index)
+  it("3.3: upsert SQL uses ON CONFLICT (user_id, team_id) WHERE removed_at IS NULL", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "engineering_manager", display_name: "Hannah" }],
+    });
+
+    const client = makeMockClient([
+      { rows: [] },
+      { rows: [{ id: "m-h", is_new_row: true }] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/managers",
+      payload: { engineeringManagerUserId: "em-hannah" },
+    });
+
+    // The upsert is the 2nd client.query call (index 1)
+    const upsertCall = client.query.mock.calls[1];
+    const upsertSql = (upsertCall[0] as string).toLowerCase();
+
+    // Verify ON CONFLICT uses the partial index condition
+    expect(upsertSql).toContain("on conflict");
+    expect(upsertSql).toContain("where removed_at is null");
+    // Verify xmax is used for new-row detection
+    expect(upsertSql).toContain("xmax");
   });
 });
