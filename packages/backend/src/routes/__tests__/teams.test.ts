@@ -111,6 +111,8 @@ describe("GET /api/v1/teams/:teamId/members", () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "application_admin", membership_role: null }],
     });
+    // 5) admin audit INSERT (Task 3.4 — log admin reads of membership list)
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({
@@ -125,6 +127,52 @@ describe("GET /api/v1/teams/:teamId/members", () => {
     expect(body.members).toHaveLength(2);
     expect(body.members[0].role).toBe("participant");
     expect(body.members[1].role).toBe("engineering_manager");
+  });
+
+  // Task 3.7 (enforce-access-control-on-team-content):
+  // Application Admin gets 200 on membership list AND audit log is written
+  it("3.7: Application Admin gets 200 on membership list and audit log is written", async () => {
+    // 1) actor check
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "application_admin", is_member: false }],
+    });
+    // 2) team name
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ name: "Audit Test Team" }] });
+    // 3) members list
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ user_id: "u1", display_name: "Alice", email: "alice@test.com", role: "participant" }],
+    });
+    // 4) canAssignRoles check
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ global_role: "application_admin", membership_role: null }],
+    });
+    // 5) admin audit INSERT
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/team-audit/members",
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // Verify audit INSERT was called with correct operation
+    // The 5th db.query call (index 4) is the audit log INSERT
+    const auditCall = mockDbQuery.mock.calls[4];
+    expect(auditCall).toBeDefined();
+    const auditSql = (auditCall[0] as string).toLowerCase();
+    expect(auditSql).toContain("audit_log");
+    const auditValues = auditCall[1] as unknown[];
+    expect(auditValues[1]).toBe("application_admin"); // actor_global_role
+    expect(auditValues[3]).toBe("admin.membership_list_accessed"); // operation
+
+    // Verify emitAuditEvent was called with the admin event
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "admin.membership_list_accessed",
+      expect.objectContaining({ actorGlobalRole: "application_admin" }),
+    );
   });
 
   it("returns canAssignRoles: false for a regular engineer member", async () => {
@@ -603,6 +651,8 @@ describe("GET /api/v1/teams/:teamId", () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "application_admin", membership_role: null }],
     });
+    // 5) admin audit INSERT (Task 3.4)
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({
@@ -631,7 +681,9 @@ describe("GET /api/v1/teams/:teamId", () => {
       .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] })
       .mockResolvedValueOnce({ rows: [{ name: "Team X" }] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] });
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] })
+      // admin audit INSERT (Task 3.4)
+      .mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
@@ -665,7 +717,9 @@ describe("GET /api/v1/teams/:teamId", () => {
           { user_id: "u-p", display_name: "Frank", email: "frank@test.com", role: "participant" },
         ],
       })
-      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] });
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] })
+      // admin audit INSERT (Task 3.4)
+      .mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-z" });
@@ -694,7 +748,9 @@ describe("GET /api/v1/teams/:teamId", () => {
           { user_id: "u-grace", display_name: "Grace", email: "grace@test.com", role: "engineering_manager" },
         ],
       })
-      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] });
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] })
+      // admin audit INSERT (Task 3.4)
+      .mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-w" });

@@ -36,7 +36,15 @@ export type AuditEventName =
   | "em.trend_data_accessed"
   | "em.topic_trend_accessed"
   | "em.action_items_accessed"
-  | "em.action_item_accessed";
+  | "em.action_item_accessed"
+  // admin.* events are audit records for Application Admin reads of
+  // administrative data (membership lists, role assignments, EM associations).
+  // Decision 2 (Option B, enforce-access-control-on-team-content):
+  // Admin reads of administrative data must be logged. Admin attempts to access
+  // session content are denied and logged by content endpoint handlers (Group 5).
+  | "admin.membership_list_accessed"
+  | "admin.team_detail_accessed"
+  | "admin.session_content_denied";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

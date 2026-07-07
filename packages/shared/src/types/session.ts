@@ -1,6 +1,7 @@
 import type { VoteType } from "./vote.js";
 
 export type SessionStatus =
+  | "draft"
   | "lobby"
   | "pre_session"
   | "active"
@@ -25,6 +26,8 @@ export interface Session {
   wrapUpStartedAt: Date | null;
   completedAt: Date | null;
   abandonedAt: Date | null;
+  /** Null for all non-complete sessions and for complete sessions outside the grace window. */
+  facilitatorAccessExpiresAt: Date | null;
 }
 
 export interface SessionTopic {
