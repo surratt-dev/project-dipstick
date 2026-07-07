@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext.js";
 import type { TeamMember, TeamMembersResponse, MembershipRole } from "@dipstick/shared";
 
+// MemberManagement fetches from TEAM-003 (GET /api/v1/teams/:teamId) which
+// returns the split TeamMembersResponse with participants/engineeringManagers.
+// The legacy GET /api/v1/teams/:teamId/members endpoint is no longer used here.
+
 // ---------------------------------------------------------------------------
 // Vocabulary mapping (Decision 8):
 // Database enum values MUST NOT appear as visible UI labels.
@@ -57,7 +61,9 @@ export function MemberManagement({ teamId }: Props) {
   const loadMembers = useCallback(async () => {
     setFetchError(null);
     try {
-      const res = await fetch(`/api/v1/teams/${teamId}/members`, {
+      // Fetch from TEAM-003 (GET /api/v1/teams/:teamId) — returns the split
+      // participants/engineeringManagers shape (Decision 12, design.md).
+      const res = await fetch(`/api/v1/teams/${teamId}`, {
         credentials: "include",
       });
       if (!res.ok) {
@@ -155,7 +161,7 @@ export function MemberManagement({ teamId }: Props) {
     return <p>Loading team members…</p>;
   }
 
-  const { teamName, members, canAssignRoles } = data;
+  const { teamName, participants, engineeringManagers, canAssignRoles, canAssociateManagers } = data;
 
   return (
     <section aria-labelledby="member-management-heading">
@@ -235,137 +241,241 @@ export function MemberManagement({ teamId }: Props) {
         </p>
       )}
 
-      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-        {members.map((member) => {
-          const isSubmitting =
-            roleChangeState.status === "submitting" &&
-            roleChangeState.memberId === member.userId;
+      {/* -----------------------------------------------------------------------
+          Participants section (Decision 12, Decision 7 — labeled sections)
+          Shows team members with role = 'participant'. Section heading makes
+          clear these are the session participants (people who will vote).
+      ----------------------------------------------------------------------- */}
+      <section aria-labelledby="participants-heading">
+        <h3
+          id="participants-heading"
+          data-testid="participants-section-heading"
+          style={{ marginBottom: "0.5rem" }}
+        >
+          Session Participants
+          <span
+            style={{ fontWeight: "normal", fontSize: "0.875rem", marginLeft: "0.5rem", color: "#555" }}
+          >
+            (these users will receive session invites and vote)
+          </span>
+        </h3>
+        <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+          {participants.map((member) => {
+            const isSubmitting =
+              roleChangeState.status === "submitting" &&
+              roleChangeState.memberId === member.userId;
 
-          const isAwaitingConfirm =
-            roleChangeState.status === "awaiting_confirmation" &&
-            roleChangeState.memberId === member.userId;
+            const isAwaitingConfirm =
+              roleChangeState.status === "awaiting_confirmation" &&
+              roleChangeState.memberId === member.userId;
 
-          const pendingRole =
-            isAwaitingConfirm &&
-            roleChangeState.status === "awaiting_confirmation"
-              ? roleChangeState.pendingRole
-              : null;
+            const pendingRole =
+              isAwaitingConfirm &&
+              roleChangeState.status === "awaiting_confirmation"
+                ? roleChangeState.pendingRole
+                : null;
 
-          return (
-            <li
-              key={member.userId}
-              data-testid={`member-row-${member.userId}`}
-              style={{
-                padding: "1rem",
-                marginBottom: "0.5rem",
-                border: "1px solid #e0e0e0",
-                borderRadius: "4px",
-              }}
-            >
-              <div style={{ fontWeight: "bold" }}>{member.displayName}</div>
-              <div style={{ color: "#666", fontSize: "0.875rem" }}>
-                {member.email}
-              </div>
-
-              {/* Task 5.1 / Decision 8: role label visible in list form
-                  without requiring drill-downs or entering an edit state */}
-              <div
-                data-testid={`role-label-${member.userId}`}
-                style={{ marginTop: "0.5rem" }}
+            return (
+              <li
+                key={member.userId}
+                data-testid={`member-row-${member.userId}`}
+                style={{
+                  padding: "1rem",
+                  marginBottom: "0.5rem",
+                  border: "1px solid #e0e0e0",
+                  borderRadius: "4px",
+                }}
               >
-                Current role:{" "}
-                <strong>{ROLE_LABELS[member.role] ?? member.role}</strong>
-              </div>
+                <div style={{ fontWeight: "bold" }}>{member.displayName}</div>
+                <div style={{ color: "#666", fontSize: "0.875rem" }}>
+                  {member.email}
+                </div>
 
-              {/* -------------------------------------------------------
-                  Zero-participant warning modal (Task 5.4, 5.5 / Decision 5)
-                  Shown BEFORE confirmation — not after. The actor can cancel.
-              ------------------------------------------------------- */}
-              {isAwaitingConfirm && pendingRole !== null && (
                 <div
-                  role="alertdialog"
-                  aria-labelledby={`warn-heading-${member.userId}`}
-                  data-testid={`zero-participant-warning-${member.userId}`}
-                  style={{
-                    marginTop: "1rem",
-                    padding: "1rem",
-                    backgroundColor: "#fff3e0",
-                    border: "1px solid #ffb74d",
-                    borderRadius: "4px",
-                  }}
+                  data-testid={`role-label-${member.userId}`}
+                  style={{ marginTop: "0.5rem" }}
                 >
-                  <p id={`warn-heading-${member.userId}`}>
-                    This change will leave {teamName} with no Engineers. A
-                    session cannot start without at least one Engineer. You can
-                    still make this change.
-                  </p>
-                  <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
-                    <button
-                      onClick={() =>
-                        submitRoleChange(member, pendingRole, true)
-                      }
-                      data-testid={`confirm-zero-participant-${member.userId}`}
-                    >
-                      Confirm change
-                    </button>
-                    <button
-                      onClick={() => setRoleChangeState({ status: "idle" })}
-                      data-testid={`cancel-zero-participant-${member.userId}`}
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                  Current role:{" "}
+                  <strong>{ROLE_LABELS[member.role] ?? member.role}</strong>
                 </div>
-              )}
 
-              {/* -------------------------------------------------------
-                  Role selector (Tasks 5.2, 5.3)
-                  Exactly two options: Engineer and Engineering Manager.
-                  Facilitator is NEVER present.
-                  Inline descriptions below each option.
-                  Only shown when canAssignRoles: true.
-              ------------------------------------------------------- */}
-              {canAssignRoles && !isAwaitingConfirm && (
-                <div style={{ marginTop: "0.75rem" }}>
-                  <label
-                    htmlFor={`role-select-${member.userId}`}
-                    style={{ display: "block", marginBottom: "0.25rem", fontSize: "0.875rem" }}
-                  >
-                    Change role:
-                  </label>
-                  <select
-                    id={`role-select-${member.userId}`}
-                    data-testid={`role-select-${member.userId}`}
-                    value={member.role}
-                    disabled={isSubmitting}
-                    onChange={(e) => {
-                      const newRole = e.target.value as MembershipRole;
-                      if (newRole !== member.role) {
-                        void submitRoleChange(member, newRole);
-                      }
+                {isAwaitingConfirm && pendingRole !== null && (
+                  <div
+                    role="alertdialog"
+                    aria-labelledby={`warn-heading-${member.userId}`}
+                    data-testid={`zero-participant-warning-${member.userId}`}
+                    style={{
+                      marginTop: "1rem",
+                      padding: "1rem",
+                      backgroundColor: "#fff3e0",
+                      border: "1px solid #ffb74d",
+                      borderRadius: "4px",
                     }}
-                    aria-label={`Change role for ${member.displayName}`}
                   >
-                    {/* Task 5.2 / 5.3: exactly two options with inline descriptions */}
-                    {(["participant", "engineering_manager"] as MembershipRole[]).map(
-                      (role) => (
-                        <option key={role} value={role}>
-                          {ROLE_LABELS[role]} — {ROLE_DESCRIPTIONS[role]}
-                        </option>
-                      ),
+                    <p id={`warn-heading-${member.userId}`}>
+                      This change will leave {teamName} with no Engineers. A
+                      session cannot start without at least one Engineer. You can
+                      still make this change.
+                    </p>
+                    <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
+                      <button
+                        onClick={() =>
+                          submitRoleChange(member, pendingRole, true)
+                        }
+                        data-testid={`confirm-zero-participant-${member.userId}`}
+                      >
+                        Confirm change
+                      </button>
+                      <button
+                        onClick={() => setRoleChangeState({ status: "idle" })}
+                        data-testid={`cancel-zero-participant-${member.userId}`}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {canAssignRoles && !isAwaitingConfirm && (
+                  <div style={{ marginTop: "0.75rem" }}>
+                    <label
+                      htmlFor={`role-select-${member.userId}`}
+                      style={{ display: "block", marginBottom: "0.25rem", fontSize: "0.875rem" }}
+                    >
+                      Change role:
+                    </label>
+                    <select
+                      id={`role-select-${member.userId}`}
+                      data-testid={`role-select-${member.userId}`}
+                      value={member.role}
+                      disabled={isSubmitting}
+                      onChange={(e) => {
+                        const newRole = e.target.value as MembershipRole;
+                        if (newRole !== member.role) {
+                          void submitRoleChange(member, newRole);
+                        }
+                      }}
+                      aria-label={`Change role for ${member.displayName}`}
+                    >
+                      {(["participant", "engineering_manager"] as MembershipRole[]).map(
+                        (role) => (
+                          <option key={role} value={role}>
+                            {ROLE_LABELS[role]} — {ROLE_DESCRIPTIONS[role]}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                    {isSubmitting && (
+                      <span style={{ marginLeft: "0.5rem", fontSize: "0.875rem" }}>
+                        Saving…
+                      </span>
                     )}
-                  </select>
-                  {isSubmitting && (
-                    <span style={{ marginLeft: "0.5rem", fontSize: "0.875rem" }}>
-                      Saving…
-                    </span>
-                  )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      {/* -----------------------------------------------------------------------
+          Associated Managers section (Decision 7, Decision 12)
+          Shows team members with role = 'engineering_manager'.
+          Section heading must make clear these users are NOT session participants.
+          When no EM is associated, shows a visually distinct incomplete-setup
+          indicator — not an error state (Decision 7 acceptance criterion).
+          (Tasks 6.1, 6.2, 6.3, 6.4 — establish-manager-team-relationship)
+      ----------------------------------------------------------------------- */}
+      <section
+        aria-labelledby="associated-managers-heading"
+        data-testid="associated-managers-section"
+        style={{ marginTop: "2rem" }}
+      >
+        <h3
+          id="associated-managers-heading"
+          data-testid="associated-managers-heading"
+          style={{ marginBottom: "0.5rem" }}
+        >
+          Associated Engineering Manager
+          <span
+            style={{ fontWeight: "normal", fontSize: "0.875rem", marginLeft: "0.5rem", color: "#555" }}
+          >
+            (views history only — does not attend sessions)
+          </span>
+        </h3>
+
+        {/* Access model statement (Decision 8, Tasks 7.1, 7.2)
+            Findable but not prominent: no modal, no acknowledgment flow.
+            Present in both the team view and the session lobby. */}
+        <p
+          data-testid="access-model-statement"
+          style={{ fontSize: "0.875rem", color: "#555", marginBottom: "0.75rem" }}
+        >
+          Your Engineering Manager can see session history but cannot join or observe live sessions.
+        </p>
+
+        {engineeringManagers.length === 0 ? (
+          /* Incomplete-setup indicator — not an error (Decision 7) */
+          <div
+            data-testid="no-em-association-indicator"
+            style={{
+              padding: "0.75rem 1rem",
+              backgroundColor: "#f5f5f5",
+              border: "1px dashed #bdbdbd",
+              borderRadius: "4px",
+              color: "#757575",
+            }}
+          >
+            No Engineering Manager is associated with this team yet.
+            {/* Escalation path (Decision 1, Tasks 4.1, 4.2):
+                When canAssociateManagers is false (facilitator/engineer view),
+                show the explanation and specific contact path.
+                When canAssociateManagers is true (admin view), show the affordance
+                to establish the association. */}
+            {canAssociateManagers ? (
+              <span style={{ marginLeft: "0.5rem" }}>
+                {/* Admin sees the affordance — actual TEAM-006 call is wired separately */}
+                Use the admin panel to associate an Engineering Manager.
+              </span>
+            ) : (
+              <span
+                data-testid="associate-manager-escalation"
+                style={{ marginLeft: "0.5rem" }}
+              >
+                Associating an Engineering Manager requires Application Admin access.
+                Contact your admin to complete this before the session.
+              </span>
+            )}
+          </div>
+        ) : (
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {engineeringManagers.map((em) => (
+              <li
+                key={em.userId}
+                data-testid={`em-row-${em.userId}`}
+                style={{
+                  padding: "1rem",
+                  marginBottom: "0.5rem",
+                  border: "1px solid #c8e6c9",
+                  borderRadius: "4px",
+                  backgroundColor: "#f9fbe7",
+                }}
+              >
+                {/* Display by display name (not userId) — Decision 7 / task 6.4 */}
+                <div style={{ fontWeight: "bold" }} data-testid={`em-display-name-${em.userId}`}>
+                  {em.displayName}
                 </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+                <div style={{ color: "#666", fontSize: "0.875rem" }}>
+                  {em.email}
+                </div>
+                <div style={{ marginTop: "0.25rem", fontSize: "0.875rem", color: "#388e3c" }}>
+                  Engineering Manager — views session history only
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </section>
   );
 }

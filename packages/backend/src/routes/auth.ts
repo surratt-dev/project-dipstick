@@ -136,13 +136,25 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         throw new MissingClaimError("iss");
       }
 
-      // Resolve or create user account
-      const user = await resolveOrCreateAccount({
-        sub: claims.sub,
-        iss: claims.iss,
-        name: claims.name as string | undefined,
-        email: claims.email as string | undefined,
-      });
+      // Resolve or create user account.
+      // Pass the full claims object so resolveOrCreateAccount can read the
+      // configured role claim (OIDC_ROLE_CLAIM) for global_role mapping.
+      // Pass the logger so it can emit warnings on rejected claim values
+      // (rejected claim values must not appear in audit records).
+      const user = await resolveOrCreateAccount(
+        {
+          sub: claims.sub,
+          iss: claims.iss,
+          name: claims.name as string | undefined,
+          email: claims.email as string | undefined,
+          ...Object.fromEntries(
+            Object.entries(claims).filter(
+              ([k]) => !["sub", "iss", "name", "email"].includes(k),
+            ),
+          ),
+        },
+        request.log,
+      );
 
       // Task 7: Emit first_access_created with sourceIp and correlationId,
       // matching the complete event shape used by every other security-relevant
@@ -152,6 +164,21 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           userId: user.id,
           oidcSubject: user.oidcSubject,
           oidcIssuer: user.oidcIssuer,
+          globalRole: user.globalRole,
+          sourceIp: request.ip,
+          correlationId,
+        });
+      } else if (user.globalRole !== "engineer") {
+        // Emit role_claim_mapped for returning users who have a non-default
+        // global_role from the IdP claim (Decision 2). This covers both the
+        // case where the role was already set and the case where it changed.
+        // We emit on every sign-in when the role is non-default so that the
+        // audit trail captures the ongoing claim-to-role mapping for EMs and
+        // admins — not only the first time the claim is applied.
+        emitAuditEvent(request.log, "auth.role_claim_mapped", {
+          userId: user.id,
+          oidcSubject: user.oidcSubject,
+          globalRole: user.globalRole,
           sourceIp: request.ip,
           correlationId,
         });

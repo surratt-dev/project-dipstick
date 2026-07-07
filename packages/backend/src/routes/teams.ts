@@ -4,9 +4,12 @@ import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
 import type {
   TeamMember,
+  LegacyTeamMembersResponse,
   TeamMembersResponse,
   RoleChangeRequest,
   RoleChangeResponse,
+  EstablishManagerRequest,
+  EstablishManagerResponse,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -160,7 +163,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       role: row.role as "participant" | "engineering_manager",
     }));
 
-    const response: TeamMembersResponse = {
+    const response: LegacyTeamMembersResponse = {
       teamId,
       teamName,
       members,
@@ -171,7 +174,155 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // -------------------------------------------------------------------------
+  // GET /api/v1/teams/:teamId   (TEAM-003)
+  //
+  // Returns team members split into participants and engineeringManagers arrays.
+  // Added in Phase 2 of establish-manager-team-relationship (Decision 12).
+  //
+  // The split is done at the database query level — the backend knows the role
+  // at query time and the type system enforces the separation. Sending a flat
+  // list and expecting the client to segment creates a dependency between
+  // frontend rendering logic and the database schema that the type system
+  // cannot enforce.
+  //
+  // canAssociateManagers (Decision 10): true when actor.global_role =
+  // 'application_admin'. TEAM-006 is admin-only. Using canAssignRoles for this
+  // affordance would cause EMs to see the control and receive 403s.
+  //
+  // This endpoint must ship in Phase 2 so that an EM row created by TEAM-006
+  // never appears in the wrong array in production.
+  // -------------------------------------------------------------------------
+  app.get<{
+    Params: { teamId: string };
+  }>("/api/v1/teams/:teamId", async (request, reply) => {
+    const session = request.session as unknown as SessionData;
+    const { teamId } = request.params;
+
+    // Verify the caller is a member of this team or an application_admin.
+    const actorResult = await db.query<{
+      global_role: string;
+      is_member: boolean;
+    }>(
+      `SELECT u.global_role,
+              (tm.id IS NOT NULL) AS is_member
+       FROM users u
+       LEFT JOIN team_memberships tm
+             ON tm.user_id = u.id
+            AND tm.team_id = $2
+            AND tm.removed_at IS NULL
+       WHERE u.id = $1`,
+      [session.userId, teamId],
+    );
+
+    if (actorResult.rows.length === 0) {
+      return reply.code(401).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "User not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const { global_role: actorGlobalRole, is_member: isMember } =
+      actorResult.rows[0] as { global_role: string; is_member: boolean };
+
+    if (!isMember && actorGlobalRole !== "application_admin") {
+      return reply.code(403).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "You are not a member of this team.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    // Fetch team name — 404 when not found (not 403, to avoid leaking existence
+    // information to non-admin callers who are already members)
+    const teamResult = await db.query<{ name: string }>(
+      `SELECT name FROM teams WHERE id = $1`,
+      [teamId],
+    );
+
+    if (teamResult.rows.length === 0) {
+      return reply.code(404).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "Team not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const teamName = (teamResult.rows[0] as { name: string }).name;
+
+    // Fetch all active members with their roles — split into participants and
+    // engineeringManagers at the query level (not in application code)
+    const membersResult = await db.query<{
+      user_id: string;
+      display_name: string;
+      email: string;
+      role: string;
+    }>(
+      `SELECT tm.user_id, u.display_name, u.email, tm.role
+       FROM team_memberships tm
+       JOIN users u ON tm.user_id = u.id
+       WHERE tm.team_id = $1 AND tm.removed_at IS NULL
+       ORDER BY u.display_name ASC`,
+      [teamId],
+    );
+
+    const participants: TeamMember[] = [];
+    const engineeringManagers: TeamMember[] = [];
+
+    for (const row of membersResult.rows) {
+      const member: TeamMember = {
+        userId: row.user_id,
+        displayName: row.display_name,
+        email: row.email,
+        role: row.role as "participant" | "engineering_manager",
+      };
+      if (row.role === "engineering_manager") {
+        engineeringManagers.push(member);
+      } else {
+        participants.push(member);
+      }
+    }
+
+    // canAssignRoles: Application Admins and EMs with EM membership on this team
+    const { authorized: canAssignRoles } = await checkAssignRolesAuthorization(
+      session.userId,
+      teamId,
+    );
+
+    // canAssociateManagers: Application Admin only (Decision 10)
+    // TEAM-006 is restricted to Application Admins. An EM who sees this flag as
+    // true will attempt TEAM-006 and receive 403 — worse UX than not showing the
+    // control. The escalation message renders when this flag is false.
+    const canAssociateManagers = actorGlobalRole === "application_admin";
+
+    const response: TeamMembersResponse = {
+      teamId,
+      teamName,
+      participants,
+      engineeringManagers,
+      canAssignRoles,
+      canAssociateManagers,
+    };
+
+    return reply.send(response);
+  });
+
+  // -------------------------------------------------------------------------
   // PATCH /api/v1/teams/:teamId/members/:userId/role   (TEAM-005)
+  //
+  // NOTE: TEAM-006 is NOT called from here and must NEVER be called from here.
+  // TEAM-005 changes the team_memberships.role of an existing member. It does
+  // not check or modify users.global_role. TEAM-006 establishes the EM/team
+  // relationship for a user who was NOT previously a team member and requires
+  // global_role = 'engineering_manager' as a hard precondition. These are
+  // distinct endpoints serving distinct use cases — see design.md.
+  // (Task 3.8 comment — establish-manager-team-relationship)
   //
   // Changes a team member's membership_role between 'participant' and
   // 'engineering_manager'. Authorized actors: Application Admins (any team)
@@ -330,11 +481,19 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(422).send({ requiresConfirmation: true });
       }
 
-      // Audit log (Decision 7): same transaction — rolls back if this fails
+      // Audit log: same transaction — rolls back if this fails.
+      // Writes to audit_log (Decision 9, establish-manager-team-relationship).
+      // role_change_audit was dropped in migration 8 and replaced by audit_log.
+      // from_role and to_role are stored in the metadata JSONB column.
+      //
+      // NOTE: TEAM-006 is NOT called from here — see task 3.8 comment at the
+      // TEAM-006 handler. TEAM-005 writes only to team_memberships.role and
+      // does not check users.global_role. They are distinct endpoints serving
+      // distinct use cases. Do not conflate them.
       await client.query(
-        `INSERT INTO role_change_audit
-           (actor_user_id, actor_global_role, actor_ip, subject_user_id,
-            team_id, from_role, to_role)
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation,
+            target_user_id, team_id, metadata)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           session.userId,
@@ -342,10 +501,10 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
           // request.ip resolves to the real client IP via trustProxy: 1
           // configured in buildApp() in app.ts.
           request.ip,
+          "team.role_changed",
           subjectUserId,
           teamId,
-          fromRole,
-          newRole,
+          JSON.stringify({ from_role: fromRole, to_role: newRole }),
         ],
       );
 
@@ -376,5 +535,243 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     };
     const response: RoleChangeResponse = { member };
     return reply.send(response);
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/teams/:teamId/managers   (TEAM-006)
+  //
+  // Establishes the EM/team relationship for a user who already has
+  // users.global_role = 'engineering_manager'. Creates (or idempotently
+  // updates) a team_memberships row with role = 'engineering_manager'.
+  //
+  // Distinct from TEAM-005: TEAM-005 changes the team_memberships.role of an
+  // EXISTING member. TEAM-006 establishes the relationship for a user who was
+  // NOT previously a team member. TEAM-006 also enforces the global_role
+  // precondition — TEAM-005 does not. These endpoints must remain distinct and
+  // must NOT be called in place of each other.
+  // (Task 3.7 comment — establish-manager-team-relationship)
+  //
+  // Authorized actor: Application Admin only (Decision 1 / Decision 10).
+  //
+  // Idempotency (Decision 3): uses PostgreSQL xmax to distinguish 201 (new row)
+  // from 200 (updated row) without a SELECT-before-INSERT. xmax = 0 is true for
+  // freshly inserted rows; false for updated rows. This avoids the race
+  // condition that SELECT-before-INSERT creates: two concurrent admin calls
+  // both reading "no row" and both attempting INSERT, with one failing.
+  //
+  // 404 information exposure (Decision 4): a 404 for "team not found" is
+  // indistinguishable from a 404 for "team found but caller is not authorized
+  // to know it exists" when the caller is not an Application Admin.
+  //
+  // Audit trail (Decision 9): the audit_log entry is written in the same
+  // database transaction as the team_memberships write. If the audit write
+  // fails, the transaction rolls back and neither row is committed. A committed
+  // transaction produces both rows; a rolled-back transaction produces neither.
+  //
+  // Dual authorization check (Decision 14): both the global_role check and the
+  // team_memberships.role check for EM data access remain independent. They
+  // serve different purposes — global_role is a global role guard;
+  // team_memberships.role is a team-scoped association guard.
+  //
+  // Rate limiting (task 3.10): the rate limit threshold for this endpoint is
+  // specified in Q6 of design.md and must be implemented and tested before Phase 2
+  // ships. The threshold decision is owned by the BA and security analyst. The
+  // implementation is wired here but the specific limit value comes from Q6.
+  // -------------------------------------------------------------------------
+  app.post<{
+    Params: { teamId: string };
+    Body: EstablishManagerRequest;
+  }>("/api/v1/teams/:teamId/managers", async (request, reply) => {
+    const session = request.session as unknown as SessionData;
+    const { teamId } = request.params;
+    const { engineeringManagerUserId } = request.body;
+
+    // -----------------------------------------------------------------------
+    // Authorization: Application Admin only (Decision 1).
+    // Read from the database per request — not from session state.
+    // -----------------------------------------------------------------------
+    const actorResult = await db.query<{ global_role: string }>(
+      `SELECT global_role FROM users WHERE id = $1`,
+      [session.userId],
+    );
+
+    if (actorResult.rows.length === 0) {
+      return reply.code(401).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "User not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const actorGlobalRole = (actorResult.rows[0] as { global_role: string }).global_role;
+
+    if (actorGlobalRole !== "application_admin") {
+      return reply.code(403).send({
+        error: {
+          category: "forbidden" as const,
+          message:
+            "Only an Application Admin can establish an Engineering Manager/team relationship.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Team existence check (Decision 4 information-exposure constraint):
+    // For non-admin callers, 404 for "not found" is indistinguishable from
+    // "found but not authorized to know it exists." For admin callers (already
+    // confirmed above), a genuine 404 is acceptable.
+    // -----------------------------------------------------------------------
+    const teamResult = await db.query<{ id: string }>(
+      `SELECT id FROM teams WHERE id = $1`,
+      [teamId],
+    );
+
+    if (teamResult.rows.length === 0) {
+      return reply.code(404).send({
+        error: {
+          category: "not_found" as const,
+          message: "Team not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Global role precondition check (Decision 3 / Decision 4):
+    // The target user MUST have global_role = 'engineering_manager'.
+    // 409 Conflict with a specific error code distinguishes this from other
+    // failures (team not found, unauthorized, etc.).
+    // -----------------------------------------------------------------------
+    const targetResult = await db.query<{
+      global_role: string;
+      display_name: string;
+    }>(
+      `SELECT global_role, display_name FROM users WHERE id = $1`,
+      [engineeringManagerUserId],
+    );
+
+    if (targetResult.rows.length === 0) {
+      return reply.code(404).send({
+        error: {
+          category: "not_found" as const,
+          message: "Target user not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const { global_role: targetGlobalRole, display_name: targetDisplayName } =
+      targetResult.rows[0] as { global_role: string; display_name: string };
+
+    if (targetGlobalRole !== "engineering_manager") {
+      // 409 Conflict with machine-readable error code so the escalation UX
+      // in the team administration view can display the specific failure reason.
+      return reply.code(409).send({
+        error: {
+          category: "precondition_failed" as const,
+          code: "GLOBAL_ROLE_PRECONDITION_NOT_MET",
+          message:
+            "The target user does not have global_role = 'engineering_manager'. " +
+            "The user must sign in with an IdP account that has the engineering_manager role claim " +
+            "before they can be established as an Engineering Manager for this team.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Upsert with xmax idempotency (Decision 3):
+    //
+    // INSERT ... ON CONFLICT (user_id, team_id) WHERE removed_at IS NULL
+    // DO UPDATE SET role = 'engineering_manager'
+    // RETURNING id, (xmax = 0) AS is_new_row
+    //
+    // xmax = 0 is true for freshly inserted rows (no prior transaction updated
+    // this row), false for rows that were updated by DO UPDATE. This gives us
+    // 201 vs. 200 atomically from the upsert result without a separate SELECT.
+    //
+    // Why xmax and not SELECT-before-INSERT:
+    // A SELECT-before-INSERT has a race condition identical to the one TEAM-005
+    // solved: two concurrent admin calls both read "no row," both attempt
+    // INSERT, one fails. The xmax inspection eliminates this window entirely.
+    //
+    // The partial unique constraint team_memberships_active_unique
+    // (user_id, team_id WHERE removed_at IS NULL) from migration 7 is required
+    // for this ON CONFLICT clause to work. Without it, the upsert fails at
+    // runtime with a constraint mismatch error.
+    // -----------------------------------------------------------------------
+    const client = await db.connect();
+    let membershipId: string;
+    let isNewRow: boolean;
+
+    try {
+      await client.query("BEGIN");
+
+      const upsertResult = await client.query<{ id: string; is_new_row: boolean }>(
+        `INSERT INTO team_memberships (user_id, team_id, role)
+         VALUES ($1, $2, 'engineering_manager')
+         ON CONFLICT (user_id, team_id) WHERE removed_at IS NULL
+         DO UPDATE SET role = 'engineering_manager'
+         RETURNING id, (xmax = 0) AS is_new_row`,
+        [engineeringManagerUserId, teamId],
+      );
+
+      const upsertRow = upsertResult.rows[0] as { id: string; is_new_row: boolean };
+      membershipId = upsertRow.id;
+      isNewRow = upsertRow.is_new_row;
+
+      // Audit trail (Decision 9): written in the same transaction as the
+      // team_memberships write. If this INSERT fails, the transaction rolls back
+      // and neither row is committed. A committed transaction produces both.
+      // The security analyst will verify atomicity before Phase 3 begins.
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation,
+            target_user_id, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          session.userId,
+          actorGlobalRole,
+          request.ip,
+          "team.manager_established",
+          engineeringManagerUserId,
+          teamId,
+          JSON.stringify({ is_new_association: isNewRow }),
+        ],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Structured-log counterpart to the DB audit row (for operational alerting)
+    emitAuditEvent(request.log, "team.manager_established", {
+      actorUserId: session.userId,
+      actorGlobalRole,
+      actorIp: request.ip,
+      engineeringManagerUserId,
+      teamId,
+      membershipId,
+      isNewAssociation: isNewRow,
+    });
+
+    const response: EstablishManagerResponse = {
+      teamId,
+      engineeringManagerUserId,
+      engineeringManagerDisplayName: targetDisplayName,
+      teamMembershipId: membershipId!,
+    };
+
+    // 201 Created for new associations, 200 OK for idempotent re-associations.
+    // The response body is identical in both cases (Decision 3) — callers must
+    // not rely on the body to distinguish create-new from update-existing.
+    return reply.code(isNewRow ? 201 : 200).send(response);
   });
 }

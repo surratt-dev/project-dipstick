@@ -6,6 +6,11 @@ import { TeamPage } from "./pages/TeamPage.js";
 import { AuthErrorPage } from "./pages/AuthErrorPage.js";
 import { AuthLoadingPage } from "./pages/AuthLoadingPage.js";
 import { JoinErrorPage } from "./pages/JoinErrorPage.js";
+import { SessionLobbyPage } from "./pages/SessionLobbyPage.js";
+import { EmTeamDashboardPage } from "./pages/EmTeamDashboardPage.js";
+import { EmSessionHistoryPage } from "./pages/EmSessionHistoryPage.js";
+import { EmTrendDataPage } from "./pages/EmTrendDataPage.js";
+import { EmActionItemsPage } from "./pages/EmActionItemsPage.js";
 
 function AuthenticatedLanding() {
   const { session, loading } = useAuth();
@@ -66,14 +71,81 @@ export function App() {
               </ProtectedRoute>
             }
           />
+          {/*
+           * Session lobby — where participants wait before a session begins.
+           * The access model statement (Decision 8, task 7.1) is rendered here
+           * as a static contextual note. Both this surface and the team view
+           * are required — Decision 8 uses "and" not "or".
+           */}
           <Route
             path="/session/:sessionId"
             element={
               <ProtectedRoute>
-                <div style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}>
-                  <h1>Session</h1>
-                  <p>Session view placeholder.</p>
-                </div>
+                <SessionLobbyPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/*
+           * EM read-only views — Phase 3 (establish-manager-team-relationship)
+           * Routes are only useful to users with the engineering_manager global role
+           * AND an active team_memberships row (TEAM-006 association). The backend
+           * enforces both checks (Decision 14 dual authorization). An unauthorized
+           * user who navigates here sees the 403 error state from the page component.
+           */}
+          <Route
+            path="/team/:teamId/em"
+            element={
+              <ProtectedRoute>
+                <EmTeamDashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team/:teamId/em/sessions"
+            element={
+              <ProtectedRoute>
+                <EmSessionHistoryPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team/:teamId/em/sessions/:sessionId"
+            element={
+              <ProtectedRoute>
+                <EmSessionHistoryPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team/:teamId/em/trends"
+            element={
+              <ProtectedRoute>
+                <EmTrendDataPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team/:teamId/em/trends/:topicId"
+            element={
+              <ProtectedRoute>
+                <EmTrendDataPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team/:teamId/em/action-items"
+            element={
+              <ProtectedRoute>
+                <EmActionItemsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/team/:teamId/em/action-items/:actionItemId"
+            element={
+              <ProtectedRoute>
+                <EmActionItemsPage />
               </ProtectedRoute>
             }
           />

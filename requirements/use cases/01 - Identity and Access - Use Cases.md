@@ -238,59 +238,66 @@
 
 # Use Case: Establish a Manager/Team Relationship
 
+*Edit applied per Decision 1 (design.md): Actor corrected from Facilitator to Application Admin. Precondition corrected to state that `users.global_role = 'engineering_manager'` must pre-exist before TEAM-006 is called — TEAM-006 writes only the `team_memberships` row, it does not set `global_role`. Both corrections applied simultaneously per task 1.1.*
+
 ## Summary
-**Actor:** Facilitator
+**Actor:** Application Admin
 
-**Trigger:** A facilitator needs to associate an Engineering Manager with one or more teams they oversee, so the manager can access those teams' session history and trends.
+**Trigger:** An Application Admin needs to associate an Engineering Manager with one or more teams they oversee, so the manager can access those teams' session history and trends.
 
-**Goal:** As a facilitator, I want to link an Engineering Manager to the teams they manage so that the manager has appropriate read-only visibility into those teams' data.
+**Goal:** As an Application Admin, I want to link an Engineering Manager to the teams they manage so that the manager has appropriate read-only visibility into those teams' data.
 
 ---
 
 ## Preconditions
-- The facilitator is authenticated.
-- The Engineering Manager has an account in the application (has signed in at least once).
+- The Application Admin is authenticated.
+- The target Engineering Manager has an account in the application (has signed in at least once).
+- The target Engineering Manager's `users.global_role` is already set to `engineering_manager` — this is a hard precondition that TEAM-006 checks and enforces. TEAM-006 does NOT set `global_role`; that is the responsibility of the IdP role claim mapping in the First Access flow (see UC: First Access). If the precondition is not met, TEAM-006 returns 409.
 - The target team exists in the application.
-- The Engineering Manager has been assigned the Engineering Manager role on at least one team, or this action establishes that association.
 
 ## Main Flow
-1. The facilitator navigates to the team's settings or member management view.
-2. The facilitator selects the option to associate an Engineering Manager with the team.
-3. The facilitator identifies the Engineering Manager by name or identifier within the application.
-4. The application creates the manager/team relationship.
+1. The Application Admin navigates to the team's administration view.
+2. The Application Admin selects the option to associate an Engineering Manager with the team.
+3. The Application Admin identifies the Engineering Manager by name or identifier within the application.
+4. The application verifies the Engineering Manager's `global_role` precondition, then creates the manager/team relationship (`team_memberships` row with `role = 'engineering_manager'`).
 5. The Engineering Manager now has read-only access to that team's session history, trend data, and action items.
-6. The application confirms the relationship has been established.
+6. The application confirms the relationship has been established and records an audit log entry.
 
 ## Alternate Flows
-- **Engineering Manager account does not exist:** The Engineering Manager has never signed in. The facilitator cannot complete the association. The facilitator must ask the Engineering Manager to sign in first, then retry.
-- **Relationship already exists:** The application recognizes the existing relationship and takes no action (idempotent).
-- **Unauthorized actor attempts this action:** The application rejects the request. Only a facilitator can establish this relationship.
+- **Engineering Manager account does not exist:** The Engineering Manager has never signed in. The Application Admin cannot complete the association. The Application Admin must ask the Engineering Manager to sign in first, then retry.
+- **Engineering Manager lacks `global_role = 'engineering_manager'`:** TEAM-006 returns 409 Conflict with a machine-readable error code identifying the `global_role` precondition failure. The Application Admin must ensure the Engineering Manager's IdP role claim is correctly configured and the EM has re-authenticated before retrying.
+- **Relationship already exists:** The application recognizes the existing relationship (idempotent behavior). Returns 200 OK with the same response body as a new creation.
+- **Unauthorized actor attempts this action:** The application rejects the request with 403. Facilitators, Engineers, and Engineering Managers who view the team administration page see a plain-language explanation: "Associating an Engineering Manager requires Application Admin access. Contact your admin to complete this before the session."
 
 ## Postconditions
-- **Success:** The Engineering Manager has read-only access to the team's session history, trends, and action items.
+- **Success:** The Engineering Manager has read-only access to the team's session history, trends, and action items. An audit log entry records the association (actor, target, team, timestamp).
 - **Failure:** No relationship is created. The Engineering Manager's access is unchanged.
 
 ---
 
 ## Acceptance Criteria
-- [ ] A facilitator can associate an Engineering Manager with a team they manage.
+- [ ] An Application Admin can associate an Engineering Manager with a team via `POST /api/v1/teams/:teamId/managers` (TEAM-006).
 - [ ] After the relationship is established, the Engineering Manager can view that team's session history, trends, and action items.
 - [ ] The Engineering Manager cannot be given write access to any team data through this relationship.
 - [ ] An Engineering Manager can be associated with more than one team.
-- [ ] The association can only be made if the Engineering Manager has an existing application account.
-- [ ] Engineers and Engineering Managers cannot establish this relationship.
+- [ ] The association can only be made if the Engineering Manager has an existing application account with `global_role = 'engineering_manager'`.
+- [ ] Calling TEAM-006 for a user who lacks `global_role = 'engineering_manager'` returns 409 Conflict with a specific error code.
+- [ ] Facilitators, Engineers, and Engineering Managers cannot establish this relationship (403 returned).
+- [ ] Every successful TEAM-006 call produces an audit log entry in `audit_log` within the same database transaction as the `team_memberships` write.
 
 ## Out of Scope
 - The Engineering Manager participating in sessions — that is explicitly not permitted regardless of team association.
 - Notifications to the Engineering Manager that they have been given access.
+- Removal of an EM/team relationship — that is a separate use case (follow-on change; see design.md Q4).
 
 ## Dependencies
-- UC: First Access — the Engineering Manager must have an account before they can be associated with a team.
-- UC: Assign a Role to a Team Member — the Engineering Manager role must be assigned for this relationship to be meaningful.
+- UC: First Access — the Engineering Manager must have an account and `global_role = 'engineering_manager'` set via IdP claim mapping before they can be associated with a team.
+- UC: Assign a Role to a Team Member — distinct from this use case; TEAM-005 changes the `team_memberships.role` of an existing member; TEAM-006 establishes the relationship for a user who was not previously a team member.
 
 ## Notes
 - An Engineering Manager may manage multiple teams. The application must support one-to-many manager/team relationships.
-- The reverse — removing a manager/team relationship — is not described in this use case and should be addressed separately.
+- The reverse — removing a manager/team relationship — is not described in this use case and should be addressed separately. An interim administrative procedure for removal exists in design.md Q4.
+- TEAM-006 is distinct from TEAM-005. TEAM-005 changes the `team_memberships.role` of an existing member and does not check `global_role`. TEAM-006 establishes the relationship for a user who was not previously a team member and requires `global_role = 'engineering_manager'` as a hard precondition.
 
 ---
 
