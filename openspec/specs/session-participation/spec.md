@@ -20,6 +20,12 @@ Engineering Managers MUST NOT be recorded as session participants. This check MU
 
 **Mid-session role change — pre-change locked-in votes:** A role change does not retroactively invalidate votes that have already been locked in before the change took effect. Locked-in votes are preserved and counted at reveal regardless of subsequent role changes.
 
+**Extended application of the dual-check pattern:** The same dual-check pattern (querying BOTH `users.global_role` AND `team_memberships.role` directly from the database on every request, not from a cached value) SHALL be used by the team-content-access authorization helper for all team content access decisions. The pattern is not specific to session join checks — it is the correct authorization pattern for any decision that depends on a user's role relative to a team. Any authorization check that queries only one of the two fields creates a bypass path:
+- Checking only `users.global_role` misses users whose team role differs from their global role (e.g., a user with `global_role = 'engineer'` who has been assigned `team_memberships.role = 'engineering_manager'` by an admin).
+- Checking only `team_memberships.role` misses the EM identity check that the TEAM-006 path requires.
+
+Both fields must be read from the database (not from cache) on every authorization check.
+
 #### Scenario: Engineering Manager attempts to join a session as a participant — global_role check
 - **WHEN** a user with `users.global_role = 'engineering_manager'` calls the session participation endpoint
 - **THEN** the endpoint rejects the request
@@ -51,6 +57,12 @@ Engineering Managers MUST NOT be recorded as session participants. This check MU
 - **WHEN** a user with `users.global_role = 'engineer'` and `team_memberships.role = 'participant'` for the relevant team calls the session participation endpoint
 - **THEN** the endpoint permits the request
 - **AND** the user is recorded as a session participant
+
+#### Scenario: Dual-check pattern is used by the team-content-access authorization helper
+- **WHEN** the team-content-access authorization helper evaluates a request from a user to access a team's content
+- **THEN** the helper queries both `users.global_role` AND `team_memberships.role` directly from the database
+- **AND** the helper does not resolve either field from a cached value or client-supplied claim
+- **AND** a user with `users.global_role = 'engineer'` and `team_memberships.role = 'engineering_manager'` receives the EM content access profile (aggregate vote distributions only), not the engineer content access profile
 
 ---
 

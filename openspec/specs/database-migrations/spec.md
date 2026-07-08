@@ -66,6 +66,38 @@ Each migration file SHALL include a down migration that reverses the up migratio
 
 ---
 
+### Requirement: Access control schema migration
+
+The access control schema migration (introduced by the `enforce-access-control-on-team-content` change) SHALL add the `draft` value to the `session_status` PostgreSQL enum, add the `facilitator_access_expires_at TIMESTAMPTZ NULL` column to the `sessions` table, and add the supporting indexes for the authorization helper queries.
+
+**`draft` session status:** The `session_status` enum SHALL include `'draft'` as a valid value. `draft` indicates a session that a facilitator has created for preparation purposes but has not yet opened to participants. The authorization helper uses `s.status = 'draft' AND s.created_at + INTERVAL '24 hours' > NOW()` to determine whether a draft session still grants facilitator access. The `draft` value must be added before the `lobby` value in any ordering-sensitive migration.
+
+**`facilitator_access_expires_at` column:** The `sessions` table SHALL include `facilitator_access_expires_at TIMESTAMPTZ NULL`. This column is set server-side when a session transitions to `complete`: `facilitator_access_expires_at = NOW() + INTERVAL '30 minutes'`. It is NULL for sessions that have never reached `complete` status. It MUST NOT be writable by any client-facing endpoint.
+
+**Indexes for authorization helper:**
+- `CREATE INDEX ON sessions(facilitator_id, team_id, status)` — supports the Path 3 facilitator authorization query.
+- `CREATE INDEX ON team_memberships(user_id, team_id)` — supports Path 1 and Path 2 authorization queries (if not already present).
+
+#### Scenario: draft session_status value exists after migration
+
+- **WHEN** the access control schema migration is applied
+- **THEN** the `session_status` enum includes the value `'draft'`
+- **AND** a `sessions` row with `status = 'draft'` can be inserted without a constraint violation
+
+#### Scenario: facilitator_access_expires_at column exists on sessions after migration
+
+- **WHEN** the access control schema migration is applied
+- **THEN** the `sessions` table has a `facilitator_access_expires_at` column of type `TIMESTAMPTZ` that is nullable
+- **AND** existing session rows have `NULL` in that column
+
+#### Scenario: Authorization helper indexes exist after migration
+
+- **WHEN** the access control schema migration is applied
+- **THEN** an index on `sessions(facilitator_id, team_id, status)` exists
+- **AND** an index on `team_memberships(user_id, team_id)` exists
+
+---
+
 ### Requirement: Join links table migration
 Migration `5_create_join_links.sql` SHALL create the `join_links` table with columns: `id` (UUID primary key, default `gen_random_uuid()`), `team_id` (UUID, NOT NULL, FK to `teams`), `token` (VARCHAR(64), NOT NULL, UNIQUE), `created_by` (UUID, NOT NULL, FK to `users`), `created_at` (TIMESTAMPTZ, NOT NULL, default `NOW()`), `expires_at` (TIMESTAMPTZ, NOT NULL), and `revoked_at` (TIMESTAMPTZ, nullable). An index `idx_join_links_token` SHALL exist on the `token` column.
 

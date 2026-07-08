@@ -151,6 +151,15 @@ function mockQ2FacilitatorSession(sessionId = "sess-1", sessionStatus = "active"
 }
 
 function mockQ2NoSession() {
+  // Q2: no facilitator session for the requested team
+  mockDbQuery.mockResolvedValueOnce({ rows: [] });
+  // Q3: cross-team check (Task 10.4 / Error State 4).
+  // When Q2 returns empty rows, the null grant path calls denyNullGrant which
+  // checks whether the user has an active facilitator session for a DIFFERENT team.
+  // This mock returns empty (no cross-team session), resulting in the generic
+  // "You do not have access" message rather than the cross-team "not in your
+  // current session" message. Tests that need to verify the cross-team message
+  // specifically should mock the DB to return rows here instead.
   mockDbQuery.mockResolvedValueOnce({ rows: [] });
 }
 
@@ -215,14 +224,20 @@ describe("Task 11.1: All role paths against GET /api/v1/teams/:id/sessions", () 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
 
+    // Blocking Issue 1 fix: session history returns { sessions: [...] } where
+    // each entry is a ParticipantContentView with the correct sessionId.
     const body = res.json() as {
-      sessionId: string;
-      sessionStatus: string;
-      topics: Array<{ topicId: string; ownVoteValue: number | null }>;
+      sessions: Array<{
+        sessionId: string;
+        sessionStatus: string;
+        topics: Array<{ topicId: string; ownVoteValue: number | null }>;
+      }>;
     };
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0].sessionId).toBe("sess-1");
     // Participant view includes ownVoteValue (identifies caller's own vote)
-    expect(body.topics).toHaveLength(1);
-    expect(body.topics[0].ownVoteValue).toBe(3);
+    expect(body.sessions[0].topics).toHaveLength(1);
+    expect(body.sessions[0].topics[0].ownVoteValue).toBe(3);
   });
 
   it("EM: 200 with aggregate-only shape (no ownVoteValue, no voter attribution)", async () => {
@@ -235,16 +250,18 @@ describe("Task 11.1: All role paths against GET /api/v1/teams/:id/sessions", () 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
 
+    // Blocking Issue 1 fix: EM session history returns { sessions: [EMContentView] }
     const body = res.json() as {
-      sessionId: string;
-      topics: Array<Record<string, unknown>>;
+      sessions: Array<{ sessionId: string; topics: Array<Record<string, unknown>> }>;
     };
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0].sessionId).toBe("sess-1");
     // EM view must NOT include ownVoteValue
-    expect(body.topics).toHaveLength(1);
-    expect(body.topics[0]).not.toHaveProperty("ownVoteValue");
+    expect(body.sessions[0].topics).toHaveLength(1);
+    expect(body.sessions[0].topics[0]).not.toHaveProperty("ownVoteValue");
     // EM view MUST include aggregate fields
-    expect(body.topics[0]).toHaveProperty("voteDistribution");
-    expect(body.topics[0]).toHaveProperty("average");
+    expect(body.sessions[0].topics[0]).toHaveProperty("voteDistribution");
+    expect(body.sessions[0].topics[0]).toHaveProperty("average");
   });
 
   it("Facilitator with active session: 200 with full session data", async () => {
@@ -361,14 +378,15 @@ describe("Task 11.2: Consistent 403/404 behavior", () => {
     // The authorization check fires BEFORE any team lookup, so the response is
     // identical regardless of whether the team actually exists.
     mockQ1NoMembership("engineer");
-    mockQ2NoSession();
+    mockQ2NoSession(); // includes Q3 cross-team check mock (empty — no other sessions)
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/nonexistent-team-xyz/sessions" });
 
     expect(res.statusCode).toBe(403);
-    // No resource queries made — only the 2 auth queries
-    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+    // 3 authorization queries: Q1 (user+membership), Q2 (facilitator session),
+    // Q3 (cross-team check for Error State 4). No resource queries made.
+    expect(mockDbQuery).toHaveBeenCalledTimes(3);
   });
 
   it("unauthorized caller: existing and nonexistent team responses are identical", async () => {
@@ -453,18 +471,22 @@ describe("Task 11.4: Facilitator scoping — Team B facilitator cannot access Te
   });
 
   it("facilitator access is scoped by SQL: WHERE team_id = $2 ensures cross-team isolation", async () => {
-    // This test verifies that evaluateTeamAccess makes exactly 2 DB calls for
-    // the denied case (Q1 user+membership, Q2 facilitator session) and NOT more.
-    // If cross-team access occurred, there would be additional resource queries.
+    // This test verifies that evaluateTeamAccess makes the correct DB calls for
+    // the denied case and does NOT make resource queries for the requested team.
+    // The cross-team check (Q3) runs on the denial path — it checks for other
+    // teams' sessions to provide the correct Error State 4 message, but it does
+    // NOT query Team A's session content.
     mockQ1NoMembership("facilitator");
-    mockQ2NoSession(); // SQL's WHERE team_id = $2 correctly scopes the check
+    mockQ2NoSession(); // includes Q3 cross-team check mock (empty — no other sessions)
 
     const app = await buildApp("facilitator-actor");
     await app.inject({ method: "GET", url: "/api/v1/teams/team-A/sessions" });
 
-    // Exactly 2 DB calls: Q1 (user+membership) + Q2 (facilitator session with team_id scoping)
-    // No resource queries reached because access was denied.
-    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+    // 3 authorization queries:
+    //   Q1 (user+membership), Q2 (facilitator session with team_id scoping),
+    //   Q3 (cross-team check — Error State 4, Task 10.4).
+    // No resource queries (Team A session content) reached because access was denied.
+    expect(mockDbQuery).toHaveBeenCalledTimes(3);
     // Q2 must include team_id parameter ($2) — verify the call included teamId in params
     const q2Call = mockDbQuery.mock.calls[1];
     const q2Params = q2Call[1] as unknown[];
@@ -487,17 +509,21 @@ describe("Task 11.5: EM access boundary — aggregate only, no individual vote a
 
     expect(res.statusCode).toBe(200);
 
+    // Blocking Issue 1 fix: response is { sessions: [EMContentView] }
     const body = res.json() as {
-      topics: Array<{
-        voteDistribution: Array<{ voteValue: number; count: number }>;
-        average: number | null;
+      sessions: Array<{
+        topics: Array<{
+          voteDistribution: Array<{ voteValue: number; count: number }>;
+          average: number | null;
+        }>;
       }>;
     };
-    expect(body.topics).toHaveLength(1);
-    expect(body.topics[0].voteDistribution).toBeDefined();
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0].topics).toHaveLength(1);
+    expect(body.sessions[0].topics[0].voteDistribution).toBeDefined();
     // vote_value: 3 in the mock row → appears in voteDistribution
-    expect(body.topics[0].voteDistribution[0].voteValue).toBe(3);
-    expect(body.topics[0].average).toBe(3);
+    expect(body.sessions[0].topics[0].voteDistribution[0].voteValue).toBe(3);
+    expect(body.sessions[0].topics[0].average).toBe(3);
   });
 
   it("EM response does NOT include ownVoteValue (no individual attribution)", async () => {
@@ -508,11 +534,12 @@ describe("Task 11.5: EM access boundary — aggregate only, no individual vote a
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { topics: Array<Record<string, unknown>> };
+    // Blocking Issue 1 fix: response is { sessions: [EMContentView] }
+    const body = res.json() as { sessions: Array<{ topics: Array<Record<string, unknown>> }> };
     // EM response topics must NOT have ownVoteValue
-    expect(body.topics[0]).not.toHaveProperty("ownVoteValue");
+    expect(body.sessions[0].topics[0]).not.toHaveProperty("ownVoteValue");
     // EM response topics must NOT have individual voter attribution
-    expect(body.topics[0]).not.toHaveProperty("votes");
+    expect(body.sessions[0].topics[0]).not.toHaveProperty("votes");
   });
 
   it("EM response does NOT include sessionStatus (participant shape vs EM shape differ)", async () => {
@@ -526,8 +553,11 @@ describe("Task 11.5: EM access boundary — aggregate only, no individual vote a
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as Record<string, unknown>;
-    // EMContentView does not include sessionStatus (it's session-history aggregate)
+    // Blocking Issue 1 fix: response is { sessions: [] } — top-level body has no
+    // sessionStatus. Each EMContentView entry also lacks sessionStatus by design.
     expect(body).not.toHaveProperty("sessionStatus");
+    // sessions array exists at the top level
+    expect(body).toHaveProperty("sessions");
   });
 
   it("Participant receives ownVoteValue (verifying the boundary with EM)", async () => {
@@ -556,9 +586,12 @@ describe("Task 11.5: EM access boundary — aggregate only, no individual vote a
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { topics: Array<{ ownVoteValue: number | null }> };
+    // Blocking Issue 1 fix: response is { sessions: [ParticipantContentView] }
+    const body = res.json() as {
+      sessions: Array<{ topics: Array<{ ownVoteValue: number | null }> }>;
+    };
     // Participant receives their own vote value
-    expect(body.topics[0].ownVoteValue).toBe(4);
+    expect(body.sessions[0].topics[0].ownVoteValue).toBe(4);
   });
 });
 
@@ -599,9 +632,10 @@ describe("Task 11.6: Cache prohibition — role change takes effect on next requ
 
     const res1 = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
     expect(res1.statusCode).toBe(200);
-    const body1 = res1.json() as { topics: Array<Record<string, unknown>> };
+    // Blocking Issue 1 fix: participant shape is now { sessions: [ParticipantContentView] }
+    const body1 = res1.json() as { sessions: Array<{ topics: Array<Record<string, unknown>> }> };
     // Participant shape includes ownVoteValue
-    expect(body1.topics[0]).toHaveProperty("ownVoteValue");
+    expect(body1.sessions[0].topics[0]).toHaveProperty("ownVoteValue");
 
     // --- Role change happens in the DB (team_memberships.role updated to EM) ---
     // On the next request, evaluateTeamAccess re-reads the DB and finds the new role.
@@ -614,10 +648,11 @@ describe("Task 11.6: Cache prohibition — role change takes effect on next requ
 
     const res2 = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
     expect(res2.statusCode).toBe(200);
-    const body2 = res2.json() as { topics: Array<Record<string, unknown>> };
+    // Blocking Issue 1 fix: EM shape is now { sessions: [EMContentView] }
+    const body2 = res2.json() as { sessions: Array<{ topics: Array<Record<string, unknown>> }> };
     // EM shape: no ownVoteValue — the role change is immediately reflected
-    expect(body2.topics[0]).not.toHaveProperty("ownVoteValue");
-    expect(body2.topics[0]).toHaveProperty("voteDistribution");
+    expect(body2.sessions[0].topics[0]).not.toHaveProperty("ownVoteValue");
+    expect(body2.sessions[0].topics[0]).toHaveProperty("voteDistribution");
   });
 
   it("each request makes a fresh DB authorization call (evaluateTeamAccess is never cached)", async () => {
@@ -670,12 +705,13 @@ describe("Task 11.7: Dual-check pattern — membership role governs content prof
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { topics: Array<Record<string, unknown>> };
+    // Blocking Issue 1 fix: response is { sessions: [EMContentView] }
+    const body = res.json() as { sessions: Array<{ topics: Array<Record<string, unknown>> }> };
     // MUST NOT receive individual attribution (EM profile, not participant profile)
-    expect(body.topics[0]).not.toHaveProperty("ownVoteValue");
+    expect(body.sessions[0].topics[0]).not.toHaveProperty("ownVoteValue");
     // MUST receive aggregate distribution (EM profile confirmed)
-    expect(body.topics[0]).toHaveProperty("voteDistribution");
-    expect(body.topics[0]).toHaveProperty("average");
+    expect(body.sessions[0].topics[0]).toHaveProperty("voteDistribution");
+    expect(body.sessions[0].topics[0]).toHaveProperty("average");
   });
 
   it("user with global_role='engineering_manager' AND membership_role='participant' receives participant profile", async () => {
@@ -706,9 +742,12 @@ describe("Task 11.7: Dual-check pattern — membership role governs content prof
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { topics: Array<{ ownVoteValue: number | null }> };
+    // Blocking Issue 1 fix: response is { sessions: [ParticipantContentView] }
+    const body = res.json() as {
+      sessions: Array<{ topics: Array<{ ownVoteValue: number | null }> }>;
+    };
     // Participant profile: ownVoteValue present
-    expect(body.topics[0].ownVoteValue).toBe(5);
+    expect(body.sessions[0].topics[0].ownVoteValue).toBe(5);
   });
 });
 

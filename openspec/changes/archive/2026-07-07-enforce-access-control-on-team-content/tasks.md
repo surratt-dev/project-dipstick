@@ -1,6 +1,6 @@
 ## Prerequisites
 
-- [ ] 0.1 Confirm use case amendment for 30-minute grace window is merged into `requirements/use cases/01 - Identity and Access - Use Cases.md`. Owner: Marcus Delgado. Blocks: Group 1.
+- [x] 0.1 Confirm use case amendment for 30-minute grace window is merged into `requirements/use cases/01 - Identity and Access - Use Cases.md`. Owner: Marcus Delgado. Blocks: Group 1. *(Completed during spec sync stage — amendment present in the use cases file.)*
 
 ## 1. Schema Migration
 
@@ -127,12 +127,12 @@
 
 ## 10. Live Session Facilitator Error States
 
-- [ ] 10.1 Implement Error State 1 (reveal failure): if the authorization check or session state check fails when the facilitator triggers the reveal, return a structured error distinguishing recoverable (session still active, retry) from non-recoverable (session is no longer in active state)
-- [ ] 10.2 Implement Error State 2 (historical data unavailable during active session): if a facilitator's trend or history endpoint call fails during an active session, return an empty state response with "Historical data is temporarily unavailable. Your session is still active." — not a 403 response in this context
-- [ ] 10.3 Implement Error State 3 (session status transition during live facilitation): when session status changes unexpectedly, push a non-blocking banner state to the facilitator's client (not a modal); include current session state and a clear action ("Resume or review")
-- [ ] 10.4 Implement Error State 4 (cross-team denial): when a facilitator in a session for Team B requests Team A's historical data, the response message reads "This data is not available in your current session" — not "You do not have access to Team A's data"
-- [ ] 10.5 Verify that Error State 4 response does not include Team A's team ID (numeric or UUID), team name, or any other identifier that confirms Team A's existence
-- [ ] 10.6 Write facilitator UX tests for each named error state: correct message is displayed, session view is not blocked, recovery path is clear
+- [x] 10.1 Implement Error State 1 (reveal failure): if the authorization check or session state check fails when the facilitator triggers the reveal, return a structured error distinguishing recoverable (session still active, retry) from non-recoverable (session is no longer in active state)
+- [x] 10.2 Implement Error State 2 (historical data unavailable during active session): if a facilitator's trend or history endpoint call fails during an active session, return an empty state response with "Historical data is temporarily unavailable. Your session is still active." — not a 403 response in this context
+- [x] 10.3 Implement Error State 3 (session status transition during live facilitation): when session status changes unexpectedly, push a non-blocking banner state to the facilitator's client (not a modal); include current session state and a clear action ("Resume or review")
+- [x] 10.4 Implement Error State 4 (cross-team denial): when a facilitator in a session for Team B requests Team A's historical data, the response message reads "This data is not available in your current session" — not "You do not have access to Team A's data"
+- [x] 10.5 Verify that Error State 4 response does not include Team A's team ID (numeric or UUID), team name, or any other identifier that confirms Team A's existence
+- [x] 10.6 Write facilitator UX tests for each named error state: correct message is displayed, session view is not blocked, recovery path is clear
 
 ## 11. End-to-End Authorization Tests
 

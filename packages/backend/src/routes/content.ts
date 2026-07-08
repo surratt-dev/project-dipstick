@@ -12,7 +12,11 @@ import {
 } from "../content/team-content-serializers.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import type { SessionData } from "../auth/session-store.js";
-import type { TeamAccessGrant } from "@dipstick/shared";
+import type {
+  TeamAccessGrant,
+  FacilitatorHistoricalDataUnavailable,
+  FacilitatorTrendDataUnavailable,
+} from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // Team content routes — enforce-access-control-on-team-content
@@ -121,6 +125,133 @@ function noStore(reply: FastifyReply): FastifyReply {
   return reply;
 }
 
+// ---------------------------------------------------------------------------
+// Error State 4 — Cross-team denial (Task 10.4 / Task 10.5)
+//
+// When a facilitator in an active session for Team B requests Team A's
+// historical data, the response message MUST NOT confirm Team A's existence.
+// The message "This data is not available in your current session" communicates
+// a session-scope constraint without revealing anything about Team A.
+//
+// Task 10.5: This response body MUST NOT include Team A's team ID, team name,
+// or any other identifier that confirms Team A's existence.
+// ---------------------------------------------------------------------------
+
+/**
+ * Query whether the user has an active facilitator session for any team OTHER
+ * than the requested team. Used to distinguish cross-team denial (Error State 4)
+ * from a plain forbidden response.
+ *
+ * Only live session statuses are checked (draft preparation sessions are not
+ * "in session" in the UX sense the spec describes).
+ */
+async function checkIsFacilitatorInDifferentSession(
+  userId: string,
+  requestedTeamId: string,
+): Promise<boolean> {
+  const result = await db.query(
+    `SELECT 1 FROM sessions
+     WHERE facilitator_id = $1
+       AND team_id <> $2
+       AND status IN ('lobby', 'pre_session', 'active', 'wrap_up')
+     LIMIT 1`,
+    [userId, requestedTeamId],
+  );
+  return result.rows.length > 0;
+}
+
+/**
+ * 403 response for cross-team facilitator access (Error State 4).
+ *
+ * Spec message (exact): "This data is not available in your current session"
+ * — NOT "You do not have access to Team A's data."
+ *
+ * No team IDs, team names, or existence-confirming identifiers in the body.
+ */
+function denyCrossTeamFacilitator(reply: FastifyReply): FastifyReply {
+  return reply.header("Cache-Control", "no-store").code(403).send({
+    error: {
+      category: "forbidden" as const,
+      // Task 10.4 / 10.5: Session-context message — confirms nothing about
+      // the requested team's identity or existence.
+      message: "This data is not available in your current session",
+      correlationId: crypto.randomUUID(),
+    },
+  });
+}
+
+/**
+ * Unified null-grant denial handler.
+ *
+ * When evaluateTeamAccess returns null, check whether the user is a facilitator
+ * in a different team's session (Error State 4). If so, return the cross-team
+ * denial message. Otherwise return the generic forbidden response.
+ *
+ * The timing floor is applied inside this function so every null-grant path
+ * has a single, consistent timing floor call site.
+ */
+async function denyNullGrant(
+  userId: string,
+  teamId: string,
+  reply: FastifyReply,
+  startTime: number,
+): Promise<FastifyReply> {
+  const isCrossTeamFacilitator = await checkIsFacilitatorInDifferentSession(userId, teamId);
+  await applyTimingFloor(startTime);
+  if (isCrossTeamFacilitator) {
+    return denyCrossTeamFacilitator(reply);
+  }
+  return denyAccess(reply);
+}
+
+// ---------------------------------------------------------------------------
+// Error State 2 — Historical data unavailable during active session (Task 10.2)
+//
+// When a facilitator's trend or session-history data query fails DURING an
+// active session, the endpoint returns an empty-state 200 response instead of
+// propagating the error as a 500. This communicates a transient data issue,
+// NOT an access denial. The facilitator's session is unaffected.
+//
+// Spec message (exact): "Historical data is temporarily unavailable. Your
+// session is still active."
+//
+// MUST NOT display: A generic 403 or "you do not have access" message in this
+// context — that phrasing may cause the facilitator to end the session.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the facilitator's session grant covers a live active session.
+ * Used to gate Error State 2: only return the "temporarily unavailable" message
+ * when the facilitator is in a session that is actively running.
+ */
+function isFacilitatorInActiveSession(grant: Extract<TeamAccessGrant, { path: "facilitator" }>): boolean {
+  return (["lobby", "pre_session", "active", "wrap_up"] as string[]).includes(grant.sessionStatus);
+}
+
+/**
+ * Empty-state response for Error State 2 — sessions history variant.
+ */
+function buildHistoricalSessionsUnavailable(): FacilitatorHistoricalDataUnavailable {
+  return {
+    errorState: "historical_data_unavailable",
+    message: "Historical data is temporarily unavailable. Your session is still active.",
+    sessions: [],
+    sessionActive: true,
+  };
+}
+
+/**
+ * Empty-state response for Error State 2 — trend data variant.
+ */
+function buildTrendDataUnavailable(): FacilitatorTrendDataUnavailable {
+  return {
+    errorState: "historical_data_unavailable",
+    message: "Historical data is temporarily unavailable. Your session is still active.",
+    trends: [],
+    sessionActive: true,
+  };
+}
+
 export async function contentRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   // GET /api/v1/teams/:teamId/sessions  (Task 5.1)
@@ -131,7 +262,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
   //   member/engineering_manager → EMContentView (aggregate only)
   //   facilitator → FacilitatorContentView (full data, reveal-gated)
   //   admin → 403 (Decision 2 Option B)
-  //   null → 403
+  //   null → 403 (or cross-team denial if facilitator in different session)
   // -------------------------------------------------------------------------
   app.get<{
     Params: { teamId: string };
@@ -146,8 +277,9 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const grant = await evaluateTeamAccess(session.userId, teamId);
 
     if (grant === null) {
-      await applyTimingFloor(startTime);
-      return denyAccess(reply);
+      // Error State 4: detect cross-team facilitator and return session-context message.
+      // denyNullGrant applies the timing floor internally.
+      return denyNullGrant(session.userId, teamId, reply, startTime);
     }
 
     // Task 5.10: admin grant is denied for session content endpoints
@@ -158,27 +290,41 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
 
     // Decision 7: Only now do we query the resource. An unauthorized caller
     // never reaches this point, so they cannot determine whether the team exists.
-    const sessionsResult = await db.query<{
-      session_id: string;
-      session_status: string;
-      topic_id: string | null;
-      topic_name: string | null;
-      reveal_status: string | null;
-      flagged_for_discussion: boolean | null;
-      voter_id: string | null;
-      voter_display_name: string | null;
-      vote_value: number | null;
-      vote_count: number;
-      contains_outlier: boolean;
-    }>(
-      buildSessionHistoryQuery(grant),
-      buildSessionHistoryParams(grant, teamId, session.userId),
-    );
+    //
+    // Error State 2 (Task 10.2): if the data query fails while the facilitator
+    // is in an active session, return an empty-state 200 instead of a 500.
+    try {
+      const sessionsResult = await db.query<{
+        session_id: string;
+        session_status: string;
+        topic_id: string | null;
+        topic_name: string | null;
+        reveal_status: string | null;
+        flagged_for_discussion: boolean | null;
+        voter_id: string | null;
+        voter_display_name: string | null;
+        vote_value: number | null;
+        vote_count: number;
+        contains_outlier: boolean;
+      }>(
+        buildSessionHistoryQuery(grant),
+        buildSessionHistoryParams(grant, teamId, session.userId),
+      );
 
-    const responseBody = serializeContentResponse(grant, session.userId, sessionsResult.rows);
-
-    await applyTimingFloor(startTime);
-    return noStore(reply).send(responseBody);
+      const responseBody = serializeContentResponse(grant, session.userId, sessionsResult.rows);
+      await applyTimingFloor(startTime);
+      return noStore(reply).send(responseBody);
+    } catch (_err) {
+      // Apply timing floor before responding from the error path.
+      await applyTimingFloor(startTime);
+      if (grant.path === "facilitator" && isFacilitatorInActiveSession(grant)) {
+        // Error State 2: transient data failure during active session.
+        // Return empty state — NOT a 403 or generic error.
+        return noStore(reply).code(200).send(buildHistoricalSessionsUnavailable());
+      }
+      // Non-facilitator data failure: propagate as 500.
+      throw _err;
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -194,8 +340,8 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const grant = await evaluateTeamAccess(session.userId, teamId);
 
     if (grant === null) {
-      await applyTimingFloor(startTime);
-      return denyAccess(reply);
+      // Error State 4: cross-team facilitator detection + timing floor
+      return denyNullGrant(session.userId, teamId, reply, startTime);
     }
 
     if (grant.path === "admin") {
@@ -203,37 +349,49 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       return denyAdminContentAccess(request, reply, teamId, "GET /api/v1/teams/:teamId/trends");
     }
 
-    // Trend data: aggregate across complete sessions by topic
-    const trendResult = await db.query<{
-      topic_id: string;
-      topic_name: string;
-      session_id: string;
-      session_date: string;
-      session_number: number;
-      avg_vote: string | null;
-      participant_count: string;
-    }>(
-      `SELECT
-         st.topic_id,
-         st.topic_name,
-         s.id AS session_id,
-         s.completed_at AS session_date,
-         s.session_number,
-         AVG(v.vote_value)::text AS avg_vote,
-         COUNT(DISTINCT sp.user_id)::text AS participant_count
-       FROM session_topics st
-       JOIN sessions s ON st.session_id = s.id
-       LEFT JOIN votes v ON v.session_topic_id = st.id
-       LEFT JOIN session_participants sp ON sp.session_id = s.id
-       WHERE s.team_id = $1
-         AND s.status = 'complete'
-       GROUP BY st.topic_id, st.topic_name, s.id, s.completed_at, s.session_number
-       ORDER BY st.topic_name, s.completed_at`,
-      [teamId],
-    );
+    // Trend data: aggregate across complete sessions by topic.
+    // Error State 2 (Task 10.2): if the data query fails while the facilitator
+    // is in an active session, return an empty-state 200 instead of a 500.
+    try {
+      const trendResult = await db.query<{
+        topic_id: string;
+        topic_name: string;
+        session_id: string;
+        session_date: string;
+        session_number: number;
+        avg_vote: string | null;
+        participant_count: string;
+      }>(
+        `SELECT
+           st.topic_id,
+           st.topic_name,
+           s.id AS session_id,
+           s.completed_at AS session_date,
+           s.session_number,
+           AVG(v.vote_value)::text AS avg_vote,
+           COUNT(DISTINCT sp.user_id)::text AS participant_count
+         FROM session_topics st
+         JOIN sessions s ON st.session_id = s.id
+         LEFT JOIN votes v ON v.session_topic_id = st.id
+         LEFT JOIN session_participants sp ON sp.session_id = s.id
+         WHERE s.team_id = $1
+           AND s.status = 'complete'
+         GROUP BY st.topic_id, st.topic_name, s.id, s.completed_at, s.session_number
+         ORDER BY st.topic_name, s.completed_at`,
+        [teamId],
+      );
 
-    await applyTimingFloor(startTime);
-    return noStore(reply).send({ teamId, trends: trendResult.rows });
+      await applyTimingFloor(startTime);
+      return noStore(reply).send({ teamId, trends: trendResult.rows });
+    } catch (_err) {
+      await applyTimingFloor(startTime);
+      if (grant.path === "facilitator" && isFacilitatorInActiveSession(grant)) {
+        // Error State 2: transient data failure for facilitator in active session.
+        // Return empty trend state — NOT a 403 or generic error.
+        return noStore(reply).code(200).send(buildTrendDataUnavailable());
+      }
+      throw _err;
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -249,8 +407,8 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const grant = await evaluateTeamAccess(session.userId, teamId);
 
     if (grant === null) {
-      await applyTimingFloor(startTime);
-      return denyAccess(reply);
+      // Error State 4: cross-team facilitator detection + timing floor
+      return denyNullGrant(session.userId, teamId, reply, startTime);
     }
 
     if (grant.path === "admin") {
@@ -297,8 +455,8 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const grant = await evaluateTeamAccess(session.userId, teamId);
 
     if (grant === null) {
-      await applyTimingFloor(startTime);
-      return denyAccess(reply);
+      // Error State 4: cross-team facilitator detection + timing floor
+      return denyNullGrant(session.userId, teamId, reply, startTime);
     }
 
     if (grant.path === "admin") {
@@ -338,8 +496,8 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const grant = await evaluateTeamAccess(session.userId, teamId);
 
     if (grant === null) {
-      await applyTimingFloor(startTime);
-      return denyAccess(reply);
+      // Error State 4: cross-team facilitator detection + timing floor
+      return denyNullGrant(session.userId, teamId, reply, startTime);
     }
 
     if (grant.path === "admin") {
@@ -353,9 +511,14 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Task 7.3: Authorized caller to nonexistent session → 404
+    //
+    // Decision 7 / Blocking Issue 2: filter by BOTH id AND team_id so that a
+    // session belonging to a different team returns the same 404 as a session
+    // that does not exist anywhere. Without team_id = $2, an authorized Team A
+    // member could probe whether a Team B UUID exists by observing 403 vs 404.
     const sessionResult = await db.query<{ id: string; team_id: string; status: string }>(
-      `SELECT id, team_id, status FROM sessions WHERE id = $1`,
-      [sessionId],
+      `SELECT id, team_id, status FROM sessions WHERE id = $1 AND team_id = $2`,
+      [sessionId, teamId],
     );
 
     if (sessionResult.rows.length === 0) {
@@ -370,11 +533,6 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const sessionRow = sessionResult.rows[0] as { id: string; team_id: string; status: string };
-
-    if (sessionRow.team_id !== teamId) {
-      await applyTimingFloor(startTime);
-      return denyAccess(reply);
-    }
 
     // Return session state
     await applyTimingFloor(startTime);
@@ -393,7 +551,7 @@ function buildSessionHistoryQuery(grant: TeamAccessGrant): string {
     // EM query: NEVER SELECT voter_id (enforced at the query layer per Decision 9)
     return `
       SELECT
-        st.id AS session_id,
+        s.id AS session_id,
         s.status AS session_status,
         st.topic_id,
         st.topic_name,
@@ -441,7 +599,7 @@ function buildSessionHistoryQuery(grant: TeamAccessGrant): string {
   // Participant query: SELECT voter_id to identify own vote
   return `
     SELECT
-      st.id AS session_id,
+      s.id AS session_id,
       s.status AS session_status,
       st.topic_id,
       st.topic_name,
@@ -473,6 +631,13 @@ function buildSessionHistoryParams(
 
 // ---------------------------------------------------------------------------
 // Serialize content response based on grant path
+//
+// Blocking Issue 1 fix: The /teams/:teamId/sessions endpoint is a session
+// history endpoint returning rows from multiple completed sessions. The EM and
+// participant serializers require a per-session session ID and status. Rows are
+// grouped by the actual sessions.id (s.id in SQL, now correctly aliased as
+// session_id) before each session group is serialized. The response is
+// { sessions: [...] } — a list of per-session views in descending date order.
 // ---------------------------------------------------------------------------
 function serializeContentResponse(
   grant: TeamAccessGrant,
@@ -493,23 +658,50 @@ function serializeContentResponse(
     return serializeForFacilitator(grant, result);
   }
 
-  if (grant.path === "member" && grant.role === "engineering_manager") {
-    const result = buildEMQueryResult(
-      "sessions",
-      rows as Parameters<typeof buildEMQueryResult>[1],
-    );
-    return serializeForMemberEM(grant, result);
+  // ---------------------------------------------------------------------------
+  // Helper: group raw DB rows by their session_id value (s.id from the SQL
+  // query), preserving encounter order so sessions appear in descending
+  // completed_at order (as ordered by the SQL ORDER BY clause).
+  // ---------------------------------------------------------------------------
+  function groupRowsBySession(
+    rawRows: Array<Record<string, unknown>>,
+  ): Map<string, { sessionStatus: string; rows: Array<Record<string, unknown>> }> {
+    const groups = new Map<string, { sessionStatus: string; rows: Array<Record<string, unknown>> }>();
+    for (const row of rawRows) {
+      const sid = row["session_id"] as string;
+      if (!groups.has(sid)) {
+        groups.set(sid, { sessionStatus: row["session_status"] as string, rows: [] });
+      }
+      groups.get(sid)!.rows.push(row);
+    }
+    return groups;
   }
 
-  // Participant
-  const result = buildParticipantQueryResult(
-    "sessions",
-    "active",
-    callerUserId,
-    rows as Parameters<typeof buildParticipantQueryResult>[3],
-  );
-  return serializeForMemberParticipant(
-    grant as Extract<TeamAccessGrant, { path: "member"; role: "participant" }>,
-    result,
-  );
+  if (grant.path === "member" && grant.role === "engineering_manager") {
+    const groups = groupRowsBySession(rows);
+    const sessions = Array.from(groups.entries()).map(([sessionId, { rows: sessionRows }]) => {
+      const result = buildEMQueryResult(
+        sessionId,
+        sessionRows as Parameters<typeof buildEMQueryResult>[1],
+      );
+      return serializeForMemberEM(grant, result);
+    });
+    return { sessions };
+  }
+
+  // Participant: group by session, serialize each separately
+  const groups = groupRowsBySession(rows);
+  const sessions = Array.from(groups.entries()).map(([sessionId, { sessionStatus, rows: sessionRows }]) => {
+    const result = buildParticipantQueryResult(
+      sessionId,
+      sessionStatus,
+      callerUserId,
+      sessionRows as Parameters<typeof buildParticipantQueryResult>[3],
+    );
+    return serializeForMemberParticipant(
+      grant as Extract<TeamAccessGrant, { path: "member"; role: "participant" }>,
+      result,
+    );
+  });
+  return { sessions };
 }

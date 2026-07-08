@@ -90,7 +90,7 @@ function makeMockClient(queryResponses: Array<{ rows: unknown[] }> = []) {
 // global_role is set and verifies that the complete downstream chain works.
 // ---------------------------------------------------------------------------
 describe("9.1: End-to-end — global_role → TEAM-006 → session history accessible", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => vi.resetAllMocks());
 
   it("EM can access session history after TEAM-006 establishes their association", async () => {
     // ------------------------------------------------------------------
@@ -137,13 +137,13 @@ describe("9.1: End-to-end — global_role → TEAM-006 → session history acces
     // Both checks must pass for session history to be returned.
     // ------------------------------------------------------------------
 
-    // SESSION-007 query sequence:
-    // 1) dual auth check → both checks pass
+    // SESSION-007 query sequence (new order: auth → audit INSERT → sessions → topics):
+    // 1) evaluateTeamAccess → both checks pass
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
     });
-    // 2) team exists check
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-alpha" }] });
+    // 2) audit INSERT (written BEFORE data fetch per Fix F4 / Advisory fix 7)
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
     // 3) sessions list — includes a session that pre-dates the TEAM-006 call
     mockDbQuery.mockResolvedValueOnce({
       rows: [
@@ -169,8 +169,6 @@ describe("9.1: End-to-end — global_role → TEAM-006 → session history acces
         },
       ],
     });
-    // 5) audit INSERT
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     // Build app as the EM user
     const emApp = await buildCombinedApp();
@@ -203,6 +201,9 @@ describe("9.1: End-to-end — global_role → TEAM-006 → session history acces
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: null }],
     });
+    // evaluateTeamAccess makes a second call (Path 3 facilitator check) when membership_role is null.
+    // No active facilitator sessions for this user/team.
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildCombinedApp();
     const res = await app.inject({
@@ -229,16 +230,15 @@ describe("9.1: End-to-end — global_role → TEAM-006 → session history acces
 //   AND access to A does not grant access to B, and vice versa
 // ---------------------------------------------------------------------------
 describe("9.3: Multi-team EM — independent access, no cross-team access", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => vi.resetAllMocks());
 
   it("EM associated with team-A can access team-A history", async () => {
     // Auth check: EM associated with team-A → both checks pass
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
     });
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-A" }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before data fetch)
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // no sessions (empty is OK — 200)
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
 
     const app = await buildCombinedApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-A/em/sessions" });
@@ -251,9 +251,8 @@ describe("9.3: Multi-team EM — independent access, no cross-team access", () =
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
     });
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-B" }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before data fetch)
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // no sessions
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
 
     const app = await buildCombinedApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-B/em/sessions" });
@@ -266,6 +265,8 @@ describe("9.3: Multi-team EM — independent access, no cross-team access", () =
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: null }],
     });
+    // evaluateTeamAccess makes a second call (Path 3 facilitator check) when membership_role is null.
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildCombinedApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-C/em/sessions" });
@@ -277,7 +278,7 @@ describe("9.3: Multi-team EM — independent access, no cross-team access", () =
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
     });
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-A" }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before data fetch)
     // Sessions for team-A (just one session with teamId verified in response)
     mockDbQuery.mockResolvedValueOnce({
       rows: [
@@ -291,7 +292,6 @@ describe("9.3: Multi-team EM — independent access, no cross-team access", () =
       ],
     });
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // topics for sess-a1
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
 
     const app = await buildCombinedApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-A/em/sessions" });
@@ -323,7 +323,7 @@ describe("9.3: Multi-team EM — independent access, no cross-team access", () =
 // any session history records.
 // ---------------------------------------------------------------------------
 describe("9.4: Historical participant designated as EM retains prior participation records", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => vi.resetAllMocks());
 
   it("TEAM-006 upsert for an existing participant updates role in place (xmax = 0 is false)", async () => {
     // Admin calls TEAM-006 for a user who already has a participant row.
@@ -378,10 +378,12 @@ describe("9.4: Historical participant designated as EM retains prior participati
     // The session history query selects sessions for the team regardless of
     // the requesting user's role. Prior sessions (when they were a participant)
     // are included — the query has no role-based date boundary.
+    // SESSION-007 query sequence (new order: auth → audit INSERT → sessions → topics):
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
     });
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    // audit INSERT (written BEFORE data fetch per Fix F4 / Advisory fix 7)
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
     // Two sessions returned — one predating the TEAM-006 call (when user was a participant)
     mockDbQuery.mockResolvedValueOnce({
       rows: [
@@ -404,8 +406,6 @@ describe("9.4: Historical participant designated as EM retains prior participati
     // Topics for sess-old-1
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
     // Topics for sess-new-2
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
-    // audit INSERT
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildCombinedApp();
@@ -477,7 +477,7 @@ describe("9.4: Historical participant designated as EM retains prior participati
 // This test verifies the backend data contract that those frontend tests depend on.
 // ---------------------------------------------------------------------------
 describe("9.5: Backend contract — participants and managers in separate labeled arrays", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => vi.resetAllMocks());
 
   it("TEAM-003 returns participants and engineeringManagers as separate arrays (not a flat members array)", async () => {
     // TEAM-003 handler query sequence:

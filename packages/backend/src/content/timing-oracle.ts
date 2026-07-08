@@ -48,8 +48,25 @@
  * The floor applies to ALL content endpoint responses:
  *   - Authorized (member, EM, facilitator grant) — floor pads short responses
  *   - Denied (null grant, admin grant on content) — floor prevents timing oracle
+ *
+ * TODO-GROUP6: replace with measured p95/p99 value from load test before production deployment
  */
 const TIMING_FLOOR_MS = 150;
+
+// ---------------------------------------------------------------------------
+// Startup guard: block production deployment while the floor is still the
+// development placeholder. The Group 6 measurement task must be completed,
+// TIMING_FLOOR_MS updated to the measured p95/p99 value, and the result
+// documented in the operations runbook before any content endpoint ships.
+// ---------------------------------------------------------------------------
+if (process.env["NODE_ENV"] === "production" && TIMING_FLOOR_MS === 150) {
+  throw new Error(
+    "DEPLOYMENT BLOCKED: TIMING_FLOOR_MS is still the development placeholder (150ms). " +
+    "Complete the Group 6 latency measurement task (measure p95/p99 authorized-request " +
+    "latency under realistic database load), update TIMING_FLOOR_MS to the measured value, " +
+    "and document the measurement in the operations runbook before deploying to production.",
+  );
+}
 
 /**
  * Apply the constant minimum response time floor.

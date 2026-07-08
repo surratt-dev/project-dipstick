@@ -208,6 +208,8 @@ Requirements are marked **[HARD]** where the behavior is non-negotiable and cann
 
 **FR-1.6** [HARD] Team membership is managed within the application by Application Administrators and Engineering Managers. An Application Administrator may manage membership and roles for any team. An Engineering Manager may manage membership roles (participant assignments) for their own team only; assigning the Engineering Manager role to a user requires Application Administrator authority. Membership is not derived from or synchronized with any external directory or HR system.
 
+**FR-1.6a** [PREF] When a user who lacks Administrative authority views the team membership screen, the application should display a plain-language explanation identifying who can make the change, plus a specific contact path to reach that person (email address, in-application message path, or equivalent mechanism). A grayed-out control with no explanation is not acceptable. "Contact the admin" with no mechanism does not meet this requirement. See [GitHub issue #15](https://github.com/surratt-dev/project-dipstick/issues/15).
+
 **FR-1.7** [HARD] The application shall support creating a team independently of session creation. A Facilitator or an Engineering Manager may create a team. A team that exists without a completed session shall appear in the facilitator's list of available teams and behave identically to any established team when a session is subsequently created for it. Creating a team without a session is a supported and valid system state; the application shall handle it gracefully in all views that reference session history or trend data (displaying empty or zero-session indicators rather than errors).
 
 ### FR-2: Session Setup

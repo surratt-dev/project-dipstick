@@ -83,7 +83,10 @@ function mockNoGrant() {
   mockDbQuery.mockResolvedValueOnce({
     rows: [{ global_role: "engineer", membership_role: null }],
   });
-  // no facilitator session
+  // no facilitator session for the requested team
+  mockDbQuery.mockResolvedValueOnce({ rows: [] });
+  // cross-team check (Error State 4 / Task 10.4): no active session for other teams
+  // When this returns empty, the generic "You do not have access" message is returned.
   mockDbQuery.mockResolvedValueOnce({ rows: [] });
 }
 
@@ -258,9 +261,12 @@ describe("Authorization-before-lookup (Task 5.6)", () => {
 
     expect(res.statusCode).toBe(403);
 
-    // Only 2 db.query calls should have been made (user+membership, facilitator session)
-    // No additional resource queries (team existence, sessions, etc.)
-    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+    // 3 db.query calls: user+membership (Q1), facilitator session (Q2),
+    // cross-team facilitator check (Q3 — Error State 4).
+    // No additional RESOURCE queries (team existence, sessions table content, etc.)
+    // Authorization-before-lookup is maintained: Q1/Q2/Q3 are all authorization
+    // checks, not resource reads.
+    expect(mockDbQuery).toHaveBeenCalledTimes(3);
   });
 
   it("returns 403 (not 404) for unauthorized caller to nonexistent team (Task 7.2)", async () => {
