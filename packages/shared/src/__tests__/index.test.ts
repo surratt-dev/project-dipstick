@@ -134,10 +134,12 @@ describe("Session types", () => {
       wrapUpStartedAt: null,
       completedAt: null,
       abandonedAt: null,
+      facilitatorAccessExpiresAt: null,
     };
     expectTypeOf(session).toMatchTypeOf<Session>();
     expectTypeOf<Session>().toHaveProperty("isFirstSession").toBeBoolean();
     expectTypeOf<Session>().toHaveProperty("sessionNumber").toBeNumber();
+    expectTypeOf<Session>().toHaveProperty("facilitatorAccessExpiresAt");
   });
 
   it("SessionTopic interface has correct shape", () => {

@@ -14,6 +14,13 @@ vi.mock("../../db.js", () => ({
 vi.mock("../../auth/audit-logger.js", () => ({
   emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
 }));
+
+// Mock timing oracle to skip floor delay in tests (Fix F2: em-views now uses applyTimingFloor)
+vi.mock("../../content/timing-oracle.js", () => ({
+  applyTimingFloor: vi.fn().mockResolvedValue(undefined),
+  CONTENT_TIMING_FLOOR_MS: 150,
+}));
+
 vi.mock("../../config.js", () => ({
   config: {
     DATABASE_URL: "postgres://test",
@@ -75,7 +82,11 @@ describe("EM view dual-authorization enforcement", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns 403 when actor is not engineering_manager globally (SESSION-007)", async () => {
+    // evaluateTeamAccess makes two queries when membership is null:
+    //   Q1: user+membership (no membership_role) → triggers
+    //   Q2: facilitator session check (returns empty) → no grant
     mockDbQuery.mockResolvedValueOnce(makeNonEmAuthRow());
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // facilitator session check
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions" });
@@ -90,9 +101,10 @@ describe("EM view dual-authorization enforcement", () => {
   });
 
   it("returns 403 when actor has global EM role but no team association (SESSION-007)", async () => {
-    // Check 1 passes (global_role = 'engineering_manager')
-    // Check 2 fails (no team_memberships row for this team)
+    // evaluateTeamAccess: global_role='engineering_manager' but membership_role=null
+    // → proceeds to facilitator check → no facilitator session → null grant
     mockDbQuery.mockResolvedValueOnce(makeEmNoAssociationRow());
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // facilitator session check
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions" });
@@ -107,10 +119,11 @@ describe("EM view dual-authorization enforcement", () => {
 
   it("task 5.10: EM with no association to Team B is rejected when requesting Team B's history", async () => {
     // EM is associated with team-A but NOT team-B
-    // The auth check returns membership_role = null for team-B
+    // evaluateTeamAccess for team-B: membership_role = null → facilitator check → empty
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineering_manager", membership_role: null }],
     });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // facilitator session check
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-B/em/sessions" });
@@ -126,10 +139,14 @@ describe("GET /api/v1/teams/:teamId/em/sessions (SESSION-007)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns 200 with aggregate session history for authorized EM", async () => {
-    // Call 1: dual auth check
+    // Advisory fix 6: evaluateTeamAccess replaces checkEmAuthorization.
+    // Advisory fix 7: audit INSERT moved BEFORE the sessions data fetch.
+    // No teamExists check (evaluateTeamAccess makes it implicit).
+    //
+    // Call 1: evaluateTeamAccess Q1 (same query as before)
     mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
-    // Call 2: team exists check
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    // Call 2: audit_log INSERT (now BEFORE sessions list)
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
     // Call 3: sessions list
     mockDbQuery.mockResolvedValueOnce({
       rows: [
@@ -163,8 +180,6 @@ describe("GET /api/v1/teams/:teamId/em/sessions (SESSION-007)", () => {
         },
       ],
     });
-    // Call 5: audit_log INSERT
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions" });
@@ -186,8 +201,8 @@ describe("GET /api/v1/teams/:teamId/em/sessions (SESSION-007)", () => {
   });
 
   it("response body contains NO vote-attributing fields (task 5.3, vote attribution boundary)", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before data)
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
         session_id: "sess-1", completed_at: new Date("2025-01-15T10:00:00Z"),
@@ -200,7 +215,6 @@ describe("GET /api/v1/teams/:teamId/em/sessions (SESSION-007)", () => {
         has_outlier: false, flagged_for_discussion: false,
       }],
     });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions" });
@@ -224,15 +238,14 @@ describe("GET /api/v1/teams/:teamId/em/sessions (SESSION-007)", () => {
   });
 
   it("produces an audit_log record when returning data (task 5.13)", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
+    // Advisory fix 7: audit INSERT is now the SECOND DB call (before data fetch)
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // no sessions
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
 
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions" });
 
-    // The last db.query call should be the audit_log INSERT
     const calls = mockDbQuery.mock.calls;
     const auditCall = calls.find(
       (c) => typeof c[0] === "string" && c[0].includes("INSERT INTO audit_log"),
@@ -244,7 +257,9 @@ describe("GET /api/v1/teams/:teamId/em/sessions (SESSION-007)", () => {
   });
 
   it("does NOT produce an audit record when 403 is returned (task 5.13)", async () => {
+    // evaluateTeamAccess: no membership → second query for facilitator check
     mockDbQuery.mockResolvedValueOnce(makeNonEmAuthRow());
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // facilitator session check
 
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions" });
@@ -257,10 +272,10 @@ describe("GET /api/v1/teams/:teamId/em/sessions (SESSION-007)", () => {
 
   it("includes full historical sessions — no date boundary on association date (task 5.4)", async () => {
     // No date filter in the SQL query — all completed sessions are returned
+    // Call sequence: evaluateTeamAccess, audit INSERT, sessions list
     mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // no sessions
 
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions" });
@@ -283,16 +298,18 @@ describe("GET /api/v1/teams/:teamId/em/sessions/:sessionId (SESSION-008)", () =>
   beforeEach(() => vi.clearAllMocks());
 
   it("returns 200 with single session aggregate data for authorized EM", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // auth check
+    // Advisory fix 7: audit INSERT is now AFTER session meta check but BEFORE
+    // participant count and topics queries.
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
         session_id: "sess-1", completed_at: new Date("2025-02-01T09:00:00Z"),
         session_number: 2, facilitator_name: "Bob", team_id: "team-1", status: "complete",
       }],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ participant_count: "5" }] });
+    }); // session meta check
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before aggregate data)
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ participant_count: "5" }] }); // participant count
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // topics
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions/sess-1" });
@@ -345,21 +362,21 @@ describe("GET /api/v1/teams/:teamId/em/sessions/:sessionId (SESSION-008)", () =>
   });
 
   it("response body contains NO vote-attributing fields", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
         session_id: "sess-1", completed_at: new Date("2025-02-01T09:00:00Z"),
         session_number: 2, facilitator_name: "Bob", team_id: "team-1", status: "complete",
       }],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ participant_count: "3" }] });
+    }); // session meta
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before aggregate data)
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ participant_count: "3" }] }); // participant count
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
         topic_id: "t-1", topic_name: "Process", vote_value: 2, vote_count: "3",
         has_outlier: false, flagged_for_discussion: true,
       }],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
+    }); // topics
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/sessions/sess-1" });
@@ -382,7 +399,9 @@ describe("GET /api/v1/teams/:teamId/em/trends (TREND-001)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns 200 with trend data for authorized EM", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
+    // Advisory fix 7: audit INSERT now BEFORE trend data fetch
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before data)
     mockDbQuery.mockResolvedValueOnce({
       rows: [
         {
@@ -396,8 +415,7 @@ describe("GET /api/v1/teams/:teamId/em/trends (TREND-001)", () => {
           avg_vote: "4.5", vote_values: "4,5", participant_count: "2",
         },
       ],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
+    }); // trend data
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/trends" });
@@ -414,7 +432,12 @@ describe("GET /api/v1/teams/:teamId/em/trends (TREND-001)", () => {
   });
 
   it("writes a SINGLE audit_log entry for bulk read (task 5.12) — not one per session", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
+    // Advisory fix 7: audit INSERT is now BEFORE the data fetch (second DB call).
+    // The audit metadata is simplified to {} since counts/date ranges aren't
+    // available before the data is read. The key invariant — exactly one audit
+    // entry per request — is preserved.
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before data)
     // 3 sessions across 2 topics — still must produce exactly 1 audit_log INSERT
     mockDbQuery.mockResolvedValueOnce({
       rows: [
@@ -422,8 +445,7 @@ describe("GET /api/v1/teams/:teamId/em/trends (TREND-001)", () => {
         { topic_id: "t-1", topic_name: "Q", session_id: "s2", session_date: new Date("2025-02-01"), session_number: 2, avg_vote: "4", vote_values: "4", participant_count: "1" },
         { topic_id: "t-2", topic_name: "P", session_id: "s3", session_date: new Date("2025-03-01"), session_number: 3, avg_vote: "5", vote_values: "5", participant_count: "1" },
       ],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
+    }); // trend data
 
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/trends" });
@@ -431,29 +453,26 @@ describe("GET /api/v1/teams/:teamId/em/trends (TREND-001)", () => {
     const auditInsertCalls = mockDbQuery.mock.calls.filter(
       (c) => typeof c[0] === "string" && c[0].includes("INSERT INTO audit_log"),
     );
-    // Exactly one audit_log INSERT for all sessions returned
+    // Exactly one audit_log INSERT for all sessions returned (key invariant)
     expect(auditInsertCalls).toHaveLength(1);
 
-    // Audit entry must include date range (not session IDs)
+    // Audit entry must include the operation and team
     const auditParams = auditInsertCalls[0]![1] as unknown[];
     expect(auditParams).toContain("em.trend_data_accessed");
-    // metadata JSONB should have date_range fields
-    const metadata = JSON.parse(auditParams[5] as string);
-    expect(metadata).toHaveProperty("date_range_start");
-    expect(metadata).toHaveProperty("date_range_end");
-    expect(metadata).toHaveProperty("topic_count");
+    expect(auditParams).toContain("team-1");
   });
 
   it("trend response contains NO vote-attributing fields", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
+    // Advisory fix 7: audit INSERT before data
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
         topic_id: "t-1", topic_name: "Q", session_id: "s1",
         session_date: new Date(), session_number: 1,
         avg_vote: "3.5", vote_values: "3,4", participant_count: "2",
       }],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    }); // trend data
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/trends" });
@@ -473,7 +492,9 @@ describe("GET /api/v1/teams/:teamId/em/trends (TREND-001)", () => {
   });
 
   it("returns 403 for unauthorized actor", async () => {
+    // evaluateTeamAccess: no membership → facilitator check
     mockDbQuery.mockResolvedValueOnce(makeNonEmAuthRow());
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // facilitator session check
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/trends" });
@@ -549,7 +570,9 @@ describe("GET /api/v1/teams/:teamId/em/action-items (ACTION-004)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns 200 with action items list including ownerDisplayName (Q8/Decision 13)", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
+    // Advisory fix 7: audit INSERT before action items fetch
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT (before data)
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
         id: "ai-1", team_id: "team-1", session_id: "sess-1",
@@ -558,8 +581,7 @@ describe("GET /api/v1/teams/:teamId/em/action-items (ACTION-004)", () => {
         created_at: new Date("2025-01-15"), updated_at: new Date("2025-01-15"),
         owner_display_name: "Alice",
       }],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
+    }); // action items
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/action-items" });
@@ -575,7 +597,9 @@ describe("GET /api/v1/teams/:teamId/em/action-items (ACTION-004)", () => {
   });
 
   it("response body contains NO voter identity fields (vote attribution boundary)", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
+    // Advisory fix 7: audit INSERT before data
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
         id: "ai-1", team_id: "team-1", session_id: "sess-1",
@@ -583,8 +607,7 @@ describe("GET /api/v1/teams/:teamId/em/action-items (ACTION-004)", () => {
         created_at: new Date(), updated_at: new Date(),
         owner_display_name: "Bob",
       }],
-    });
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    }); // action items
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/action-items" });
@@ -600,7 +623,9 @@ describe("GET /api/v1/teams/:teamId/em/action-items (ACTION-004)", () => {
   });
 
   it("returns 403 for non-EM actor", async () => {
+    // evaluateTeamAccess: no membership → facilitator check
     mockDbQuery.mockResolvedValueOnce(makeNonEmAuthRow());
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // facilitator session check
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/action-items" });
@@ -609,9 +634,10 @@ describe("GET /api/v1/teams/:teamId/em/action-items (ACTION-004)", () => {
   });
 
   it("produces audit_log record when returning data (task 5.13)", async () => {
-    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow());
+    // Advisory fix 7: audit INSERT is the SECOND DB call (before data fetch)
+    mockDbQuery.mockResolvedValueOnce(makeEmAuthRow()); // evaluateTeamAccess
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // no action items
-    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit insert
 
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/action-items" });
@@ -666,7 +692,9 @@ describe("GET /api/v1/teams/:teamId/em/action-items/:actionItemId (ACTION-005)",
   });
 
   it("returns 403 for non-EM actor", async () => {
+    // evaluateTeamAccess: no membership → facilitator check
     mockDbQuery.mockResolvedValueOnce(makeNonEmAuthRow());
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // facilitator session check
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/em/action-items/ai-1" });

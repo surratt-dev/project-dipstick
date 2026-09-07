@@ -342,8 +342,10 @@
 - [ ] Engineers can access only the content of teams they are members of.
 - [ ] Engineering Managers can access only the session history, trends, and action items of teams they explicitly manage; they cannot access other teams' data.
 - [ ] A facilitator can access the current session and the facilitated team's full historical data (session history, trends, action items) for the duration of their facilitation; this access does not extend to other teams' data.
+- [ ] A facilitator retains read-only access to the facilitated team's historical data for 30 minutes after the session closes (`facilitator_access_expires_at` grace window). After 30 minutes, access is denied until a new session is created.
 - [ ] Access control is enforced server-side; it is not dependent solely on UI visibility.
 - [ ] Denied access results in a clear error, not a disclosure of existence or content.
+- [ ] An Application Admin with no team membership cannot access session content (votes, trend data, action items) for any team; admin access is limited to administrative data (membership lists, role assignments, EM associations, team metadata).
 
 ## Out of Scope
 - Authentication itself — that is handled at sign-in.
@@ -356,7 +358,9 @@
 
 ## Notes
 - Access control must be enforced at the API/data layer, not only in the UI.
-- A facilitator has full read access to the facilitated team's historical data (session history, trends, action items) for the duration of the session they are running. This access enables them to reference prior session context during facilitation. Access does not persist after the session ends.
+- A facilitator has full read access to the facilitated team's historical data (session history, trends, action items) for the duration of the session they are running. This access enables them to reference prior session context during facilitation.
+- **Amendment (2026-07-07 — enforce-access-control-on-team-content change):** A facilitator's read-only access to historical data persists for 30 minutes after the session transitions to `complete`. This grace window allows the facilitator to review and finalize notes, action items, and session outcomes immediately after closing the room. The window is enforced via `sessions.facilitator_access_expires_at`, set server-side to `completed_at + 30 minutes` at session completion. After the window expires, the facilitator has no access to the team's historical data until a new session is created. The grace window is read-only; no write operations are permitted during it. See design decision 4 in `openspec/changes/enforce-access-control-on-team-content/design.md` for full rationale. (Task 0.1 — Owner: Marcus Delgado)
+- Additionally, a facilitator may create a `draft` session before opening a session to participants, which grants read-only access to the team's historical data during preparation. A `draft` session that is not advanced to `lobby` within 24 hours expires automatically (lazy expiry via SQL check). See the team-content-access spec for the full `draft` session behavior.
 
 ---
 

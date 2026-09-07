@@ -26,3 +26,26 @@ export type {
   EmActionItemsResponse,
 } from "./types/em-views.js";
 export type { AuthSession, JoinLink, AuthErrorCategory, AuthError } from "./types/auth.js";
+export type {
+  TeamAccessGrant,
+  RevealFailureResponse,
+  FacilitatorHistoricalDataUnavailable,
+  FacilitatorTrendDataUnavailable,
+  SessionStatusBannerState,
+  FacilitatorSessionStateResponse,
+} from "./types/team-content-access.js";
+export type {
+  ParticipantQueryResult,
+  ParticipantVoteRow,
+  EMQueryResult,
+  EMVoteRow,
+  FacilitatorQueryResult,
+  FacilitatorVoteRow,
+  ParticipantTopicResult,
+  EMTopicResult,
+  FacilitatorTopicResult,
+  FacilitatorVoteAttribution,
+  ParticipantContentView,
+  EMContentView,
+  FacilitatorContentView,
+} from "./types/team-content-views.js";

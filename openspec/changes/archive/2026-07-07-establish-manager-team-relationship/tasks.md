@@ -50,7 +50,7 @@ _All tasks in this section must pass CI before any task in section 3 begins. The
 ## 4. Facilitator Escalation Path (conditional on Q2 resolution)
 
 - [x] 4.1 If admin-only is selected: implement plain-language explanation in the team administration view for actors without TEAM-006 permission
-- [x] 4.2 Implement specific admin contact path in the escalation message (email address, in-app message path, or equivalent — "Contact the admin" with no mechanism is not acceptable)
+- [ ] 4.2 Implement specific admin contact path in the escalation message (email address, in-app message path, or equivalent — "Contact the admin" with no mechanism is not acceptable) — **INCOMPLETE: current message says "Contact your admin" with no specific email, in-app path, or other mechanism; MemberManagement.tsx:216-226 acknowledges this gap as a named tracking risk (architect finding #3); spec requirement is not met**
 - [x] 4.3 Write test: user without TEAM-006 permission sees explanation text and contact path, not a grayed-out control
 
 ## 5. EM Read-Only Access — Session History, Trends, Action Items

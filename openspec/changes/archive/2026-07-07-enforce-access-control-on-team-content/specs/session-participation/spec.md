@@ -1,10 +1,12 @@
-# session-participation
+# session-participation (delta)
 
 ## Purpose
 
-Defines requirements for recording users as active participants in a session, including enforcement of Engineering Manager non-participation and facilitator-from-another-team constraints. This spec is a first-entry stub: the EM enforcement and facilitator constraints are hard requirements surfaced during the join-team-invite-link change and documented here so they cannot be missed when the session participation feature is designed.
+This delta extends the dual-check pattern established in the session-participation spec (checking both `users.global_role` AND `team_memberships.role`) from a session-join constraint to a system-wide authorization principle. The pattern must be used by the team-content-access authorization helper for all content access checks — not only at session participation time.
 
-## Requirements
+---
+
+## MODIFIED Requirements
 
 ### Requirement: Engineering Manager non-participation enforcement
 
@@ -27,75 +29,46 @@ Engineering Managers MUST NOT be recorded as session participants. This check MU
 Both fields must be read from the database (not from cache) on every authorization check.
 
 #### Scenario: Engineering Manager attempts to join a session as a participant — global_role check
+
 - **WHEN** a user with `users.global_role = 'engineering_manager'` calls the session participation endpoint
 - **THEN** the endpoint rejects the request
 - **AND** the user is not recorded as a session participant
 
 #### Scenario: Engineering Manager attempts to join a session as a participant — membership_role check
+
 - **WHEN** a user with `team_memberships.role = 'engineering_manager'` for the relevant team calls the session participation endpoint
 - **AND** that user's `users.global_role` is not `engineering_manager`
 - **THEN** the endpoint rejects the request
 - **AND** the user is not recorded as a session participant
 
 #### Scenario: EM enforcement is server-side and cannot be bypassed
+
 - **WHEN** a client sends a request to the session participation endpoint on behalf of a user who is an Engineering Manager (by either `users.global_role` or `team_memberships.role`)
 - **THEN** the server checks both fields directly from the database (not from any client-supplied value) and rejects the request
 
 #### Scenario: Mid-session role change — lock-in attempt after change is rejected
+
 - **WHEN** a user's `team_memberships.role` is changed to `engineering_manager` during an active session
 - **AND** the user subsequently sends a lock-in request to the session participation endpoint
 - **THEN** the endpoint rejects the lock-in request
 - **AND** the vote is not recorded
 
 #### Scenario: Mid-session role change — previously locked-in votes are preserved
+
 - **WHEN** a user locks in a vote on a topic
 - **AND** the user's `team_memberships.role` is subsequently changed to `engineering_manager` before the topic reveal
 - **THEN** the already-locked-in vote is not invalidated
 - **AND** the vote is included in the reveal count
 
 #### Scenario: User with only participant membership_role can join a session
+
 - **WHEN** a user with `users.global_role = 'engineer'` and `team_memberships.role = 'participant'` for the relevant team calls the session participation endpoint
 - **THEN** the endpoint permits the request
 - **AND** the user is recorded as a session participant
 
 #### Scenario: Dual-check pattern is used by the team-content-access authorization helper
+
 - **WHEN** the team-content-access authorization helper evaluates a request from a user to access a team's content
 - **THEN** the helper queries both `users.global_role` AND `team_memberships.role` directly from the database
 - **AND** the helper does not resolve either field from a cached value or client-supplied claim
 - **AND** a user with `users.global_role = 'engineer'` and `team_memberships.role = 'engineering_manager'` receives the EM content access profile (aggregate vote distributions only), not the engineer content access profile
-
----
-
-### Requirement: Facilitator-from-another-team enforcement at session setup
-
-A user who is a member of a team (has a row in `team_memberships` for that team) SHALL NOT be permitted to facilitate a session for that team. This constraint MUST be enforced by the session setup layer via a check against `team_memberships`.
-
-**Enforcement point:** The session setup endpoint MUST check whether the user attempting to act as facilitator has a `team_memberships` row for the team whose session they are setting up. If such a row exists, the request SHALL be rejected (hard block, not a soft warning).
-
-**Why both `global_role` and `team_memberships` checks are required:** A user's `global_role` may be `facilitator` while they also hold a `participant` membership on the team they want to facilitate. Global role confirms they are a facilitator; team membership confirms which team they belong to. A facilitator who joined Team A via a join link is a member of Team A and must not facilitate Team A's sessions, regardless of their global role.
-
-#### Scenario: Facilitator who is a member of a team attempts to facilitate that team's session
-- **WHEN** a user with `global_role = 'facilitator'` who has a row in `team_memberships` for Team A attempts to set up a session for Team A
-- **THEN** the session setup endpoint rejects the request
-
-#### Scenario: Facilitator from a different team can facilitate a session
-- **WHEN** a user with `global_role = 'facilitator'` who has NO row in `team_memberships` for Team A attempts to set up a session for Team A
-- **THEN** the session setup endpoint permits the request
-
----
-
-### Requirement: Mid-session arrival behavior must be defined before implementation
-
-The session participation feature MUST include an explicit decision on how users who join a session after a vote has opened interact with the current vote state. This decision is a hard prerequisite — it must be in the spec before any session participation implementation begins.
-
-**Options the spec MUST choose between (non-exhaustive):**
-1. Mid-session arrivals observe the current topic without voting; they vote from the next topic onward.
-2. Mid-session arrivals are held in a waiting state until the current topic's reveal is complete, then join from the next topic.
-3. Mid-session arrivals can vote on the current topic if the vote has not yet been revealed; they are added to the readiness grid as a new row.
-
-The spec MUST also specify whether the facilitator's readiness grid updates in real time when a new participant joins during an active vote, and what the new participant's state in the grid looks like before they have voted.
-
-#### Scenario: Mid-session arrival behavior is defined before implementation begins
-- **WHEN** the session participation feature is being designed
-- **THEN** the session participation spec includes an explicit decision on how mid-session arrivals interact with the vote state for the current topic
-- **AND** the spec includes a decision on whether the facilitator's readiness grid updates in real time when a new participant joins

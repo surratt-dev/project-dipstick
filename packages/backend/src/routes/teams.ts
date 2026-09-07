@@ -163,6 +163,36 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       role: row.role as "participant" | "engineering_manager",
     }));
 
+    // Decision 2 (Option B) audit: log Application Admin reads of the
+    // membership list. actorGlobalRole is available from the auth check above
+    // — do not re-query the users table.
+    // Task 3.4 / Task 3.6: written immediately (not in a transaction) because
+    // this is a read operation; atomicity with a write transaction is not
+    // applicable. The audit write executes before the response is sent.
+    if (global_role === "application_admin") {
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          global_role,
+          request.ip,
+          "admin.membership_list_accessed",
+          teamId,
+          JSON.stringify({ member_count: members.length }),
+        ],
+      );
+
+      emitAuditEvent(request.log, "admin.membership_list_accessed", {
+        actorUserId: session.userId,
+        actorGlobalRole: global_role,
+        actorIp: request.ip,
+        teamId,
+        memberCount: members.length,
+      });
+    }
+
     const response: LegacyTeamMembersResponse = {
       teamId,
       teamName,
@@ -300,6 +330,37 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     // true will attempt TEAM-006 and receive 403 — worse UX than not showing the
     // control. The escalation message renders when this flag is false.
     const canAssociateManagers = actorGlobalRole === "application_admin";
+
+    // Decision 2 (Option B) audit: log Application Admin reads of team detail
+    // (which includes membership lists and role assignments).
+    // Task 3.4: audit_log write for admin reads of administrative data.
+    if (actorGlobalRole === "application_admin") {
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          actorGlobalRole,
+          request.ip,
+          "admin.team_detail_accessed",
+          teamId,
+          JSON.stringify({
+            participant_count: participants.length,
+            em_count: engineeringManagers.length,
+          }),
+        ],
+      );
+
+      emitAuditEvent(request.log, "admin.team_detail_accessed", {
+        actorUserId: session.userId,
+        actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        participantCount: participants.length,
+        emCount: engineeringManagers.length,
+      });
+    }
 
     const response: TeamMembersResponse = {
       teamId,
