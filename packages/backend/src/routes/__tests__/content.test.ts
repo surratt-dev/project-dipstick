@@ -90,10 +90,6 @@ function mockNoGrant() {
   mockDbQuery.mockResolvedValueOnce({ rows: [] });
 }
 
-function mockUserNotFound() {
-  mockDbQuery.mockResolvedValueOnce({ rows: [] });
-}
-
 // ---------------------------------------------------------------------------
 // GET /api/v1/teams/:teamId/sessions
 // Task 5.1 / Task 5.12

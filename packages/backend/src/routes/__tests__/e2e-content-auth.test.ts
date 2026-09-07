@@ -140,10 +140,6 @@ function mockQ1NoMembership(globalRole = "facilitator") {
   });
 }
 
-function mockQ1NoUser() {
-  mockDbQuery.mockResolvedValueOnce({ rows: [] });
-}
-
 function mockQ2FacilitatorSession(sessionId = "sess-1", sessionStatus = "active") {
   mockDbQuery.mockResolvedValueOnce({
     rows: [{ session_id: sessionId, session_status: sessionStatus }],

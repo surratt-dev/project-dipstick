@@ -1,5 +1,5 @@
 import { db } from "../db.js";
-import type { TeamAccessGrant } from "@dipstick/shared";
+import type { TeamAccessGrant, SessionStatus } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // teamContentAccessHelper — evaluateTeamAccess(userId, teamId)
@@ -188,7 +188,7 @@ export async function evaluateTeamAccess(
       path: "facilitator",
       sessionId: session_id,
       teamId,
-      sessionStatus: session_status as import("@dipstick/shared").SessionStatus,
+      sessionStatus: session_status as SessionStatus,
       actorGlobalRole: global_role,
     };
   }
