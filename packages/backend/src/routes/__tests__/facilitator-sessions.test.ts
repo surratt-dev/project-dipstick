@@ -4,9 +4,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mocks
 // ---------------------------------------------------------------------------
 const mockDbQuery = vi.fn();
+const mockDbConnect = vi.fn();
+const mockEmitAuditEvent = vi.fn();
+const mockPublishSessionStateChange = vi.fn();
 
 vi.mock("../../db.js", () => ({
-  db: { query: (...args: unknown[]) => mockDbQuery(...args) },
+  db: {
+    query: (...args: unknown[]) => mockDbQuery(...args),
+    connect: () => mockDbConnect(),
+  },
+}));
+vi.mock("../../auth/audit-logger.js", () => ({
+  emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
+}));
+vi.mock("../../realtime/ws-pubsub.js", () => ({
+  publishSessionStateChange: (...args: unknown[]) => mockPublishSessionStateChange(...args),
 }));
 vi.mock("../../config.js", () => ({
   config: {
@@ -22,7 +34,22 @@ vi.mock("../../config.js", () => ({
 }));
 
 import Fastify from "fastify";
-import { facilitatorSessionRoutes } from "../facilitator-sessions.js";
+import type { FastifyBaseLogger } from "fastify";
+import { facilitatorSessionRoutes, recordRevealTriggeredAudit } from "../facilitator-sessions.js";
+
+/** Returns a mock transaction client that records calls, matching teams.test.ts's pattern. */
+function makeMockClient(queryResponses: Array<{ rows: unknown[] }> = []) {
+  let callIndex = 0;
+  const mockClientQuery = vi.fn((..._args: unknown[]) => {
+    const resp = queryResponses[callIndex] ?? { rows: [] };
+    callIndex++;
+    return Promise.resolve(resp);
+  });
+  return {
+    query: mockClientQuery,
+    release: vi.fn(),
+  };
+}
 
 function buildApp(userId = "facilitator-1") {
   const app = Fastify();
@@ -104,7 +131,15 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
           status: "draft",
         }],
       }) // session lookup
-      .mockResolvedValueOnce({ rows: [] }); // UPDATE
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }); // actor global_role lookup
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // UPDATE sessions
+      { rows: [] }, // INSERT audit_log (session.state_changed)
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
@@ -114,6 +149,18 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("lobby");
+
+    const auditInsertCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditInsertCall).toBeDefined();
+    expect(auditInsertCall![1]).toContain("session.state_changed");
+
+    // Publish-after-commit: published only after the transaction committed.
+    expect(mockPublishSessionStateChange).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({ previousStatus: "draft", newStatus: "lobby" }),
+    );
   });
 
   it("returns 422 when session is not in draft status", async () => {
@@ -172,7 +219,15 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
           status: "wrap_up",
         }],
       })
-      .mockResolvedValueOnce({ rows: [] }); // UPDATE with facilitator_access_expires_at
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }); // actor global_role lookup
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // UPDATE sessions with facilitator_access_expires_at
+      { rows: [] }, // INSERT audit_log (session.state_changed)
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
@@ -184,11 +239,21 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     expect(res.json().status).toBe("complete");
 
     // Verify the UPDATE SQL sets facilitator_access_expires_at (Task 8.8)
-    const updateCall = mockDbQuery.mock.calls[1];
+    const updateCall = client.query.mock.calls[1]!;
     const updateSql = (updateCall[0] as string).toLowerCase();
     expect(updateSql).toContain("facilitator_access_expires_at");
     expect(updateSql).toContain("interval '30 minutes'");
     expect(updateSql).toContain("'complete'");
+
+    const auditInsertCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditInsertCall![1]).toContain("session.state_changed");
+
+    expect(mockPublishSessionStateChange).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({ previousStatus: "wrap_up", newStatus: "complete" }),
+    );
   });
 
   // Task 8.11: facilitator_access_expires_at cannot be set by client input
@@ -202,7 +267,15 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
           status: "wrap_up",
         }],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // UPDATE
+      { rows: [] }, // INSERT audit_log
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
     // Attempt to supply facilitator_access_expires_at in the request body
@@ -216,7 +289,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     expect(res.statusCode).toBe(200);
 
     // Verify the UPDATE SQL does NOT use any parameter for expires_at from client input
-    const updateCall = mockDbQuery.mock.calls[1];
+    const updateCall = client.query.mock.calls[1]!;
     const updateValues = updateCall[1] as unknown[];
     // The only parameter should be the session ID — expires_at is computed server-side
     expect(updateValues).toHaveLength(1);
@@ -240,6 +313,59 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     });
 
     expect(res.statusCode).toBe(422);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordRevealTriggeredAudit — SEC-13/SEC-14 audit write for the reveal
+// action (task 7.2). BLOCKED on GitHub issue #26 for real wiring into the
+// reveal handler's own transaction (no such transaction exists yet, because
+// the reveal endpoint does not commit a state transition today). This
+// function is verified in isolation, against a stubbed commit point, per
+// the Blocking Dependency section's testability guidance.
+// ---------------------------------------------------------------------------
+describe("recordRevealTriggeredAudit (task 7.2 — BLOCKED on #26 for production wiring)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("writes exactly one audit_log row with operation session.reveal_triggered and the session identifier in metadata", async () => {
+    const client = makeMockClient([{ rows: [] }]);
+    const logger = { info: vi.fn() } as unknown as FastifyBaseLogger;
+
+    await recordRevealTriggeredAudit(client, logger, {
+      actorUserId: "facilitator-1",
+      actorGlobalRole: "facilitator",
+      actorIp: "127.0.0.1",
+      teamId: "team-1",
+      sessionId: "session-1",
+    });
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const [sql, params] = client.query.mock.calls[0]!;
+    expect(sql as string).toContain("INSERT INTO audit_log");
+    expect(params).toContain("session.reveal_triggered");
+    const metadataArg = (params as unknown[]).find(
+      (p) => typeof p === "string" && p.includes("session_id"),
+    ) as string;
+    expect(JSON.parse(metadataArg)).toEqual({ session_id: "session-1" });
+  });
+
+  it("also emits the structured-log counterpart via emitAuditEvent", async () => {
+    const client = makeMockClient([{ rows: [] }]);
+    const logger = { info: vi.fn() } as unknown as FastifyBaseLogger;
+
+    await recordRevealTriggeredAudit(client, logger, {
+      actorUserId: "facilitator-1",
+      actorGlobalRole: "facilitator",
+      actorIp: "127.0.0.1",
+      teamId: "team-1",
+      sessionId: "session-1",
+    });
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      logger,
+      "session.reveal_triggered",
+      expect.objectContaining({ sessionId: "session-1", teamId: "team-1" }),
+    );
   });
 });
 

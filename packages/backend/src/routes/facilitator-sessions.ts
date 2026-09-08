@@ -1,12 +1,66 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger } from "fastify";
+import type { PoolClient } from "pg";
 import { db } from "../db.js";
 import type { SessionData } from "../auth/session-store.js";
+import { emitAuditEvent } from "../auth/audit-logger.js";
+import { publishSessionStateChange } from "../realtime/ws-pubsub.js";
 import type {
   RevealFailureResponse,
   FacilitatorSessionStateResponse,
   SessionStatusBannerState,
   SessionStatus,
 } from "@dipstick/shared";
+
+// ---------------------------------------------------------------------------
+// recordRevealTriggeredAudit — SEC-13/SEC-14 audit write for the reveal
+// action (websocket-delivery-time-authorization design.md Decision D7).
+//
+// TODO(#26): wire into POST /api/v1/teams/:teamId/sessions/:sessionId/reveal
+// (below), in the same transaction as the reveal-status flip
+// (voting -> revealed), once that write exists. Today the reveal endpoint
+// validates authorization and session-state preconditions only — there is
+// no state-transition commit anywhere in this handler to attach this INSERT
+// to (see design.md's "Blocking Dependency" section and GitHub issue #26).
+// This function is exported and invoked only from tests
+// (__tests__/facilitator-sessions.test.ts) so the operation name, schema,
+// and metadata-exclusion behavior are verified now and ready to wire in the
+// moment issue #26 lands. It is NOT called anywhere in the reveal handler
+// today — inventing a commit point to call it from would be exactly the
+// workaround the Blocking Dependency section rules out.
+// ---------------------------------------------------------------------------
+export async function recordRevealTriggeredAudit(
+  client: Pick<PoolClient, "query">,
+  logger: FastifyBaseLogger,
+  params: {
+    actorUserId: string;
+    actorGlobalRole: string;
+    actorIp: string;
+    teamId: string;
+    sessionId: string;
+  },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO audit_log
+       (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      params.actorUserId,
+      params.actorGlobalRole,
+      params.actorIp,
+      "session.reveal_triggered",
+      params.teamId,
+      JSON.stringify({ session_id: params.sessionId }),
+    ],
+  );
+
+  emitAuditEvent(logger, "session.reveal_triggered", {
+    actorUserId: params.actorUserId,
+    actorGlobalRole: params.actorGlobalRole,
+    actorIp: params.actorIp,
+    sessionId: params.sessionId,
+    teamId: params.teamId,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Facilitator session lifecycle routes
@@ -191,11 +245,66 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       });
     }
 
-    // Transition draft → lobby
-    await db.query(
-      `UPDATE sessions SET status = 'lobby' WHERE id = $1`,
-      [sessionId],
+    const actorResult = await db.query<{ global_role: string }>(
+      `SELECT global_role FROM users WHERE id = $1`,
+      [session.userId],
     );
+    const actorGlobalRole = (actorResult.rows[0] as { global_role: string } | undefined)?.global_role ?? "unknown";
+
+    // Transition draft → lobby, and write the SEC-13/SEC-14 audit_log row,
+    // in the SAME transaction (websocket-delivery-time-authorization
+    // design.md Decision D7, transaction-pattern correction). Not blocked
+    // on GitHub issue #26 — this UPDATE already commits today.
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        `UPDATE sessions SET status = 'lobby' WHERE id = $1`,
+        [sessionId],
+      );
+
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          actorGlobalRole,
+          request.ip,
+          "session.state_changed",
+          teamId,
+          JSON.stringify({ session_id: sessionId, prior_status: "draft", new_status: "lobby" }),
+        ],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    emitAuditEvent(request.log, "session.state_changed", {
+      actorUserId: session.userId,
+      actorGlobalRole,
+      actorIp: request.ip,
+      sessionId,
+      teamId,
+      priorStatus: "draft",
+      newStatus: "lobby",
+    });
+
+    // Publish-after-commit ordering (design.md Decision D2/D7, tasks.md
+    // tasks 1.4/7.3): only after the transaction above has committed.
+    await publishSessionStateChange(sessionId, {
+      sessionId,
+      teamId,
+      previousStatus: "draft",
+      newStatus: "lobby",
+      changedAt: new Date().toISOString(),
+    });
 
     return reply.send({ sessionId, teamId, status: "lobby" });
   });
@@ -269,16 +378,72 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       });
     }
 
-    // Task 8.8: Set both status and facilitator_access_expires_at in the SAME
-    // database transaction. If this UPDATE fails, neither change is committed.
-    await db.query(
-      `UPDATE sessions
-       SET status = 'complete',
-           completed_at = NOW(),
-           facilitator_access_expires_at = NOW() + INTERVAL '30 minutes'
-       WHERE id = $1`,
-      [sessionId],
+    const actorResult = await db.query<{ global_role: string }>(
+      `SELECT global_role FROM users WHERE id = $1`,
+      [session.userId],
     );
+    const actorGlobalRole = (actorResult.rows[0] as { global_role: string } | undefined)?.global_role ?? "unknown";
+
+    // Task 8.8: Set both status and facilitator_access_expires_at in the SAME
+    // database transaction. Also writes the SEC-13/SEC-14 audit_log row in
+    // the same transaction (websocket-delivery-time-authorization design.md
+    // Decision D7, transaction-pattern correction) — not blocked on GitHub
+    // issue #26, this UPDATE already commits today. If any statement fails,
+    // nothing commits.
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        `UPDATE sessions
+         SET status = 'complete',
+             completed_at = NOW(),
+             facilitator_access_expires_at = NOW() + INTERVAL '30 minutes'
+         WHERE id = $1`,
+        [sessionId],
+      );
+
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          actorGlobalRole,
+          request.ip,
+          "session.state_changed",
+          teamId,
+          JSON.stringify({ session_id: sessionId, prior_status: sessionRow.status, new_status: "complete" }),
+        ],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    emitAuditEvent(request.log, "session.state_changed", {
+      actorUserId: session.userId,
+      actorGlobalRole,
+      actorIp: request.ip,
+      sessionId,
+      teamId,
+      priorStatus: sessionRow.status,
+      newStatus: "complete",
+    });
+
+    // Publish-after-commit ordering (design.md Decision D2/D7, tasks.md
+    // tasks 1.4/7.3): only after the transaction above has committed.
+    await publishSessionStateChange(sessionId, {
+      sessionId,
+      teamId,
+      previousStatus: sessionRow.status as SessionStatus,
+      newStatus: "complete",
+      changedAt: new Date().toISOString(),
+    });
 
     return reply.send({
       sessionId,

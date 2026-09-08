@@ -94,3 +94,22 @@ function loadConfig(): FullConfig {
 
 export const config = loadConfig();
 export const PORT = parseInt(process.env["PORT"] ?? "3000", 10);
+
+// ---------------------------------------------------------------------------
+// getAllowedOrigins — single source of truth for the CORS/WebSocket-Origin
+// allowlist.
+//
+// websocket-delivery-time-authorization: design.md Decision D9 (CSWSH
+// mitigation). The WebSocket upgrade handshake is not subject to CORS
+// preflight, so app.ts's @fastify/cors registration alone does not protect
+// it. Decision D9 requires an explicit Origin header check on the WS route
+// against "the same allowlist @fastify/cors already uses" — extracted here
+// so both call sites (the CORS plugin registration and the WS Origin check)
+// read from one place instead of two copies drifting apart.
+// ---------------------------------------------------------------------------
+export function getAllowedOrigins(): string[] {
+  if (config.NODE_ENV === "production") {
+    return [config.APP_ORIGIN ?? ""];
+  }
+  return ["http://localhost:5173", "http://localhost:3000"];
+}

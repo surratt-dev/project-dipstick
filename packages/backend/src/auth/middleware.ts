@@ -7,7 +7,13 @@ import { emitAuditEvent } from "./audit-logger.js";
 
 const PUBLIC_ROUTES = ["/health", "/auth/login", "/auth/callback", "/auth/logout", "/api/join/"];
 
-const ABSOLUTE_LIFETIME_MS = 90 * 60 * 1000; // 90 minutes
+// Exported for reuse by the WebSocket delivery-time authorization layer
+// (websocket-delivery-time-authorization, design.md Decision D8): a
+// WebSocket connection has no subsequent HTTP request for this hook to
+// re-run against, so the connection registry and delivery-time check reuse
+// this same constant to bound connection age instead of leaving it unbounded
+// until the SEC-25/26 companion effort ships its own heartbeat.
+export const ABSOLUTE_LIFETIME_MS = 90 * 60 * 1000; // 90 minutes
 const TOKEN_REFRESH_THRESHOLD_S = 5 * 60; // 5 minutes before expiry
 const REFRESH_RETRY_DELAY_MS = 5000;
 const REFRESH_MAX_RETRIES = 2;
