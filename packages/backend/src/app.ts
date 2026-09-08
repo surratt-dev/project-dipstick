@@ -12,10 +12,11 @@ import { sessionRoutes } from "./routes/sessions.js";
 import { emViewRoutes } from "./routes/em-views.js";
 import { contentRoutes } from "./routes/content.js";
 import { facilitatorSessionRoutes } from "./routes/facilitator-sessions.js";
-import { config } from "./config.js";
+import { config, getAllowedOrigins } from "./config.js";
 import { redis } from "./redis.js";
 import { createRedisStore } from "./auth/session-store.js";
 import { authMiddleware } from "./auth/middleware.js";
+import { registerWebSocketRoutes } from "./realtime/websocket-routes.js";
 
 const isProduction = config.NODE_ENV === "production";
 
@@ -50,9 +51,7 @@ export async function buildApp() {
 
   // CORS
   await app.register(cors, {
-    origin: isProduction
-      ? [config.APP_ORIGIN ?? ""]
-      : ["http://localhost:5173", "http://localhost:3000"],
+    origin: getAllowedOrigins(),
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -86,6 +85,16 @@ export async function buildApp() {
     saveUninitialized: false,
     rolling: true,
   });
+
+  // WebSocket delivery-time authorization layer (websocket-delivery-time-authorization)
+  //
+  // Registered BEFORE authMiddleware so the Origin/CSWSH check (Decision D9)
+  // runs first in the onRequest chain, ahead of authMiddleware's
+  // request.session validation — per Decision D9's explicit ordering
+  // requirement. Runtime request handling order is governed by onRequest
+  // hook REGISTRATION order, not by which plugin registers routes first, so
+  // this ordering is what actually matters here.
+  await registerWebSocketRoutes(app);
 
   // Auth middleware
   await authMiddleware(app);

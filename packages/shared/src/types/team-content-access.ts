@@ -40,6 +40,39 @@ export type TeamAccessGrant =
     };
 
 // ---------------------------------------------------------------------------
+// SessionSubscriberGrant — evaluateSessionSubscriberAccess(userId, sessionId)
+//
+// websocket-delivery-time-authorization: design.md Decision D3.
+//
+// A thin sibling to TeamAccessGrant, scoped to a single session rather than
+// a team, for the three session-scoped WebSocket events
+// (vote_readiness_update, session_state_change, vote_revealed). It is not a
+// parallel authorization model — it queries the same tables
+// (sessions, team_memberships, session_participants) with the same indexes
+// evaluateTeamAccess already uses, and is intentionally narrower: there is
+// no "member" role distinction (participant vs. engineering_manager) and no
+// "admin" path, because Application Admins and Engineering Managers have no
+// legitimate claim to session-scoped live-event delivery — this differs from
+// evaluateTeamAccess, which grants EMs team-scoped read access.
+//
+// Returns null (never false, never a boolean) when neither path matches.
+// ---------------------------------------------------------------------------
+export type SessionSubscriberGrant =
+  | {
+      path: "facilitator";
+      sessionId: string;
+      teamId: string;
+      sessionStatus: SessionStatus;
+      actorGlobalRole: string;
+    }
+  | {
+      path: "participant";
+      sessionId: string;
+      teamId: string;
+      actorGlobalRole: string;
+    };
+
+// ---------------------------------------------------------------------------
 // Facilitator live session error state types (Group 10 — Task 10.1–10.5)
 //
 // These types define the structured HTTP response bodies for the four named

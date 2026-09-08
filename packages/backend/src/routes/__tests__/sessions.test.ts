@@ -4,9 +4,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mocks
 // ---------------------------------------------------------------------------
 const mockDbQuery = vi.fn();
+const mockDbConnect = vi.fn();
+const mockEmitAuditEvent = vi.fn();
+const mockPublishVoteReadinessUpdate = vi.fn();
 
 vi.mock("../../db.js", () => ({
-  db: { query: (...args: unknown[]) => mockDbQuery(...args) },
+  db: {
+    query: (...args: unknown[]) => mockDbQuery(...args),
+    connect: () => mockDbConnect(),
+  },
+}));
+vi.mock("../../auth/audit-logger.js", () => ({
+  emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
+}));
+vi.mock("../../realtime/ws-pubsub.js", () => ({
+  publishVoteReadinessUpdate: (...args: unknown[]) => mockPublishVoteReadinessUpdate(...args),
 }));
 vi.mock("../../config.js", () => ({
   config: {
@@ -23,6 +35,20 @@ vi.mock("../../config.js", () => ({
 
 import Fastify from "fastify";
 import { sessionRoutes } from "../sessions.js";
+
+/** Returns a mock transaction client that records calls, matching teams.test.ts's pattern. */
+function makeMockClient(queryResponses: Array<{ rows: unknown[] }> = []) {
+  let callIndex = 0;
+  const mockClientQuery = vi.fn((..._args: unknown[]) => {
+    const resp = queryResponses[callIndex] ?? { rows: [] };
+    callIndex++;
+    return Promise.resolve(resp);
+  });
+  return {
+    query: mockClientQuery,
+    release: vi.fn(),
+  };
+}
 
 function buildApp(sessionData: Record<string, unknown> = {}) {
   const app = Fastify();
@@ -169,8 +195,15 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       .mockResolvedValueOnce({
         rows: [{ global_role: "engineer", membership_role: "participant" }],
       })
-      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] }) // participant check
-      .mockResolvedValueOnce({ rows: [{ id: "vote-1" }] }); // vote INSERT
+      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] }); // participant check
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "vote-1" }] }, // INSERT votes
+      { rows: [] }, // INSERT audit_log (session.vote_submitted)
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp();
     const lockInRes = await app.inject({
@@ -187,11 +220,33 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
     // retroactively delete votes; they remain to be counted at reveal.
     //
     // Verify by checking that no DELETE query was issued for the votes table
-    const deleteCallExists = mockDbQuery.mock.calls.some((call) => {
+    // (across both the plain pool and the transaction client)
+    const allCalls = [...mockDbQuery.mock.calls, ...client.query.mock.calls];
+    const deleteCallExists = allCalls.some((call) => {
       const sql = (call[0] as string).toLowerCase();
       return sql.includes("delete") && sql.includes("vote");
     });
     expect(deleteCallExists).toBe(false);
+
+    // Audit trail (SEC-13/SEC-14): exactly one session.vote_submitted row,
+    // with the vote value/type excluded from metadata (SEC-16/SEC-22).
+    const auditInsertCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditInsertCall).toBeDefined();
+    const auditParams = auditInsertCall![1] as unknown[];
+    expect(auditParams).toContain("session.vote_submitted");
+    const metadataArg = auditParams.find(
+      (p) => typeof p === "string" && p.includes("session_topic_id"),
+    ) as string;
+    expect(metadataArg).not.toMatch(/vote_value|voteValue|vote_type|voteType/);
+
+    // Publish-after-commit: the readiness update must be published only
+    // after the transaction commits.
+    expect(mockPublishVoteReadinessUpdate).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ sessionId: "s1", sessionTopicId: "st1", voterId: "user-1" }),
+    );
   });
 
   // Task 3.7 — per-operation DB read, not connection-time value
@@ -216,8 +271,16 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       .mockResolvedValueOnce({
         rows: [{ global_role: "engineer", membership_role: "participant" }],
       })
-      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] })
-      .mockResolvedValueOnce({ rows: [{ id: "vote-1" }] });
+      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
+
+    mockDbConnect.mockResolvedValueOnce(
+      makeMockClient([
+        { rows: [] }, // BEGIN
+        { rows: [{ id: "vote-1" }] }, // INSERT votes
+        { rows: [] }, // INSERT audit_log
+        { rows: [] }, // COMMIT
+      ]),
+    );
 
     const firstRes = await app.inject({
       method: "POST",
@@ -251,5 +314,38 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       payload: { voteValue: 2, voteType: "finger" },
     });
     expect(secondRes.statusCode).toBe(403);
+  });
+
+  // Task 7.7 — resubmission (ON CONFLICT ... DO UPDATE) produces exactly one
+  // audit_log row per lock-in call, matching the one row it updates — not
+  // once per WebSocket recipient of the resulting vote_readiness_update.
+  it("7.7: a resubmission (vote already exists) still produces exactly one session.vote_submitted audit row per call", async () => {
+    const app = await buildApp();
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "vote-1" }] }, // INSERT ... ON CONFLICT DO UPDATE (resubmission updates the same row)
+      { rows: [] }, // INSERT audit_log
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/topics/st1/lock-in",
+      payload: { voteValue: 8, voteType: "finger" },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const auditInserts = client.query.mock.calls.filter((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditInserts).toHaveLength(1);
   });
 });

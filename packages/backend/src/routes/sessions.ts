@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../db.js";
 import type { SessionData } from "../auth/session-store.js";
+import { emitAuditEvent } from "../auth/audit-logger.js";
+import { publishVoteReadinessUpdate } from "../realtime/ws-pubsub.js";
 
 // ---------------------------------------------------------------------------
 // Session participation routes
@@ -293,18 +295,81 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // Insert the vote (upsert — re-submitting replaces the previous value)
-      const voteResult = await db.query<{ id: string }>(
-        `INSERT INTO votes
-           (session_id, session_topic_id, voter_id, vote_value, vote_type, revealed_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
-         ON CONFLICT (session_topic_id, voter_id)
-           DO UPDATE SET vote_value = EXCLUDED.vote_value,
-                         vote_type  = EXCLUDED.vote_type
-         RETURNING id`,
-        [sessionId, sessionTopicId, session.userId, voteValue, voteType],
-      );
+      // and the SEC-13/SEC-14 audit_log row, in the SAME transaction
+      // (websocket-delivery-time-authorization design.md Decision D7,
+      // transaction-pattern correction). This handler previously executed a
+      // single bare db.query() against the shared pool; adding the audit
+      // write requires the same explicit BEGIN/COMMIT pattern teams.ts
+      // already uses, so the vote and its audit record commit — or roll
+      // back — atomically. Not blocked on GitHub issue #26: this INSERT
+      // already commits today.
+      const client = await db.connect();
+      let voteId: string;
+      try {
+        await client.query("BEGIN");
 
-      return reply.code(201).send({ voteId: (voteResult.rows[0] as { id: string }).id });
+        const voteResult = await client.query<{ id: string }>(
+          `INSERT INTO votes
+             (session_id, session_topic_id, voter_id, vote_value, vote_type, revealed_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())
+           ON CONFLICT (session_topic_id, voter_id)
+             DO UPDATE SET vote_value = EXCLUDED.vote_value,
+                           vote_type  = EXCLUDED.vote_type
+           RETURNING id`,
+          [sessionId, sessionTopicId, session.userId, voteValue, voteType],
+        );
+        voteId = (voteResult.rows[0] as { id: string }).id;
+
+        // Audit metadata deliberately EXCLUDES vote_value and vote_type
+        // (SEC-16/SEC-22) — this is the one triggering action in this
+        // change where the excluded field and the field the handler is
+        // actively processing are the same value, so the exclusion is
+        // easiest to get wrong here (design.md Decision D7's extension).
+        await client.query(
+          `INSERT INTO audit_log
+             (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            session.userId,
+            global_role,
+            request.ip,
+            "session.vote_submitted",
+            teamId,
+            JSON.stringify({ session_id: sessionId, session_topic_id: sessionTopicId }),
+          ],
+        );
+
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      // Structured-log counterpart to the DB audit row.
+      emitAuditEvent(request.log, "session.vote_submitted", {
+        actorUserId: session.userId,
+        actorGlobalRole: global_role,
+        actorIp: request.ip,
+        sessionId,
+        sessionTopicId,
+      });
+
+      // Publish-after-commit ordering (design.md Decision D2/D7, tasks.md
+      // task 1.4 and 7.6): this PUBLISH runs only after the transaction
+      // above has successfully committed — never before, never inside it.
+      // Publishing before a successful commit would risk notifying the
+      // facilitator of a readiness update that a rolled-back transaction
+      // never actually persisted.
+      await publishVoteReadinessUpdate(sessionId, {
+        sessionId,
+        sessionTopicId,
+        voterId: session.userId,
+        readyAt: new Date().toISOString(),
+      });
+
+      return reply.code(201).send({ voteId });
     },
   );
 }

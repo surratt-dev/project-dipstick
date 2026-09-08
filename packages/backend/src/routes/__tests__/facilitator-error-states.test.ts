@@ -14,6 +14,15 @@ vi.mock("../../db.js", () => ({
 vi.mock("../../auth/audit-logger.js", () => ({
   emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
 }));
+// facilitator-sessions.js now imports publishSessionStateChange from
+// ws-pubsub.js, which imports the real `redis` singleton at module load
+// time. Mock it so this test never opens a real (or real-attempting) TCP
+// connection. This file's tests only exercise /reveal and
+// /facilitator-state, neither of which calls db.connect() or publishes —
+// this mock exists purely to short-circuit the transitive import.
+vi.mock("../../realtime/ws-pubsub.js", () => ({
+  publishSessionStateChange: vi.fn(),
+}));
 vi.mock("../../config.js", () => ({
   config: {
     DATABASE_URL: "postgres://test",

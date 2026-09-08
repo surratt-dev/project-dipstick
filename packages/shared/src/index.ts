@@ -28,6 +28,7 @@ export type {
 export type { AuthSession, JoinLink, AuthErrorCategory, AuthError } from "./types/auth.js";
 export type {
   TeamAccessGrant,
+  SessionSubscriberGrant,
   RevealFailureResponse,
   FacilitatorHistoricalDataUnavailable,
   FacilitatorTrendDataUnavailable,
@@ -49,3 +50,14 @@ export type {
   EMContentView,
   FacilitatorContentView,
 } from "./types/team-content-views.js";
+export type {
+  WsEventType,
+  WsEventEnvelope,
+  WsEventPayloadFor,
+  WsClientMessage,
+  VoteReadinessUpdatePayload,
+  SessionStateChangePayload,
+  VoteRevealedPayload,
+  VoteRevealedTriggerPayload,
+  TopicHistoryUpdatePayload,
+} from "./types/realtime.js";

@@ -44,7 +44,30 @@ export type AuditEventName =
   // session content are denied and logged by content endpoint handlers (Group 5).
   | "admin.membership_list_accessed"
   | "admin.team_detail_accessed"
-  | "admin.session_content_denied";
+  | "admin.session_content_denied"
+  // session.* events are the structured-log counterparts to audit_log DB
+  // rows written for WebSocket-triggered actions (SEC-13/SEC-14,
+  // websocket-delivery-time-authorization design.md Decision D7). The DB
+  // row (INSERT INTO audit_log) is the authoritative record, written in the
+  // same transaction as the action's own state-transition write; these are
+  // the operational alert path.
+  //
+  // session.reveal_triggered: BLOCKED on GitHub issue #26 for real
+  // end-to-end wiring — the reveal endpoint does not currently commit a
+  // state transition, so there is no commit point to write this alongside
+  // yet. The operation name and the INSERT/emitAuditEvent code are built and
+  // unit-tested against a stubbed commit point now (see
+  // facilitator-sessions.ts's reveal handler comment).
+  | "session.reveal_triggered"
+  // session.state_changed: covers the lobby-advance and session-close
+  // transitions, both of which already commit a real state transition today
+  // (topic advance is excluded until issue #26 lands — see design.md's
+  // "Blocking Dependency" section).
+  | "session.state_changed"
+  // session.vote_submitted: NOT blocked by issue #26 — the vote lock-in
+  // handler's INSERT INTO votes already commits today. metadata excludes
+  // vote_value and vote_type per SEC-16/SEC-22.
+  | "session.vote_submitted";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,
