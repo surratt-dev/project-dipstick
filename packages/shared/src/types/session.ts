@@ -51,3 +51,65 @@ export interface SessionParticipant {
   userId: string;
   joinedAt: Date;
 }
+
+// ---------------------------------------------------------------------------
+// session-lifecycle-transitions: SESSION-004 / SESSION-005 / SESSION-012
+// response shapes (design.md Decision D1 / D4a).
+// ---------------------------------------------------------------------------
+
+export interface StartSessionResponse {
+  sessionId: string;
+  status: "pre_session";
+  startedAt: string;
+  actionItems: Array<{
+    actionItemId: string;
+    description: string;
+    ownerUserId: string;
+    ownerDisplayName: string;
+    status: "open" | "in_progress";
+    originatingSessionId: string;
+    originatingSessionNumber: number;
+    stalenessLevel: "none" | "yellow" | "orange" | "red";
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  hasOpenItems: boolean;
+}
+
+export interface BeginVotingResponse {
+  sessionId: string;
+  status: "active";
+  votingStartedAt: string;
+  currentTopic: {
+    /** firstSessionTopicId — session_topics.id, never topics.id (design.md's id-space note) */
+    sessionTopicId: string;
+    topicName: string;
+    topicPrompt: string;
+    voteType: VoteType;
+    phase: "voting";
+    firstSessionDescription: string | null;
+  };
+}
+
+export interface TopicAdvanceResponse {
+  sessionId: string;
+  teamId: string;
+  /** sessions.status after this transition — the discriminant (design.md Decision D4a) */
+  status: "active" | "wrap_up";
+  completedTopic: {
+    sessionTopicId: string;
+    topicName: string;
+    completedAt: string;
+  };
+  /** Present only when status === 'active' */
+  currentTopic?: {
+    /** nextSessionTopicId — session_topics.id, never topics.id */
+    sessionTopicId: string;
+    topicName: string;
+    topicPrompt: string;
+    voteType: VoteType;
+    phase: "voting";
+  };
+  /** Present only when status === 'wrap_up' */
+  wrapUpStartedAt?: string;
+}

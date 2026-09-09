@@ -10,6 +10,8 @@ This spec does NOT cover: WebSocket delivery-time authorization (see websocket-s
 
 **Implementation note — `sessions.status` enum value:** The codebase uses `'complete'` (not `'completed'`) for the completed session status throughout. This is the normative spelling for all SQL and application code in this spec.
 
+**Implementation note — Error States 1a/1b (`session-lifecycle-transitions`):** The backend contract for both states — the `already_revealed` and `advance_blocked` `errorState`-keyed response shapes, returned by the `session-topic-lifecycle` capability's reveal and topic-advance endpoints — is implemented and covered by backend tests, including the ordering rule that authorization always runs before either precondition check. The frontend rendering behavior each state's "Required display" describes below is not yet implemented; it is named here as a required acceptance condition for this capability, tracked as open follow-up work, not assumed satisfied by the correct HTTP status/body alone.
+
 ---
 
 ## Requirements
@@ -369,6 +371,16 @@ The application SHALL provide distinct, named error states for facilitators enco
   - *Non-recoverable:* "This session is no longer in an active state. Please review the session status." — The facilitator knows to check session state before retrying.
 - MUST NOT display: A generic error modal, a blank results panel, or technical details.
 
+**Error State 1a — Reveal attempted on an already-revealed topic:**
+- Trigger: The facilitator triggers reveal for a topic whose `session_topics.status` is already `revealed` (a duplicate click, a stale tab, a race with another reveal request for the same topic).
+- Required display: The facilitator's screen renders **indistinguishably from a successful reveal** — the topic's revealed state is shown, using the `revealedAt` timestamp returned with the response. No error modal, toast, or banner implying something went wrong. The facilitator did nothing incorrect; the topic is, and remains, revealed.
+- MUST NOT display: Any error chrome, or a message suggesting the reveal failed or must be retried.
+
+**Error State 1b — Topic advance attempted before the current topic is revealed:**
+- Trigger: The facilitator attempts to advance to the next topic (or into wrap-up) while the current topic's `session_topics.status` is still `voting`.
+- Required display: A blocked-advance state that offers the reveal action directly, rather than requiring the facilitator to back out and locate the reveal control themselves. The response's `requiresReveal: true` field signals this to the client.
+- MUST NOT display: A generic error modal, or a dead-end state with no actionable next step.
+
 **Error State 2 — Historical data unavailable during active session:**
 - Trigger: The facilitator is viewing historical trend data during the session and an authorization check fails or the data endpoint returns an error.
 - Required display: An empty state labeled "Historical data is temporarily unavailable. Your session is still active." — This communicates a transient data issue, not an access denial.
@@ -390,6 +402,18 @@ The application SHALL provide distinct, named error states for facilitators enco
 - **AND** the backend authorization check fails transiently
 - **THEN** the facilitator view shows the recoverable error message
 - **AND** the session panel remains visible and the session is still in an active state
+
+#### Scenario: Facilitator sees the revealed state, not an error, on a duplicate reveal
+
+- **WHEN** the facilitator triggers reveal for a topic that is already `revealed`
+- **THEN** the facilitator view shows the topic's revealed state, using the `revealedAt` timestamp from the response
+- **AND** no error modal, toast, or banner is displayed
+
+#### Scenario: Facilitator can reveal directly from a blocked-advance state
+
+- **WHEN** the facilitator attempts to advance past a topic that has not yet been revealed
+- **THEN** the response is rejected with the `advance_blocked` error state and `requiresReveal: true`
+- **AND** the facilitator view offers the reveal action directly from the blocked state, without requiring navigation to find it
 
 #### Scenario: Facilitator sees non-blocking banner on unexpected session status change
 

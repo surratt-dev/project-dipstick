@@ -185,11 +185,11 @@ async function dispatchSessionStateChange(
 // serializeForMemberParticipant (design.md Decision D4). No independent
 // payload-construction or reveal-gating logic lives in this function.
 //
-// BLOCKED on Group 0 / GitHub issue #26 for real end-to-end firing: the
-// reveal endpoint does not commit a reveal-status transition today, so
-// nothing in production publishes a vote_revealed envelope yet. This
-// handler and its unit tests are fully exercisable now against a directly
-// invoked call or a manually-published ws:events message.
+// Real end-to-end firing wired by session-lifecycle-transitions (GitHub
+// issue #26 resolved): the reveal endpoint (packages/backend/src/routes/
+// facilitator-sessions.ts, POST .../reveal) now commits the voting ->
+// revealed transition and publishes this event after that transaction
+// commits.
 // ---------------------------------------------------------------------------
 async function dispatchVoteRevealed(
   envelope: Extract<WsEventEnvelope, { eventType: "vote_revealed" }>,
@@ -226,10 +226,16 @@ async function dispatchVoteRevealed(
 // spec and the content.ts HTTP precedent, which deny only `admin` and
 // proceed identically for `member` and `facilitator`).
 //
-// BLOCKED on Group 0 / GitHub issue #26 for real end-to-end firing: no code
-// commits a topic-advance or action-item-finalization transition today.
-// This handler and its unit tests are fully exercisable now against a
-// directly invoked call or a manually-published ws:events message.
+// Real end-to-end firing wired by session-lifecycle-transitions (GitHub
+// issue #26 resolved): SESSION-012 (packages/backend/src/routes/
+// facilitator-sessions.ts, POST .../topics/advance) publishes this event
+// after its transaction commits, for both the topic-to-topic branch and the
+// wrap-up-entry branch. This event's real trigger set is topic-to-topic
+// advance only — "action item finalization" was a stale framing corrected
+// by session-lifecycle-transitions (proposal.md's Out of Scope section):
+// action_items has no finalized/finalized_at column, and finalization is
+// already satisfied by the existing session-complete write (SESSION-006).
+// No new write was needed for it.
 // ---------------------------------------------------------------------------
 async function dispatchTopicHistoryUpdate(
   envelope: Extract<WsEventEnvelope, { eventType: "topic_history_update" }>,

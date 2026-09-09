@@ -199,6 +199,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
+      { rows: [{ status: "voting" }] }, // SELECT ... FOR UPDATE (Decision D5 race lock)
       { rows: [{ id: "vote-1" }] }, // INSERT votes
       { rows: [] }, // INSERT audit_log (session.vote_submitted)
       { rows: [] }, // COMMIT
@@ -276,6 +277,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
     mockDbConnect.mockResolvedValueOnce(
       makeMockClient([
         { rows: [] }, // BEGIN
+        { rows: [{ status: "voting" }] }, // SELECT ... FOR UPDATE (Decision D5 race lock)
         { rows: [{ id: "vote-1" }] }, // INSERT votes
         { rows: [] }, // INSERT audit_log
         { rows: [] }, // COMMIT
@@ -330,6 +332,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
+      { rows: [{ status: "voting" }] }, // SELECT ... FOR UPDATE (Decision D5 race lock)
       { rows: [{ id: "vote-1" }] }, // INSERT ... ON CONFLICT DO UPDATE (resubmission updates the same row)
       { rows: [] }, // INSERT audit_log
       { rows: [] }, // COMMIT
@@ -347,5 +350,48 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       (call[0] as string).includes("INSERT INTO audit_log"),
     );
     expect(auditInserts).toHaveLength(1);
+  });
+
+  // tasks.md 2.3 (session-lifecycle-transitions design.md Decision D5):
+  // the topic was 'voting' at the pre-transaction check but had already been
+  // revealed by the time the lock-in's own transaction reached the row lock
+  // — the race window the pre-existing topic_status !== 'voting' check
+  // (sessions.ts:213-221) cannot see.
+  it("2.3: rejects lock-in with 422 when session_topics.status is 'revealed' at the in-transaction row lock", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ status: "revealed" }] }, // SELECT ... FOR UPDATE — reveal won the race
+      { rows: [] }, // ROLLBACK
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/topics/st1/lock-in",
+      payload: { voteValue: 3, voteType: "finger" },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.category).toBe("invalid_request");
+    expect(res.json().error.message).toContain("closed");
+
+    // No vote was inserted, and the transaction never committed.
+    const insertVoteCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO votes"),
+    );
+    expect(insertVoteCall).toBeUndefined();
+    const commitCall = client.query.mock.calls.find((call) => call[0] === "COMMIT");
+    expect(commitCall).toBeUndefined();
+    const rollbackCall = client.query.mock.calls.find((call) => call[0] === "ROLLBACK");
+    expect(rollbackCall).toBeDefined();
+    expect(mockPublishVoteReadinessUpdate).not.toHaveBeenCalled();
   });
 });

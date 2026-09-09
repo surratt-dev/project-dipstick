@@ -4,24 +4,29 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mocks — must be defined before importing the modules under test
 // ---------------------------------------------------------------------------
 const mockDbQuery = vi.fn();
+const mockDbConnect = vi.fn();
 const mockEmitAuditEvent = vi.fn();
+const mockPublishVoteRevealed = vi.fn();
 
 vi.mock("../../db.js", () => ({
   db: {
     query: (...args: unknown[]) => mockDbQuery(...args),
+    connect: () => mockDbConnect(),
   },
 }));
 vi.mock("../../auth/audit-logger.js", () => ({
   emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
 }));
-// facilitator-sessions.js now imports publishSessionStateChange from
-// ws-pubsub.js, which imports the real `redis` singleton at module load
-// time. Mock it so this test never opens a real (or real-attempting) TCP
-// connection. This file's tests only exercise /reveal and
-// /facilitator-state, neither of which calls db.connect() or publishes —
-// this mock exists purely to short-circuit the transitive import.
+// facilitator-sessions.js now imports publishSessionStateChange and
+// publishVoteRevealed from ws-pubsub.js, which imports the real `redis`
+// singleton at module load time. Mock it so this test never opens a real
+// (or real-attempting) TCP connection. Since session-lifecycle-transitions,
+// a successful reveal DOES call db.connect() (the reveal write's
+// transaction) and publishVoteRevealed (after commit) — both are mocked
+// below for the "reveal succeeds" case.
 vi.mock("../../realtime/ws-pubsub.js", () => ({
   publishSessionStateChange: vi.fn(),
+  publishVoteRevealed: (...args: unknown[]) => mockPublishVoteRevealed(...args),
 }));
 vi.mock("../../config.js", () => ({
   config: {
@@ -45,6 +50,20 @@ vi.mock("../../content/timing-oracle.js", () => ({
 import Fastify from "fastify";
 import { contentRoutes } from "../content.js";
 import { facilitatorSessionRoutes } from "../facilitator-sessions.js";
+
+/** Returns a mock transaction client that records calls, matching teams.test.ts's pattern. */
+function makeMockClient(queryResponses: Array<{ rows: unknown[]; rowCount?: number }> = []) {
+  let callIndex = 0;
+  const mockClientQuery = vi.fn((..._args: unknown[]) => {
+    const resp = queryResponses[callIndex] ?? { rows: [] };
+    callIndex++;
+    return Promise.resolve(resp);
+  });
+  return {
+    query: mockClientQuery,
+    release: vi.fn(),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Group 10 — Live Session Facilitator Error States
@@ -128,15 +147,28 @@ describe("Task 10.1 / 10.6: Error State 1 — Reveal failure", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("reveal succeeds: facilitator is authorized and session is active", async () => {
-    // Session exists, user IS the facilitator, session is 'active'
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{
-        id: "sess-1",
-        team_id: "team-1",
-        facilitator_id: "facilitator-1",
-        status: "active",
-      }],
-    });
+    // Session exists, user IS the facilitator, session is 'active', and has
+    // a current topic (session-lifecycle-transitions: reveal now performs a
+    // real state-transition write against that topic).
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "sess-1",
+          team_id: "team-1",
+          facilitator_id: "facilitator-1",
+          status: "active",
+          current_topic_id: "topic-1",
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }); // actor global_role
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "session-topic-1", revealed_at: new Date("2026-09-08T00:00:00Z") }], rowCount: 1 }, // conditional UPDATE
+      { rows: [] }, // INSERT audit_log (recordRevealTriggeredAudit)
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildFacilitatorApp("facilitator-1");
     const res = await app.inject({
@@ -150,6 +182,11 @@ describe("Task 10.1 / 10.6: Error State 1 — Reveal failure", () => {
     expect(body.sessionId).toBe("sess-1");
     expect(body.teamId).toBe("team-1");
     // Task 10.6: recovery path is not needed because reveal succeeded
+
+    expect(mockPublishVoteRevealed).toHaveBeenCalledWith(
+      "sess-1",
+      expect.objectContaining({ sessionId: "sess-1", sessionStatus: "active" }),
+    );
   });
 
   it("reveal fails — recoverable: user is not the facilitator but session IS active", async () => {

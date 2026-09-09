@@ -308,6 +308,34 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       try {
         await client.query("BEGIN");
 
+        // session-lifecycle-transitions design.md Decision D5: close the
+        // vote lock-in / reveal race. This row lock is the SAME lock the
+        // reveal endpoint's conditional UPDATE (facilitator-sessions.ts)
+        // takes on this same session_topics row — whichever transaction
+        // reaches the row first forces the other to wait, and the loser
+        // re-evaluates against post-commit state.
+        const topicLockResult = await client.query<{ status: string }>(
+          `SELECT status FROM session_topics WHERE id = $1 FOR UPDATE`,
+          [sessionTopicId],
+        );
+        const lockedTopicStatus = (topicLockResult.rows[0] as { status: string } | undefined)?.status;
+
+        if (lockedTopicStatus !== "voting") {
+          await client.query("ROLLBACK");
+          // Same status code as the pre-transaction topic_status !== 'voting'
+          // check above (sessions.ts:213-221) — this is the same substantive
+          // failure ("voting is not open for this topic"), caught by the
+          // race-closing check instead of the pre-check, so it must return
+          // the same code (design.md Decision D5).
+          return reply.code(422).send({
+            error: {
+              category: "invalid_request" as const,
+              message: "Voting has closed for this topic.",
+              correlationId: crypto.randomUUID(),
+            },
+          });
+        }
+
         const voteResult = await client.query<{ id: string }>(
           `INSERT INTO votes
              (session_id, session_topic_id, voter_id, vote_value, vote_type, revealed_at)
