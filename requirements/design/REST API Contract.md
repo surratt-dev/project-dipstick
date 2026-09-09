@@ -1265,7 +1265,9 @@ POST /api/v1/sessions/:sessionId/begin-voting
 ```
 
 **Description**
-Transitions the session from `pre_session` to `active`, sets the first topic to `voting` phase, and triggers the WebSocket `topic.advanced` broadcast.
+Transitions the session from `pre_session` to `active`, sets the first topic to `voting` phase, and publishes a `session_state_change` WebSocket broadcast after the transaction commits.
+
+**Corrected by `session-lifecycle-transitions` (2026-09-08):** this entry previously stated `SESSION-005` "triggers the WebSocket `topic.advanced` broadcast." As implemented, `SESSION-005` calls `publishSessionStateChange` (a `session_state_change` event, not a `topic.advanced`/`topic_history_update` event) — there is no next-topic advance happening here, only the session's first entry into `active`. `topic_history_update` is published only by `SESSION-012`'s topic-to-topic advance and wrap-up-entry branches. See Appendix D's corrected `topic.advance` row.
 
 **Auth:** Protected.
 
@@ -1312,9 +1314,8 @@ interface BeginVotingResponse {
 - This endpoint performs the following writes in order (per persistence layer mapping, "Facilitator Advances to Topic"):
   1. `sessions.status = 'active'`, `sessions.voting_started_at = now()`, `sessions.current_topic_id = first_topic_id` (PostgreSQL transaction)
   2. First `session_topics.status = 'voting'` (same transaction)
-  3. Redis state hash updated
-  4. WebSocket `topic.advanced` broadcast sent to all connected clients
-- The WebSocket broadcast happens after the HTTP response is returned. The response confirms the state transition; participants see the new topic via WebSocket.
+  3. `session_state_change` WebSocket broadcast published to the session's subscribers, after the transaction above commits
+- The WebSocket broadcast happens after the transaction commits, not before the HTTP response is returned or as part of it — the response confirms the state transition; participants see the new topic via the `session_state_change` WebSocket event.
 - Participants cannot trigger this transition (FR-3.4).
 
 ---
@@ -1721,6 +1722,88 @@ interface AnnotateSessionResponse {
 
 ---
 
+### SESSION-012 — Advance Topic (Topic-to-Topic, or Enter Wrap-Up)
+
+**Added by `session-lifecycle-transitions` (2026-09-08).** No endpoint ID existed for this transition prior to this change — confirmed by direct review of all previously-documented endpoints. Fully specified here per `session-lifecycle-transitions` design.md Decision D4/D4a.
+
+**Method and URL**
+```
+POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance
+```
+
+**Description**
+Transitions the session's current topic from `revealed` to `complete`. If a next topic exists in `display_order`, that topic transitions to `voting` and `sessions.current_topic_id` updates — the session stays `active`. If no next topic exists, the session transitions to `wrap_up`. One endpoint handles both cases; the branch is a server-side decision, not a client choice (design.md Decision D4's rationale — the client cannot reliably know whether the topic it is looking at is the last one).
+
+**Auth:** Protected.
+
+**Authorization:** Both of the following must pass, in order, before the precondition check below runs (design.md Decision D4's "Authorization, named explicitly" note, matching this file's existing `advance`/`complete` handlers for the same two-path-param shape):
+1. `sessions.team_id = :teamId` (else `403`, "Session does not belong to this team.")
+2. `sessions.facilitator_id = authenticated_user_id` (else `403`, "Only the facilitator can advance the session's topic.")
+
+**Request**
+
+| Location | Name | Type | Required | Description |
+|---|---|---|---|---|
+| Path | `teamId` | `uuid` | Yes | Team identifier |
+| Path | `sessionId` | `uuid` | Yes | Session identifier |
+
+No request body.
+
+**Response**
+
+`200 OK`
+
+```typescript
+interface TopicAdvanceResponse {
+  sessionId: string;
+  teamId: string;
+  status: 'active' | 'wrap_up';   // sessions.status after this transition — the discriminant
+  completedTopic: {
+    sessionTopicId: string;
+    topicName: string;
+    completedAt: string;
+  };
+  // Present only when status === 'active' (a next topic exists):
+  currentTopic?: {
+    sessionTopicId: string;
+    topicName: string;
+    topicPrompt: string;
+    voteType: 'finger' | 'roman' | 'modified_roman';
+    phase: 'voting';
+  };
+  // Present only when status === 'wrap_up' (no next topic remained):
+  wrapUpStartedAt?: string;
+}
+```
+
+**Error Responses**
+
+| Status | When |
+|---|---|
+| `401 Unauthorized` | No valid session cookie |
+| `403 Forbidden` | Authenticated user is not the session's facilitator, or the session does not belong to `:teamId` |
+| `404 Not Found` | Session does not exist |
+| `409 Conflict` | The current topic's `session_topics.status` is not `revealed` — returns `TopicAdvanceBlockedResponse` (`errorState: "advance_blocked"`, `requiresReveal: true`), not a bare `409` body |
+
+```typescript
+interface TopicAdvanceBlockedResponse {
+  errorState: "advance_blocked";
+  sessionId: string;
+  teamId: string;
+  sessionTopicId: string;    // the CURRENT (unrevealed) topic
+  requiresReveal: true;      // tells the frontend to offer the reveal action inline
+}
+```
+
+**Notes**
+- Guarded by a hard precondition, enforced via a conditional `UPDATE ... WHERE status = 'revealed'` with a row-count check (the same mechanism `POST .../reveal` uses for its own `voting → revealed` precondition) — not a separate lock statement.
+- Writes `audit_log` with `operation = 'session.topic_advanced'` (topic-to-topic branch) or the existing `operation = 'session.state_changed'` (wrap-up-entry branch, since `sessions.status` changes here exactly as it does for every other transition already using that operation).
+- Publishes, after the transaction commits: `topic_history_update` (`updateType: "topic_advanced"`) on the topic-to-topic branch; both `session_state_change` and `topic_history_update` on the wrap-up-entry branch (the just-completed last topic's completion is team-content-relevant on its own).
+- `topic_history_update` is delivered via the team-scoped WebSocket registry, not the session-scoped one — a client must be subscribed to its team channel (in addition to its session channel) to receive this event during a live session. See Appendix D.
+- The `advance_blocked` `409` is a calm, non-error UX state, not a generic failure — see `team-content-access` spec's Error State 1b. The frontend must offer the reveal action directly from this state.
+
+---
+
 ## Group 5: Voting and Results
 
 ---
@@ -1921,7 +2004,7 @@ interface GetRevealedVotesResponseForEM {
 
 **Notes**
 - The `403` for unrevealed topics is a hard correctness requirement (BRD Section 6.1). It must not be possible to retrieve pre-reveal vote values via this endpoint, regardless of role.
-- The reveal itself is triggered via WebSocket (`reveal.trigger`), not this endpoint. This REST endpoint serves clients who missed the `session.revealed` WebSocket event.
+- The reveal itself is triggered via the authenticated REST endpoint `POST /api/v1/teams/:teamId/sessions/:sessionId/reveal`, which performs the `voting → revealed` write and — after that transaction commits — publishes the `vote_revealed` WebSocket broadcast (corrected by `session-lifecycle-transitions`, 2026-09-08; see Appendix D's corrected `reveal.trigger` row). This `VOTE-003` endpoint is a separate, read-only path serving clients who missed that WebSocket event.
 - Votes are read from PostgreSQL (not Redis). Pre-reveal votes in Redis are never accessible via HTTP.
 
 ---
@@ -2861,13 +2944,13 @@ The following open questions must be resolved before the affected endpoints can 
 
 ## Appendix D: Endpoints Explicitly Excluded from HTTP REST
 
-The following behaviors must NOT be implemented as REST endpoints. They are governed by the WebSocket layer. Implementing them as REST would violate the simultaneous reveal integrity requirement (BRD Section 6.1).
+**Corrected by `session-lifecycle-transitions` (2026-09-08):** the original framing below — "must NOT be implemented as REST endpoints," citing BRD 6.1 — supports excluding vote *submission* from REST (timing exposure) but does not support excluding the facilitator's own privileged *trigger* actions, and it already contradicted `SESSION-004`/`SESSION-005` being specified as REST endpoints elsewhere in this same document. The actual, implemented architecture for `reveal.trigger` and `topic.advance` is: an authenticated REST endpoint performs the trigger and the state-transition write (`POST .../reveal`, already existing; `SESSION-012`, `POST .../topics/advance`, new), and — only after that write's transaction commits — a single WebSocket broadcast fans the result out to every connected client simultaneously. The REST trigger is not the integrity mechanism; the single post-commit broadcast is. The rows below are corrected to describe this, not to reassert the original "excluded from REST" framing, which no longer holds for these two rows. `vote.submit`'s exclusion is untouched — its rationale (HTTP polling would expose vote timing to observers) does not share this flaw, since submitting a vote is not a privileged trigger action and timing exposure remains a real concern.
 
-| Behavior | WebSocket message | Why not REST |
+| Behavior | Trigger / WebSocket message | Rationale |
 |---|---|---|
-| Submit and lock in a vote | `vote.submit` | HTTP polling would expose vote timing to observers |
-| Trigger the vote reveal | `reveal.trigger` | Must be a server-initiated broadcast to all clients simultaneously |
-| Advance to next topic | `topic.advance` | Must broadcast to all participants simultaneously |
+| Submit and lock in a vote | `vote.submit` (WebSocket only — no REST trigger) | HTTP polling would expose vote timing to observers |
+| Trigger the vote reveal | REST trigger: `POST /api/v1/teams/:teamId/sessions/:sessionId/reveal`. WebSocket broadcast: `vote_revealed`, published to every session subscriber only after the reveal write's transaction commits | Simultaneous delivery is achieved by the single post-commit broadcast, not by the trigger's transport — an authenticated REST action from the facilitator is the correct trigger for this privileged action |
+| Advance to next topic | REST trigger: `POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance` (`SESSION-012`). WebSocket broadcast: `topic_history_update`, published to the team's subscribers only after the advance write's transaction commits | Same pattern as the reveal trigger above — an authenticated REST action performs and commits the write; the post-commit broadcast is what achieves simultaneous delivery |
 | Participant join/leave notification | `participant.joined` / `participant.left` | Real-time push required |
 | Readiness grid updates | `vote.locked` (to facilitator only) | Polling introduces unacceptable latency |
 | Action item status real-time propagation | `actionitem.updated` | Write via REST (`VOTE-002`), notification via WebSocket |

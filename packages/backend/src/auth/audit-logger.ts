@@ -52,22 +52,28 @@ export type AuditEventName =
   // same transaction as the action's own state-transition write; these are
   // the operational alert path.
   //
-  // session.reveal_triggered: BLOCKED on GitHub issue #26 for real
-  // end-to-end wiring — the reveal endpoint does not currently commit a
-  // state transition, so there is no commit point to write this alongside
-  // yet. The operation name and the INSERT/emitAuditEvent code are built and
-  // unit-tested against a stubbed commit point now (see
-  // facilitator-sessions.ts's reveal handler comment).
+  // session.reveal_triggered: wired to a real state-transition commit by
+  // session-lifecycle-transitions (GitHub issue #26 resolved) — written in
+  // the same transaction as the reveal endpoint's voting -> revealed write
+  // (facilitator-sessions.ts's reveal handler).
   | "session.reveal_triggered"
-  // session.state_changed: covers the lobby-advance and session-close
-  // transitions, both of which already commit a real state transition today
-  // (topic advance is excluded until issue #26 lands — see design.md's
-  // "Blocking Dependency" section).
+  // session.state_changed: covers the lobby-advance, session-close,
+  // SESSION-004/005 session-phase-entry, and SESSION-012 wrap-up-entry
+  // transitions — every sessions.status change already commits a real
+  // state transition. The topic-to-topic advance case (sessions.status
+  // does NOT change) uses session.topic_advanced instead.
   | "session.state_changed"
   // session.vote_submitted: NOT blocked by issue #26 — the vote lock-in
   // handler's INSERT INTO votes already commits today. metadata excludes
   // vote_value and vote_type per SEC-16/SEC-22.
-  | "session.vote_submitted";
+  | "session.vote_submitted"
+  // session.topic_advanced: session-lifecycle-transitions (SESSION-012),
+  // the topic-to-topic advance branch, where sessions.status does NOT
+  // itself change (the wrap-up-entry branch reuses session.state_changed,
+  // consistent with every other sessions.status transition already
+  // audited). metadata carries completed_session_topic_id and
+  // new_session_topic_id (both session_topics.id values).
+  | "session.topic_advanced";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

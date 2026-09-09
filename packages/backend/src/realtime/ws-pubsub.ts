@@ -72,16 +72,12 @@ export async function publishSessionStateChange(
   await publishWsEvent({ eventType: "session_state_change", sessionId, payload });
 }
 
-// TODO(#26): wire into the reveal handler
+// Wired into the reveal handler
 // (packages/backend/src/routes/facilitator-sessions.ts,
-// POST /api/v1/teams/:teamId/sessions/:sessionId/reveal) once the topic
-// reveal-status flip (voting -> revealed) commits a real state transition.
-// Today that endpoint validates authorization and session-state
-// preconditions only — there is no commit to publish after. This wrapper is
-// built and unit-tested against a stubbed/direct call (see
-// __tests__/ws-pubsub.test.ts) so it is ready to wire in the moment issue
-// #26 lands. See design.md's "Blocking Dependency" section and tasks.md
-// Group 0.
+// POST /api/v1/teams/:teamId/sessions/:sessionId/reveal) — called after the
+// topic reveal-status flip (voting -> revealed) commits
+// (session-lifecycle-transitions design.md Decision D2/D3, tasks.md task
+// 3.6). GitHub issue #26 is resolved by this change.
 export async function publishVoteRevealed(
   sessionId: string,
   payload: VoteRevealedTriggerPayload,
@@ -89,13 +85,16 @@ export async function publishVoteRevealed(
   await publishWsEvent({ eventType: "vote_revealed", sessionId, payload });
 }
 
-// TODO(#26): wire into the topic-advance / action-item-finalization handler
-// once that write exists. No code in packages/backend/src commits a topic
-// advance or action-item finalization transition today — there is nothing
-// to attach this publish call to yet. This wrapper is built and
-// unit-tested against a stubbed/direct call (see __tests__/ws-pubsub.test.ts)
-// so it is ready to wire in the moment issue #26 lands. See design.md's
-// "Blocking Dependency" section and tasks.md Group 0.
+// Wired into the topic-advance handler
+// (packages/backend/src/routes/facilitator-sessions.ts, POST
+// /api/v1/teams/:teamId/sessions/:sessionId/topics/advance) — called after a
+// topic-to-topic advance or wrap-up-entry transition commits
+// (session-lifecycle-transitions design.md Decision D4, tasks.md tasks
+// 4.9/4.10). Its real trigger set is topic-to-topic advance only —
+// "action item finalization" was a stale framing this change corrects (see
+// proposal.md's Out of Scope section); finalization is already satisfied by
+// the existing session-complete write. GitHub issue #26 is resolved by this
+// change.
 export async function publishTopicHistoryUpdate(
   teamId: string,
   payload: TopicHistoryUpdatePayload,

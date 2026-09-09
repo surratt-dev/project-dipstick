@@ -114,6 +114,38 @@ export type RevealFailureResponse =
     };
 
 /**
+ * Error State 1a — Reveal attempted on an already-revealed topic
+ * (session-lifecycle-transitions design.md Decision D3).
+ *
+ * The facilitator's screen must render indistinguishably from a successful
+ * reveal — no error chrome. revealedAt lets the frontend render the revealed
+ * state without a second round-trip.
+ */
+export interface RevealAlreadyRevealedResponse {
+  errorState: "already_revealed";
+  sessionId: string;
+  teamId: string;
+  sessionTopicId: string;
+  revealedAt: string;
+}
+
+/**
+ * Error State 1b — Topic advance attempted before the current topic is
+ * revealed (session-lifecycle-transitions design.md Decision D3).
+ *
+ * requiresReveal signals the frontend to offer the reveal action inline
+ * rather than leaving the facilitator at a dead end.
+ */
+export interface TopicAdvanceBlockedResponse {
+  errorState: "advance_blocked";
+  sessionId: string;
+  teamId: string;
+  /** the CURRENT (unrevealed) topic */
+  sessionTopicId: string;
+  requiresReveal: true;
+}
+
+/**
  * Error State 2 — Historical data unavailable during active session.
  *
  * Returned with HTTP 200 when a facilitator's trend or session-history endpoint
