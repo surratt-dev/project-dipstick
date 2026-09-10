@@ -163,6 +163,16 @@ function mockResourceEmpty() {
   mockDbQuery.mockResolvedValueOnce({ rows: [] });
 }
 
+// websocket-connection-reauthorization (SEC-26), design.md Decision D9,
+// tasks.md task 5.2: the facilitator path of GET /api/v1/teams/:teamId/sessions
+// specifically (not /trends, not /action-items) issues one additional query
+// (connectionRecoveries) after the resource query. Call this immediately
+// after mockResourceEmpty() for any facilitator request to the /sessions
+// endpoint.
+function mockConnectionRecoveriesEmpty() {
+  mockDbQuery.mockResolvedValueOnce({ rows: [] });
+}
+
 function mockAuditInsert() {
   mockDbQuery.mockResolvedValueOnce({ rows: [] });
 }
@@ -264,6 +274,7 @@ describe("Task 11.1: All role paths against GET /api/v1/teams/:id/sessions", () 
     mockQ1NoMembership("facilitator");
     mockQ2FacilitatorSession("sess-1", "active");
     mockResourceEmpty();
+    mockConnectionRecoveriesEmpty();
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
@@ -292,6 +303,7 @@ describe("Task 11.1: All role paths against GET /api/v1/teams/:id/sessions", () 
     mockQ1NoMembership("facilitator");
     mockQ2FacilitatorSession("sess-draft-1", "draft");
     mockResourceEmpty();
+    mockConnectionRecoveriesEmpty();
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
@@ -459,6 +471,7 @@ describe("Task 11.4: Facilitator scoping — Team B facilitator cannot access Te
     mockQ1NoMembership("facilitator"); // no Team B membership row (facilitator)
     mockQ2FacilitatorSession("sess-B-1", "active"); // facilitator_id matches, team_id = 'team-B'
     mockResourceEmpty(); // resource query succeeds
+    mockConnectionRecoveriesEmpty();
 
     const app = await buildApp("facilitator-actor");
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-B/sessions" });

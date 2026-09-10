@@ -1,0 +1,34 @@
+# Internal Champion Sign-Off: websocket-connection-reauthorization
+
+**Author:** Devon Calloway (Internal Champion / SME)
+**Change:** websocket-connection-reauthorization (GitHub issue #27, SEC-25/SEC-26), archived 2026-09-09
+
+## Sign-off, with two conditions I want on record
+
+I'm signing off on this shipping, but not as an unqualified "nothing left to think about." This closed a real gap — the quiet-lobby, revoked-facilitator scenario I named in exploration stopped being hypothetical the moment `session-lifecycle-transitions` wired real triggers, and this change closes it properly, not with a placeholder. The design work that got us here — finding the original SEC-26 recovery mechanism was completely unbuildable given how this app actually re-authenticates, and rebuilding it around a correlation marker instead of pretending a torn-down connection could resume — is exactly the kind of rigor I want to see before something touches a live session. The session-resurrection race the security review caught (a stale refresh undoing a real revocation) is the sort of bug that would have sat quiet for months and then failed in exactly the worst way, at exactly the worst moment. Glad it got caught here, not in a pilot.
+
+That said, two things I want named plainly rather than let slide as "backend's done, ship it."
+
+## 1. The non-disclosure guarantee is real on the wire, not yet complete on the screen
+
+Everything this change controls — the close codes, the audit trail's operation filter, the disjoint signal paths — correctly preserves the guarantee I care about most: a revoked connection's close is indistinguishable from any other silent close, and the new `session.connection_recovered` trace only ever fires for a resolved SEC-26 recovery, never a revocation. That part is done right, and I checked it against the actual query, not just the prose.
+
+But the guarantee I originally asked for in exploration was broader than the wire protocol — it was that a facilitator watching the readiness grid during a live session shouldn't be able to tell "this participant's connection died because of a revocation" from "this participant's wifi blipped" from "this participant's token needed a refresh." That's issue #33, and it's explicitly not built yet. Until it is, the backend keeps its promise, but the actual screen a facilitator looks at during a session hasn't been verified to keep the same promise. I don't think this blocks shipping the backend mechanism — the backend has to exist before the frontend can honor it — but I don't want "the disclosure boundary is done" to get repeated as a blanket statement until #33 closes. It's half of the guarantee, not all of it.
+
+## 2. Issue #31 (vote-compose-state loss) is the one I'd want a firm answer on before this runs against a real team, not just a filed issue
+
+A participant losing a composed-but-unsubmitted vote because their token happened to fail mid-compose, and having to re-enter it after a forced page reload, is precisely the "software-shaped friction" I flagged in exploration — the kind of thing that makes a team feel like the tool is being run on them rather than a conversation they're having. The design correctly narrows *when* this can happen (a silent background refresh never reaches this path at all; only a definitive revocation or an exhausted retry budget does, and those should be rare in a healthy identity-provider setup), so the exposure window is genuinely narrow, not routine. I accept that as a reasonable argument for shipping the backend now rather than blocking on frontend work that isn't this change's job. But "narrow" isn't "zero," and I'd want whoever owns issue #31 to treat it as a real pre-general-availability item, not a someday-maybe — a participant who loses a vote once, for a reason they can't see, is a participant who stops trusting the tool mid-lock-in, which is exactly the failure mode this whole capability exists to prevent one layer up.
+
+Issues #32 (the reauth_required prompt's actual wording/treatment) I'm comfortable leaving as ordinary UX backlog — it doesn't touch ritual integrity the way #31 and #33 do.
+
+## On the hardcoded intervals
+
+Five minutes for the sweep, ~30 seconds for the grace period, both non-configurable — I'd have pushed back if either of these had grown an admin setting, and neither did, which is the right call for exactly the reason I named in exploration: the moment this becomes tunable, someone eventually tunes it to "basically never," quietly. Worth one operational note for whoever's watching the first pilot team run on this: since re-authentication almost always tears the connection down before the grace timer even fires (it's a page navigation, not an in-place wait), a report of "I got randomly logged out" from a pilot session should be investigated via the new audit rows (`session.token_refresh_failed_live`, `session.connection_recovered`) rather than assumed to be the grace period misbehaving — that's genuinely new instrumentation nobody's looked at real data through yet.
+
+## Two more things, added after a second pass
+
+**Facilitator blast radius, deliberately unresolved — first thing to check if a pilot reports a stalled session.** This design applies the identical 5-minute interval and ~30-second grace period to a facilitator's connection as to a participant's, even though losing a facilitator's connection can stall the whole room (nobody else can advance a topic or trigger a reveal) while losing a participant's costs one vote. That asymmetry was named, not fixed, in this change — deliberately, since inventing a role-aware timer under this change's own time pressure would have been exactly the kind of new admin-configurability surface I'd have pushed back on elsewhere. Naming it here so it's the first thing anyone reaches for if a pilot team reports "the session just froze" — check whether the facilitator's connection dropped before assuming something else broke.
+
+**Task 3.2a is still open, and it's the one item on the list that isn't code.** Every other task in tasks.md is checked off. 3.2a asks whoever owns the OIDC provider configuration to confirm whether refresh tokens are issued with rotation and reuse detection — Decision D3c's residual-risk read (a concurrent HTTP/WS refresh race producing a false "revoked" classification for a still-legitimate user) depends on that answer, and this design correctly doesn't guess at it. This isn't a code gap and doesn't block archiving, but it shouldn't get lost now that the rest of the checklist is green — someone needs to actually go ask the identity-provider owner and record the answer.
+
+**Verdict: signed off to ship. Track #31 and #33 as near-term, not backlog-indefinite — they're the two places this change's backend correctness and the ritual's actual felt experience haven't met up yet. Track 3.2a as a standing open question, not a closed one, until someone actually answers it.**

@@ -31,8 +31,37 @@ export interface RegisteredConnection {
    * (Decision D8's compensating control). Epoch milliseconds.
    */
   readonly sessionCreatedAt: number;
+  /**
+   * Captured from request.session.sessionId at registration time
+   * (websocket-connection-reauthorization design.md Decision D3). Named
+   * `fastifySessionId`, not a plain `sessionId`, to avoid collision with
+   * this object's domain-level session concept (the Zoom/Health-Check
+   * session used as the ConnectionRegistry map key) — `conn.sessionId` next
+   * to that was a standing misread risk. Lets the WS-side silent-refresh
+   * monitor re-fetch current SessionData from the Redis-backed session
+   * store by Fastify session id, independent of any live HTTP request.
+   */
+  readonly fastifySessionId: string;
   /** Handle for the scheduled 90-minute force-close (task 3.6); cleared on deregistration. */
   forceCloseTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Handle for the SEC-25/SEC-27 periodic re-authorization sweep
+   * (websocket-connection-reauthorization design.md Decision D2); cleared
+   * on deregistration.
+   */
+  reauthSweepTimer?: ReturnType<typeof setInterval>;
+  /**
+   * Handle for the SEC-26 silent-refresh timer (websocket-connection-
+   * reauthorization design.md Decision D3). A SINGLE handle reused across
+   * three sequential phases — wait-for-expiry, grace-period (Decision D4),
+   * and back to a fresh wait-for-expiry after a successful post-grace
+   * reconnect registers. Safe only because each phase's setTimeout is
+   * scheduled exclusively from inside the *previous* phase's own fire
+   * callback, never while a prior timer for the same connection is still
+   * pending — a future change scheduling a new phase from anywhere else
+   * would leak the old handle (Engineer Finding 7).
+   */
+  tokenRefreshTimer?: ReturnType<typeof setTimeout>;
 }
 
 type Scope = "session" | "team";
@@ -67,6 +96,14 @@ export class ConnectionRegistry {
     if (conn.forceCloseTimer) {
       clearTimeout(conn.forceCloseTimer);
       delete conn.forceCloseTimer;
+    }
+    if (conn.reauthSweepTimer) {
+      clearInterval(conn.reauthSweepTimer);
+      delete conn.reauthSweepTimer;
+    }
+    if (conn.tokenRefreshTimer) {
+      clearTimeout(conn.tokenRefreshTimer);
+      delete conn.tokenRefreshTimer;
     }
     const map = this.byScope[scope];
     const set = map.get(id);

@@ -350,6 +350,53 @@ describe("ws-event-dispatcher", () => {
     });
   });
 
+  // websocket-connection-reauthorization (SEC-25/SEC-26): design.md
+  // Decision D8, tasks.md Group 6. Task 6.1's code-review checklist item
+  // (dispatchVoteRevealed reads only conn.userId and re-queries the
+  // database — no read of conn.reauthSweepTimer/tokenRefreshTimer/
+  // fastifySessionId) is confirmed by this file being entirely untouched by
+  // that change (see git history) — nothing to test there beyond that
+  // structural fact. Task 6.2's integration test follows.
+  describe("reveal-timing independence from concurrent SEC-25/SEC-26 timer state (Decision D8, task 6.2)", () => {
+    it("delivers vote_revealed unaffected by an in-flight SEC-25 sweep tick and SEC-26 refresh cycle on the same connection", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("participant-1");
+      // Simulate both new mechanisms mid-flight on this exact connection
+      // object at the moment the reveal is pushed — non-null timer handles,
+      // exactly as they'd be immediately after scheduleReauthorizationSweep/
+      // scheduleTokenRefreshMonitor ran at registration time.
+      (conn as unknown as { reauthSweepTimer: unknown }).reauthSweepTimer = setInterval(() => undefined, 999_999);
+      (conn as unknown as { tokenRefreshTimer: unknown }).tokenRefreshTimer = setTimeout(() => undefined, 999_999);
+      registry.register("session", "s1", conn);
+
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{
+            session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "active",
+            global_role: "engineer", participant_row_id: "p1", membership_role: "participant",
+            membership_removed_at: null, membership_exists: true,
+          }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await dispatch(
+        { eventType: "vote_revealed", sessionId: "s1", payload: { sessionId: "s1", sessionStatus: "active" } },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(1);
+      const message = JSON.parse(conn.sent[0]!);
+      expect(message.eventType).toBe("vote_revealed");
+      // Exactly the same two queries as the plain authorized-delivery case —
+      // no additional query or branch introduced by the timer state present
+      // on the connection object.
+      expect(mockDbQuery).toHaveBeenCalledTimes(2);
+
+      clearInterval((conn as unknown as { reauthSweepTimer: ReturnType<typeof setInterval> }).reauthSweepTimer);
+      clearTimeout((conn as unknown as { tokenRefreshTimer: ReturnType<typeof setTimeout> }).tokenRefreshTimer);
+    });
+  });
+
   describe("topic_history_update — admin-grant rejection (Decision D2)", () => {
     it("delivers to a member-path grant", async () => {
       const registry = new ConnectionRegistry();

@@ -310,6 +310,11 @@ export function serializeForFacilitator(
     sessionId: result.sessionId,
     sessionStatus: result.sessionStatus,
     topics,
+    // Populated by the route handler (content.ts), which queries audit_log
+    // for session.connection_recovered rows (websocket-connection-
+    // reauthorization, design.md Decision D9) — this serializer has no DB
+    // dependency of its own and always returns the empty default here.
+    connectionRecoveries: [],
   };
 }
 
