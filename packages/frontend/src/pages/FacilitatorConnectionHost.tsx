@@ -13,6 +13,13 @@ import { buildSessionWebSocketUrl } from "./SessionConnectionHost.js";
 // connection and a stub participant-row list — not a feature-complete
 // readiness grid. Building the full live-session voting UI is explicitly
 // out of scope (design.md Non-Goals).
+//
+// KNOWN DEFERRED GAP (implementation-review-architect.md item 2): the route
+// this mounts under (/session/:sessionId/facilitator, App.tsx) has no
+// client-side facilitator-role check — see the comment on that route for
+// the full rationale. Harmless today because this component only ever
+// renders STUB_ROWS below; must be revisited before real per-participant
+// data is wired in here.
 // ---------------------------------------------------------------------------
 
 const STUB_ROWS: ParticipantRow[] = [
