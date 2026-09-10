@@ -193,9 +193,13 @@ Proposal.md's Open Design Question 1, restated because it is not resolved by any
 
 **This is not resolved in this design document.** It requires an actual mock — the marker rendered in the context of the grid's other four states, not prose — reviewed and signed off by Priya Nair. Until that sign-off exists, implementation may proceed on the *mechanism* (D7, D6, cause-blindness, at-most-one-new-state bound) using an intentionally neutral placeholder style, but the final visual treatment is gated. See `tasks.md` task 6.2 (Priya Nair's mock sign-off gate) and task 4.7 (implementation cannot ship final styling ahead of it).
 
+**Update (2026-09-10):** a simulated-persona attempt at this sign-off was made against real screenshots of the shipped placeholder and withheld — the placeholder doesn't attempt either candidate register described above, so no register judgment could be made from it. The product owner has accepted deferring this decision until the frontend surface is more mature rather than iterating on the mock further now. Tracked in [issue #36](https://github.com/surratt-dev/project-dipstick/issues/36); this decision remains genuinely open.
+
 ### D11 — Copy sign-off gate
 
 All three copy strings (`ConnectionStatusBanner`'s `unknown-reconnecting` string, its `reauth-required` string per Decision D1a, and the facilitator tooltip) are non-final pending Priya Nair's sign-off against actual layout — banner in context (both states), tooltip on the actual grid — per proposal.md bullet 25's filed-verbatim gate language. `tasks.md` Group 6 carries this forward as a named, checked gate, not a comment.
+
+**Update (2026-09-10):** signed off via a simulated Facilitator-persona review against the actual shipped strings in context (`tasks.md` task 6.1, `gate6-facilitator-signoff.md`). One non-blocking note carried into issue #36: the tooltip's real hover-delay/rendering is unverified, since screenshot tooling cannot capture a native `title`-attribute tooltip directly.
 
 ### D12 — Session-history / trend-continuity: declined, not deferred
 
@@ -227,7 +231,7 @@ This is a purely additive frontend change — no backend change, no data migrati
 
 ## Open Questions
 
-- **Grid marker visual register (D10, proposal.md Open Design Question 1).** Not resolved here by design — requires a mock and Priya Nair's sign-off. Tracked as a hard gate in `tasks.md` (tasks 4.7, 6.2), not a soft note.
+- **Grid marker visual register (D10, proposal.md Open Design Question 1).** Not resolved here by design — requires a mock and Priya Nair's sign-off. Tracked as a hard gate in `tasks.md` (tasks 4.7, 6.2), not a soft note. Genuinely still open: a simulated review attempt withheld sign-off on the current placeholder (see D10's 2026-09-10 update); deferred by product-owner decision, tracked in [issue #36](https://github.com/surratt-dev/project-dipstick/issues/36).
 - **D7's signal-source interpretation.** Presented as a firm decision above, but it is this document's inference from constraints the proposal stated rather than something the proposal stated directly. Confirm with Marcus Delgado and Priya Nair at implementation kickoff (`tasks.md` task 4.1a).
 - **Session-history / trend-continuity (proposal.md Open Design Question 2).** Not an open question for this change — declined per Decision D12. Restated here only so a future reader does not mistake its absence from this document for an oversight.
 - **`REAUTH_GRACE_EXPIRED_CLOSE_CODE`/`reauth_required` scope (raised at Propose review, Marcus Delgado, BA).** Not an open question for this change — resolved per Decision D1a as a third, legitimately-disclosed state with its own detection and no-retry behavior, with issue #32 named as a deferred consumer of it alongside issue #33. Restated here only so a future reader does not mistake its absence from this document for an oversight; the mechanism (D1a) is settled, but the exact `reauth-required` copy is still subject to D11's sign-off gate like the other two strings.
