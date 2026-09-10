@@ -7,6 +7,8 @@ import { AuthErrorPage } from "./pages/AuthErrorPage.js";
 import { AuthLoadingPage } from "./pages/AuthLoadingPage.js";
 import { JoinErrorPage } from "./pages/JoinErrorPage.js";
 import { SessionLobbyPage } from "./pages/SessionLobbyPage.js";
+import { SessionConnectionHost } from "./pages/SessionConnectionHost.js";
+import { FacilitatorConnectionHost } from "./pages/FacilitatorConnectionHost.js";
 import { EmTeamDashboardPage } from "./pages/EmTeamDashboardPage.js";
 import { EmSessionHistoryPage } from "./pages/EmSessionHistoryPage.js";
 import { EmTrendDataPage } from "./pages/EmTrendDataPage.js";
@@ -82,6 +84,56 @@ export function App() {
             element={
               <ProtectedRoute>
                 <SessionLobbyPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/*
+           * websocket-staleness-signal (design.md Decision D9): minimal host
+           * surfaces mounting the connection-health banner and the
+           * facilitator grid marker against a real session WebSocket
+           * connection. Not feature-complete live-session pages — see
+           * design.md's Non-Goals.
+           */}
+          <Route
+            path="/session/:sessionId/live"
+            element={
+              <ProtectedRoute>
+                <SessionConnectionHost />
+              </ProtectedRoute>
+            }
+          />
+          {/*
+           * KNOWN DEFERRED GAP (implementation-review-architect.md item 2,
+           * websocket-staleness-signal): ProtectedRoute only checks session
+           * presence, not whether this user is the facilitator of
+           * :sessionId. There is currently no client-side concept of
+           * "session facilitator" to check against — AuthSession carries
+           * only global identity and per-team MembershipRole
+           * ("participant" | "engineering_manager"); the facilitator
+           * determination (sessions.facilitator_id, see
+           * session-subscriber-access-helper.ts) is per-session backend
+           * state the frontend never fetches. This is harmless today
+           * because FacilitatorConnectionHost renders only STUB_ROWS, a
+           * hardcoded fixture — no real participant data is reachable here.
+           * The server-side WS-subscription check
+           * (evaluateSessionSubscriberAccess, websocket-routes.ts) already
+           * enforces facilitator-only access to the underlying event
+           * stream, so there is no live vulnerability. BUT: the moment real
+           * per-participant data is wired into this host (the natural next
+           * step once disconnected_voted/disconnected_no_vote rows become
+           * real, OR-4.4's facilitator-only readiness grid), a client-side
+           * facilitator-role check MUST be added here — either a
+           * role-aware ProtectedRoute variant or a check inside
+           * FacilitatorConnectionHost — matching the server-side
+           * enforcement that already exists. Do not treat the absence of a
+           * client-side gate today as evidence one isn't needed later.
+           */}
+          <Route
+            path="/session/:sessionId/facilitator"
+            element={
+              <ProtectedRoute>
+                <FacilitatorConnectionHost />
               </ProtectedRoute>
             }
           />

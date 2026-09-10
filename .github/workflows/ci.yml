@@ -34,6 +34,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # `npm run build` for packages/frontend is `vite build`, which is
+      # esbuild-based and does not type-check (esbuild strips types rather
+      # than verifying them). Backend/shared builds go through `tsc` and are
+      # covered above, but the frontend needs its own explicit `tsc --noEmit`
+      # step or this job provides zero type-checking for that workspace.
+      # Scoped to tsconfig.typecheck.json (excludes test files) so this
+      # catches regressions in production code — e.g. a missed
+      # ConnectionHealthState case — without failing on this repo's
+      # pre-existing noUncheckedIndexedAccess/exactOptionalPropertyTypes debt
+      # in test files. See implementation-review-architect.md item 1
+      # (websocket-staleness-signal).
+      - run: npm run typecheck --workspace=packages/frontend
 
   test:
     name: Unit Tests

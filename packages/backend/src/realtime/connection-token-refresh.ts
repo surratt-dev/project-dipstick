@@ -1,4 +1,5 @@
 import type { FastifyBaseLogger } from "fastify";
+import { REAUTH_GRACE_EXPIRED_CLOSE_CODE } from "@dipstick/shared";
 import { redis } from "../redis.js";
 import { db } from "../db.js";
 import {
@@ -30,8 +31,17 @@ import { resolveActorGlobalRole, resolveTeamIdForAudit } from "./connection-reau
 // trail purposes only (Decision D4).
 // ---------------------------------------------------------------------------
 
-/** New, distinct close code (design.md Decision D5) — never reused by connection-reauthorization.ts or staleness-signal.ts. */
-export const REAUTH_GRACE_EXPIRED_CLOSE_CODE = 4001;
+/**
+ * New, distinct close code (design.md Decision D5) — never reused by
+ * connection-reauthorization.ts or staleness-signal.ts.
+ *
+ * Relocated to @dipstick/shared (websocket-staleness-signal design.md
+ * Decision D1b) so the frontend can import it without depending on
+ * @dipstick/backend. Imported above and re-exported here, under its
+ * original name, so every existing backend import site (`from
+ * "./connection-token-refresh.js"`) keeps working unchanged.
+ */
+export { REAUTH_GRACE_EXPIRED_CLOSE_CODE };
 
 // Not configurable (design.md Decision D9a).
 const GRACE_PERIOD_MS = 30 * 1000;
