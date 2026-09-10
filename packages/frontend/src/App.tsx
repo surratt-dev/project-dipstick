@@ -7,6 +7,8 @@ import { AuthErrorPage } from "./pages/AuthErrorPage.js";
 import { AuthLoadingPage } from "./pages/AuthLoadingPage.js";
 import { JoinErrorPage } from "./pages/JoinErrorPage.js";
 import { SessionLobbyPage } from "./pages/SessionLobbyPage.js";
+import { SessionConnectionHost } from "./pages/SessionConnectionHost.js";
+import { FacilitatorConnectionHost } from "./pages/FacilitatorConnectionHost.js";
 import { EmTeamDashboardPage } from "./pages/EmTeamDashboardPage.js";
 import { EmSessionHistoryPage } from "./pages/EmSessionHistoryPage.js";
 import { EmTrendDataPage } from "./pages/EmTrendDataPage.js";
@@ -82,6 +84,30 @@ export function App() {
             element={
               <ProtectedRoute>
                 <SessionLobbyPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/*
+           * websocket-staleness-signal (design.md Decision D9): minimal host
+           * surfaces mounting the connection-health banner and the
+           * facilitator grid marker against a real session WebSocket
+           * connection. Not feature-complete live-session pages — see
+           * design.md's Non-Goals.
+           */}
+          <Route
+            path="/session/:sessionId/live"
+            element={
+              <ProtectedRoute>
+                <SessionConnectionHost />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/session/:sessionId/facilitator"
+            element={
+              <ProtectedRoute>
+                <FacilitatorConnectionHost />
               </ProtectedRoute>
             }
           />

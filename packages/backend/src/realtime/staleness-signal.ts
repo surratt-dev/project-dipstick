@@ -58,5 +58,11 @@
  * any other unexpected close or network failure — identically: a generic
  * "your view may be stale, refresh to continue" signal. It never attempts
  * to distinguish which case occurred, because the server does not tell it.
+ *
+ * Relocated to @dipstick/shared (websocket-staleness-signal design.md
+ * Decision D1b) so the frontend can import it without depending on
+ * @dipstick/backend. Re-exported here, under its original name, so every
+ * existing backend import site (`from "./staleness-signal.js"`) keeps
+ * working unchanged.
  */
-export const STALE_SIGNAL_CLOSE_CODE = 4000;
+export { STALE_SIGNAL_CLOSE_CODE } from "@dipstick/shared";
