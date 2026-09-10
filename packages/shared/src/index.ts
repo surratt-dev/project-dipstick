@@ -60,6 +60,7 @@ export type {
   ParticipantContentView,
   EMContentView,
   FacilitatorContentView,
+  ConnectionRecoveryEntry,
 } from "./types/team-content-views.js";
 export type {
   WsEventType,

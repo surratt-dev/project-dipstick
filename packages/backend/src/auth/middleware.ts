@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyRequest, FastifyReply, FastifyBaseLogger } from "fastify";
 import { refreshToken as refreshOidcToken } from "./oidc-client.js";
 import { encryptToken } from "./token-encryption.js";
 import { getDecryptedTokens } from "./session-store.js";
@@ -14,12 +14,109 @@ const PUBLIC_ROUTES = ["/health", "/auth/login", "/auth/callback", "/auth/logout
 // this same constant to bound connection age instead of leaving it unbounded
 // until the SEC-25/26 companion effort ships its own heartbeat.
 export const ABSOLUTE_LIFETIME_MS = 90 * 60 * 1000; // 90 minutes
-const TOKEN_REFRESH_THRESHOLD_S = 5 * 60; // 5 minutes before expiry
-const REFRESH_RETRY_DELAY_MS = 5000;
-const REFRESH_MAX_RETRIES = 2;
+
+// Exported for reuse by websocket-connection-reauthorization (design.md
+// Decision D3): the WS-side silent-refresh timer reuses these exact
+// thresholds/budgets rather than inventing its own.
+export const TOKEN_REFRESH_THRESHOLD_S = 5 * 60; // 5 minutes before expiry
+export const REFRESH_RETRY_DELAY_MS = 5000;
+export const REFRESH_MAX_RETRIES = 2;
 
 function isPublicRoute(url: string): boolean {
   return PUBLIC_ROUTES.some((route) => url.startsWith(route));
+}
+
+export type RefreshResult =
+  | { status: "refreshed"; session: SessionData }
+  | { status: "revoked" }
+  | { status: "transient_failure" }
+  | { status: "no_refresh_token" };
+
+// ---------------------------------------------------------------------------
+// refreshSessionTokens — extracted from authMiddleware's onRequest hook
+// (websocket-connection-reauthorization, design.md Decision D3) so the WS-side
+// silent-refresh timer (connection-token-refresh.ts) can reuse the exact same
+// retry/backoff/revocation-distinction logic the HTTP path already has,
+// rather than a second implementation of it.
+//
+// Returns a NEW SessionData object on "refreshed" — does NOT mutate `session`
+// in place. Callers are responsible for persisting the result: the HTTP
+// caller (below) copies the returned fields back onto `request.session` so
+// @fastify/session's save-on-mutation dirty-tracking persists them; the WS
+// caller writes them back via session-store.ts's conditionallyUpdateSession.
+//
+// `sessionId` exists solely so this function can reproduce the
+// `sessionId: request.session.sessionId` field the original inline code's
+// audit emits included — SessionData itself carries no Fastify session id.
+// `source` is attached to the emitted audit events so the two writers
+// (HTTP vs. WS) are distinguishable in the audit trail.
+// ---------------------------------------------------------------------------
+export async function refreshSessionTokens(
+  session: SessionData,
+  sessionId: string,
+  log: FastifyBaseLogger,
+  source: "http" | "websocket",
+): Promise<RefreshResult> {
+  const tokens = getDecryptedTokens(session);
+  if (!tokens.refreshToken) {
+    return { status: "no_refresh_token" };
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  let retries = 0;
+
+  while (retries <= REFRESH_MAX_RETRIES) {
+    try {
+      const newTokens = await refreshOidcToken(tokens.refreshToken);
+      const expiresIn = newTokens.expires_in;
+      const refreshed: SessionData = {
+        ...session,
+        encryptedAccessToken: encryptToken(newTokens.access_token),
+        tokenExpiresAt: nowSeconds + (typeof expiresIn === "number" ? expiresIn : 3600),
+      };
+      if (newTokens.refresh_token) {
+        refreshed.encryptedRefreshToken = encryptToken(newTokens.refresh_token);
+      }
+
+      emitAuditEvent(log, "auth.token_refresh_success", {
+        userId: session.userId,
+        sessionId,
+        source,
+      });
+
+      return { status: "refreshed", session: refreshed };
+    } catch (err: unknown) {
+      const isRevocation =
+        err instanceof Error &&
+        (err.message.includes("invalid_grant") ||
+          ("code" in err && (err as { code?: string }).code === "invalid_grant"));
+
+      if (isRevocation) {
+        emitAuditEvent(log, "auth.token_refresh_failure", {
+          userId: session.userId,
+          sessionId,
+          source,
+          failureType: "revoked",
+          retryCount: retries,
+        });
+        return { status: "revoked" };
+      }
+
+      retries++;
+      if (retries <= REFRESH_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  emitAuditEvent(log, "auth.token_refresh_failure", {
+    userId: session.userId,
+    sessionId,
+    source,
+    failureType: "transient",
+    retryCount: retries,
+  });
+  return { status: "transient_failure" };
 }
 
 export async function authMiddleware(app: FastifyInstance): Promise<void> {
@@ -51,67 +148,36 @@ export async function authMiddleware(app: FastifyInstance): Promise<void> {
     // Check if token needs refresh
     const nowSeconds = Math.floor(Date.now() / 1000);
     if (session.tokenExpiresAt - nowSeconds < TOKEN_REFRESH_THRESHOLD_S) {
-      const tokens = getDecryptedTokens(session);
-      if (tokens.refreshToken) {
-        let refreshed = false;
-        let retries = 0;
+      const result = await refreshSessionTokens(session, request.session.sessionId, request.log, "http");
 
-        while (!refreshed && retries <= REFRESH_MAX_RETRIES) {
-          try {
-            const newTokens = await refreshOidcToken(tokens.refreshToken);
-            session.encryptedAccessToken = encryptToken(newTokens.access_token);
-            if (newTokens.refresh_token) {
-              session.encryptedRefreshToken = encryptToken(newTokens.refresh_token);
-            }
-            const expiresIn = newTokens.expires_in;
-            session.tokenExpiresAt = nowSeconds + (typeof expiresIn === "number" ? expiresIn : 3600);
-            refreshed = true;
-
-            emitAuditEvent(request.log, "auth.token_refresh_success", {
-              userId: session.userId,
-              sessionId: request.session.sessionId,
-            });
-          } catch (err: unknown) {
-            const isRevocation =
-              err instanceof Error &&
-              (err.message.includes("invalid_grant") ||
-                ("code" in err && (err as { code?: string }).code === "invalid_grant"));
-
-            if (isRevocation) {
-              const userId = session.userId;
-              const sessionId = request.session.sessionId;
-              request.session.destroy();
-              emitAuditEvent(request.log, "auth.token_refresh_failure", {
-                userId,
-                sessionId,
-                failureType: "revoked",
-                retryCount: retries,
-              });
-              emitAuditEvent(request.log, "auth.session_invalidated", {
-                userId,
-                sessionId,
-                reason: "token_revoked",
-              });
-              return reply.code(401).send({ error: { category: "session_expired", message: "Your session has been terminated. Please sign in again.", correlationId: crypto.randomUUID() } });
-            }
-
-            retries++;
-            if (retries <= REFRESH_MAX_RETRIES) {
-              await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_DELAY_MS));
-            }
-          }
+      switch (result.status) {
+        case "refreshed": {
+          // Required copy-back, not optional plumbing: refreshSessionTokens
+          // returns a NEW object rather than mutating `session` in place, so
+          // @fastify/session's save-on-mutation dirty-tracking only persists
+          // this refresh if these fields are explicitly assigned onto
+          // request.session itself (websocket-connection-reauthorization,
+          // design.md Decision D3 / Engineer Finding 2).
+          session.encryptedAccessToken = result.session.encryptedAccessToken;
+          session.encryptedRefreshToken = result.session.encryptedRefreshToken;
+          session.tokenExpiresAt = result.session.tokenExpiresAt;
+          break;
         }
-
-        if (!refreshed) {
+        case "revoked": {
           const userId = session.userId;
           const sessionId = request.session.sessionId;
           request.session.destroy();
-          emitAuditEvent(request.log, "auth.token_refresh_failure", {
+          emitAuditEvent(request.log, "auth.session_invalidated", {
             userId,
             sessionId,
-            failureType: "transient",
-            retryCount: retries,
+            reason: "token_revoked",
           });
+          return reply.code(401).send({ error: { category: "session_expired", message: "Your session has been terminated. Please sign in again.", correlationId: crypto.randomUUID() } });
+        }
+        case "transient_failure": {
+          const userId = session.userId;
+          const sessionId = request.session.sessionId;
+          request.session.destroy();
           emitAuditEvent(request.log, "auth.session_invalidated", {
             userId,
             sessionId,
@@ -119,6 +185,10 @@ export async function authMiddleware(app: FastifyInstance): Promise<void> {
           });
           return reply.code(401).send({ error: { category: "provider_unavailable", message: "Unable to maintain your session. Please sign in again.", correlationId: crypto.randomUUID() } });
         }
+        case "no_refresh_token":
+          // Matches today's existing behavior: no refresh token present,
+          // proceed on the existing (soon-to-expire) token without error.
+          break;
       }
     }
 

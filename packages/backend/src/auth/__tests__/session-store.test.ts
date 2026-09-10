@@ -13,10 +13,16 @@ vi.mock("../token-encryption.js", () => ({
 }));
 
 vi.mock("../../config.js", () => ({
-  config: { SESSION_SECRET: "test" },
+  config: { SESSION_SECRET: "test", REDIS_URL: "redis://test" },
 }));
 
-import { buildSessionData, getDecryptedTokens } from "../session-store.js";
+const mockRedisSet = vi.fn();
+vi.mock("../../redis.js", () => ({
+  redis: { set: (...args: unknown[]) => mockRedisSet(...args) },
+}));
+
+import { buildSessionData, getDecryptedTokens, conditionallyUpdateSession } from "../session-store.js";
+import type { SessionData } from "../session-store.js";
 
 describe("buildSessionData", () => {
   beforeEach(() => {
@@ -84,5 +90,42 @@ describe("getDecryptedTokens", () => {
     expect(result.accessToken).toBe("access-123");
     expect(result.refreshToken).toBeUndefined();
     expect(result.idToken).toBeUndefined();
+  });
+});
+
+describe("conditionallyUpdateSession (design.md Decision D3a)", () => {
+  beforeEach(() => {
+    mockRedisSet.mockReset();
+  });
+
+  const session: SessionData = {
+    userId: "user-1",
+    sessionCreatedAt: "2025-06-01T12:00:00Z",
+    encryptedAccessToken: "encrypted(new-access)",
+    tokenExpiresAt: 1700003600,
+  };
+
+  it("writes with SET ... XX and returns true when the key exists", async () => {
+    mockRedisSet.mockResolvedValue("OK");
+
+    const result = await conditionallyUpdateSession("sess-1", session);
+
+    expect(result).toBe(true);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "dipstick:session:sess-1",
+      JSON.stringify(session),
+      "EX",
+      2 * 60 * 60,
+      "XX",
+    );
+  });
+
+  it("returns false and performs no logical write against a key that does not exist", async () => {
+    // Redis's SET ... XX returns null (not "OK") when the key does not exist.
+    mockRedisSet.mockResolvedValue(null);
+
+    const result = await conditionallyUpdateSession("sess-nonexistent", session);
+
+    expect(result).toBe(false);
   });
 });

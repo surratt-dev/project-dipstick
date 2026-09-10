@@ -148,8 +148,17 @@ export type WsEventEnvelope =
  * carries the grant-path-specific VoteRevealedPayload constructed at
  * delivery time for that one recipient — never the internal trigger.
  */
+/**
+ * reauth_required — websocket-connection-reauthorization (SEC-26),
+ * design.md Decision D3/D5. A connection-specific, disclosed signal sent
+ * when silent token refresh has exhausted its retry budget or received a
+ * definitive revocation response, starting the grace period (Decision D4).
+ * Never published to the internal `ws:events` Redis channel — sent directly
+ * to the one affected connection only.
+ */
 export type WsClientMessage =
   | { eventType: "vote_readiness_update"; payload: VoteReadinessUpdatePayload }
   | { eventType: "session_state_change"; payload: SessionStateChangePayload }
   | { eventType: "vote_revealed"; payload: VoteRevealedPayload }
+  | { eventType: "reauth_required" }
   | { eventType: "topic_history_update"; payload: TopicHistoryUpdatePayload };

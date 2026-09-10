@@ -156,6 +156,7 @@ describe.skipIf(!infraAvailable)("real Redis pub/sub hop — delivery-time revoc
         socket: fakeSocket as any,
         userId: participantUserId,
         sessionCreatedAt: Date.now(),
+        fastifySessionId: "fastify-sess-1",
       });
 
       subscriber = createWsSubscriber(noopLogger as Parameters<typeof createWsSubscriber>[0]);

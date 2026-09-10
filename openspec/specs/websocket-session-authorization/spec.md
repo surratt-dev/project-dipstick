@@ -213,32 +213,28 @@ Actions that trigger `vote_readiness_update`, `vote_revealed`, and `session_stat
 
 ### Requirement: Idle-connection re-authorization (SEC-25) is tracked, not satisfied, by delivery-time checks alone
 
+**Companion effort resolved by `websocket-connection-reauthorization`:** the gap this requirement names is now closed — see the `websocket-connection-reauthorization` spec's "Periodic re-authorization of open WebSocket connections" and "Silent token refresh for active WebSocket connections" requirements for the SEC-25/SEC-27 sweep and SEC-26 silent-refresh mechanisms. This requirement's own text is left unchanged below because it remains an accurate, standing statement of what delivery-time checks do and do not do on their own — that structural fact did not change; only the "gap is open" framing has, and that resolution lives in the companion spec rather than being folded into this one.
+
 Delivery-time authorization checks, as defined in this spec, evaluate a subscriber's authorization only at the moment an event is about to be pushed. A connection that receives no content-access event for an entire token-expiry window is not re-evaluated by any mechanism this spec defines. This is a real, named gap distinct from the revocation guarantee this spec establishes (which governs connections actively receiving events) — it is not satisfied by this spec's delivery-time mechanism and MUST NOT be treated as closed by it.
 
-The application SHALL track this gap, together with SEC-26 (token expiry / silent refresh mid-connection), to a single named companion effort with an assigned owner. This spec does not define the idle-connection heartbeat mechanism, its interval, or its owner — those are the companion effort's responsibility.
+This gap, together with SEC-26 (token expiry / silent refresh mid-connection), was tracked to a single named companion effort with an assigned owner. This spec still does not itself define the idle-connection heartbeat mechanism, its interval, or its close behavior — that mechanism now lives in the `websocket-connection-reauthorization` capability, referenced above.
 
-**Tracking destination:** filed as GitHub issue [#27](https://github.com/surratt-dev/project-dipstick/issues/27), with a proposed owner and target quarter recorded there pending repository-owner confirmation.
+**Tracking destination:** filed as GitHub issue [#27](https://github.com/surratt-dev/project-dipstick/issues/27), resolved by the `websocket-connection-reauthorization` capability.
 
-**Compensating bound:** although periodic re-authorization is out of scope for this spec, a connection is not left with a fully unbounded window. The application SHALL apply the existing absolute session-lifetime cap (BRD SEC-26, 90 minutes, already enforced for HTTP requests) to WebSocket connections as well: a connection open longer than the cap MUST be rejected at its next delivery-time check and MUST be independently closed by the server at the cap regardless of activity. This bounds the *outer edge* of the idle-connection window to 90 minutes; it does not substitute for periodic re-authorization against a membership or role change occurring within that window, which remains the companion effort's responsibility.
+**Compensating bound:** independent of the periodic sweep the companion capability now runs, a connection is not left with a fully unbounded window even before that sweep's interval elapses. The application SHALL apply the existing absolute session-lifetime cap (BRD SEC-26, 90 minutes, already enforced for HTTP requests) to WebSocket connections as well: a connection open longer than the cap MUST be rejected at its next delivery-time check and MUST be independently closed by the server at the cap regardless of activity. This bounds the *outer edge* of any connection's window to 90 minutes regardless of the sweep's own cadence.
 
-#### Scenario: An idle connection is not re-authorized by delivery-time checks
+#### Scenario: An idle connection is not re-authorized by delivery-time checks alone
 
 - **WHEN** a facilitator's connection to session S receives no `vote_readiness_update`, `session_state_change`, or `vote_revealed` event for an entire token-expiry window (e.g., a quiet pre-session lobby)
 - **THEN** no delivery-time authorization check runs against that connection during that window, because no event is pushed
 - **AND** this is not a violation of this spec's delivery-time requirements, which apply only when an event is pushed
-- **AND** the gap is addressed by the tracked companion effort, not by this spec's delivery-time mechanism
+- **AND** the connection is nonetheless re-evaluated by the `websocket-connection-reauthorization` capability's periodic sweep, independent of this spec's delivery-time mechanism
 
 #### Scenario: An idle connection is closed at the absolute session lifetime cap
 
 - **WHEN** a connection to session S has been open for longer than the 90-minute absolute session lifetime (BRD SEC-26), whether or not it has received any content-access event during that time
 - **THEN** the connection is closed by the server, independent of whether an event was ever pushed to it
-- **AND** this bound does not re-evaluate the subscriber's team membership or role at any point before the 90-minute mark — only total connection age is checked — so it is not a substitute for the periodic re-authorization SEC-25 requires, which remains the companion effort's responsibility
-
-#### Scenario: Companion tracking effort exists before this capability is considered complete
-
-- **WHEN** this change (websocket-delivery-time-authorization) is evaluated for completeness
-- **THEN** a companion issue or change covering SEC-25 idle-connection re-authorization and SEC-26 token-expiry handling exists, with a named owner
-- **AND** the absence of a designed heartbeat mechanism in this change is not treated as an oversight, because the tracking destination itself is the acceptance criterion for this requirement
+- **AND** this bound does not re-evaluate the subscriber's team membership or role at any point before the 90-minute mark — only total connection age is checked — so it is not a substitute for the `websocket-connection-reauthorization` capability's periodic sweep, which is what actually re-evaluates membership and role within that window
 
 ---
 

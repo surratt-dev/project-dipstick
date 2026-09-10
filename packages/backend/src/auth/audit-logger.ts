@@ -73,7 +73,31 @@ export type AuditEventName =
   // consistent with every other sessions.status transition already
   // audited). metadata carries completed_session_topic_id and
   // new_session_topic_id (both session_topics.id values).
-  | "session.topic_advanced";
+  | "session.topic_advanced"
+  // session.access_revoked_live: websocket-connection-reauthorization
+  // (SEC-25/SEC-27), design.md Decision D2. Written by the periodic
+  // per-connection re-authorization sweep (connection-reauthorization.ts)
+  // immediately before closing a connection whose authorization has
+  // lapsed. metadata: { scope: "session" | "team", scopeId }. Never
+  // facilitator-visible — disclosing this would violate
+  // STALE_SIGNAL_CLOSE_CODE's non-disclosure guarantee.
+  | "session.access_revoked_live"
+  // session.token_refresh_failed_live: websocket-connection-reauthorization
+  // (SEC-26), design.md Decision D3b. Written by the WS-side silent-refresh
+  // monitor (connection-token-refresh.ts) when refreshSessionTokens returns
+  // "revoked"/"transient_failure", or a Decision D3a conditional write is
+  // rejected. metadata: { scope, scopeId, failureType }. Never token
+  // values, per SEC-16/SEC-22. Never facilitator-visible.
+  | "session.token_refresh_failed_live"
+  // session.connection_recovered: websocket-connection-reauthorization
+  // (SEC-26), design.md Decision D9. Written at WS registration time when a
+  // live Decision D4 grace-period correlation marker
+  // (dipstick:reauth-grace:{userId}) is found and consumed for the
+  // connecting user. metadata: { scope, scopeId } — no cause, no token
+  // detail. This is the ONLY one of these three new operations that is
+  // facilitator-visible (via content.ts's new read query) — see that
+  // query's explicit non-wildcard filter requirement.
+  | "session.connection_recovered";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

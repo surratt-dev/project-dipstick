@@ -158,13 +158,71 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
 
   it("returns 200 for facilitator with no-store header", async () => {
     mockFacilitatorGrant();
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // session-history query
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // connectionRecoveries query
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  // -------------------------------------------------------------------------
+  // websocket-connection-reauthorization (SEC-26), design.md Decision D9,
+  // tasks.md task 5.2: the facilitator session-history response's
+  // connectionRecoveries field, and its non-disclosure filter.
+  // -------------------------------------------------------------------------
+  it("includes SEC-26 connectionRecoveries for a facilitator, filtered explicitly to session.connection_recovered (task 5.2)", async () => {
+    mockFacilitatorGrant("session-1");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // session-history query
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [
+        { actor_user_id: "user-a", timestamp: new Date("2026-01-01T00:00:00.000Z") },
+        { actor_user_id: "user-b", timestamp: new Date("2026-01-01T00:05:00.000Z") },
+      ],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload) as { connectionRecoveries: Array<{ userId: string; recoveredAt: string }> };
+    expect(body.connectionRecoveries).toEqual([
+      { userId: "user-a", recoveredAt: "2026-01-01T00:00:00.000Z" },
+      { userId: "user-b", recoveredAt: "2026-01-01T00:05:00.000Z" },
+    ]);
+
+    // Non-disclosure guard: the query must filter explicitly to
+    // operation = 'session.connection_recovered' — never a wildcard/prefix
+    // match that could also surface session.access_revoked_live or
+    // session.token_refresh_failed_live rows.
+    const recoveriesCall = mockDbQuery.mock.calls[3]!;
+    const sql = (recoveriesCall[0] as string).toLowerCase();
+    expect(sql).toContain("operation = 'session.connection_recovered'");
+    expect(sql).not.toContain("like");
+    expect(sql).not.toContain("session.%");
+  });
+
+  it("never returns session.access_revoked_live or session.token_refresh_failed_live rows in connectionRecoveries", async () => {
+    mockFacilitatorGrant("session-1");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // session-history query
+    // The mocked db layer only ever returns what the (correctly-scoped) SQL
+    // WHERE clause would select — simulating the DB actually enforcing the
+    // filter. A wildcard/wrong query would need no code change to "leak"
+    // here, since this test controls what the mock returns; the real
+    // non-disclosure guarantee is the string assertion in the previous test.
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ actor_user_id: "user-a", timestamp: new Date("2026-01-01T00:00:00.000Z") }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const body = JSON.parse(res.payload) as { connectionRecoveries: Array<{ userId: string }> };
+
+    expect(body.connectionRecoveries).toHaveLength(1);
+    expect(JSON.stringify(body)).not.toContain("access_revoked_live");
+    expect(JSON.stringify(body)).not.toContain("token_refresh_failed_live");
   });
 });
 

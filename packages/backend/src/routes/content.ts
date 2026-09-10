@@ -16,6 +16,8 @@ import type {
   TeamAccessGrant,
   FacilitatorHistoricalDataUnavailable,
   FacilitatorTrendDataUnavailable,
+  FacilitatorContentView,
+  ConnectionRecoveryEntry,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -312,6 +314,12 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       );
 
       const responseBody = serializeContentResponse(grant, session.userId, sessionsResult.rows);
+
+      if (grant.path === "facilitator") {
+        (responseBody as FacilitatorContentView).connectionRecoveries =
+          await fetchConnectionRecoveries(grant.sessionId);
+      }
+
       await applyTimingFloor(startTime);
       return noStore(reply).send(responseBody);
     } catch (_err) {
@@ -538,6 +546,37 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     await applyTimingFloor(startTime);
     return noStore(reply).send({ sessionId, teamId, status: sessionRow.status });
   });
+}
+
+// ---------------------------------------------------------------------------
+// fetchConnectionRecoveries — websocket-connection-reauthorization (SEC-26),
+// design.md Decision D9, tasks.md task 5.2.
+//
+// The facilitator-scoped diagnostic trail: SEC-26 grace-period recoveries
+// for THIS session, and nothing else. audit_log also holds
+// session.access_revoked_live (task 2.3) and session.token_refresh_failed_live
+// (task 3.4) rows for the same session — neither is facilitator-visible, and
+// disclosing either would leak a SEC-25 revocation cause or a participant's
+// auth-failure detail. The filter below is an explicit equality match on
+// operation = 'session.connection_recovered' — NEVER a wildcard or prefix
+// match across session.* — so those two operations can never leak through
+// this query, including if a future operation is added to the same table.
+// ---------------------------------------------------------------------------
+async function fetchConnectionRecoveries(sessionId: string): Promise<ConnectionRecoveryEntry[]> {
+  const result = await db.query<{ actor_user_id: string; timestamp: Date }>(
+    `SELECT actor_user_id, timestamp
+     FROM audit_log
+     WHERE operation = 'session.connection_recovered'
+       AND metadata->>'scope' = 'session'
+       AND metadata->>'scopeId' = $1
+     ORDER BY timestamp DESC`,
+    [sessionId],
+  );
+
+  return result.rows.map((row) => ({
+    userId: row.actor_user_id,
+    recoveredAt: new Date(row.timestamp).toISOString(),
+  }));
 }
 
 // ---------------------------------------------------------------------------

@@ -38,6 +38,27 @@ vi.mock("../ws-event-dispatcher.js", () => ({
 }));
 vi.mock("../../config.js", () => ({
   getAllowedOrigins: () => ["http://localhost:5173"],
+  config: { REDIS_URL: "redis://unused", DATABASE_URL: "postgres://unused" },
+}));
+// Prevent connection-token-refresh.js's/connection-reauthorization.js's real
+// import chains (../redis.js, ../db.js) from constructing real ioredis/pg
+// clients during this test file's module load, mirroring how ws-pubsub.js
+// is already mocked for the same reason.
+vi.mock("../../redis.js", () => ({ redis: {} }));
+vi.mock("../../db.js", () => ({ db: {} }));
+// websocket-connection-reauthorization (SEC-25/26): this file's stated scope
+// is the three-check-point connection-lifecycle model, not the sweep/refresh
+// mechanisms themselves — those have their own dedicated test suites
+// (connection-reauthorization.test.ts, connection-token-refresh.test.ts).
+// Mocked here the same way ws-pubsub.js/ws-event-dispatcher.js already are,
+// so this file doesn't require a real Redis/Postgres connection.
+vi.mock("../connection-reauthorization.js", () => ({
+  scheduleReauthorizationSweep: vi.fn(),
+}));
+vi.mock("../connection-token-refresh.js", () => ({
+  scheduleTokenRefreshMonitor: vi.fn(),
+  consumeGraceRecoveryMarker: vi.fn().mockResolvedValue(false),
+  recordConnectionRecoveredAudit: vi.fn().mockResolvedValue(undefined),
 }));
 
 import Fastify from "fastify";
@@ -238,6 +259,7 @@ describe("scheduleForceClose", () => {
       socket: socket as any,
       userId: "user-1",
       sessionCreatedAt: Date.now(),
+      fastifySessionId: "fastify-sess-1",
     } as RegisteredConnection & { socket: typeof socket };
   }
 

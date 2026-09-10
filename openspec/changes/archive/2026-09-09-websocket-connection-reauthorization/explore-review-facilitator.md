@@ -1,0 +1,39 @@
+# Facilitator Review: websocket-connection-reauthorization exploration notes
+
+**Reviewer:** Priya Nair (Facilitator SME)
+**Reviewing:** `exploration-notes.md` (Devon Calloway, explore stage, issue #27)
+
+## Overall take
+
+This is grounded in the actual code rather than the archived design's description of itself, and it correctly identifies the property I care about most without me having to say it out loud: "Get the silent-refresh path right and nobody ever notices this effort shipped. Get it wrong and it's the first thing a team complains about." That's exactly the bar. I also appreciate that non-disclosure is treated as load-bearing rather than a style preference — that's the right instinct, and it's the same instinct I'd apply to reveal simultaneity.
+
+That said, the notes reason carefully about the *revoked user's* experience and about *generic* connection health, but under-examine two things I sit closest to: what the **facilitator's own connection** losing priority looks like mid-session, and what **other participants in the room** perceive when someone else's connection silently changes state. Both are workflow-friction risks that won't show up in a backend read of `connection-registry.ts` — they only show up if you think about what's on screen during a live session.
+
+## Observations
+
+1. **The document correctly separates "revoked" from "expired, needs re-auth"** and insists design keep that line explicit (the point in the "telling the client something" section). Good — conflating those would either strand a legitimately-expired user with no signal, or make a revocation distinguishable from routine re-auth. Keep this framing in the design doc verbatim; it's the same discipline as the close-code non-disclosure guarantee.
+
+2. **No mention of facilitator-role connections having different blast radius than participant connections.** Session pacing is under facilitator control — "no automatic topic advancement... the facilitator calls it." That means a facilitator's connection dying mid-session doesn't just remove one voter, it can stall the whole room, because nobody else can advance a topic or trigger a reveal. A participant's token silently failing to refresh is a one-person inconvenience; a facilitator's is a session-halting event. I'd want design to consider whether facilitator-role connections get earlier/more aggressive refresh attempts, or a longer grace period, given the asymmetric cost of failure. This isn't in the notes at all, and I think it should be.
+
+3. **The notes think hard about what the revoked/expiring client itself experiences, but not about what everyone else in the room sees.** If a participant's connection is closed via `STALE_SIGNAL_CLOSE_CODE` mid-session, does their tile vanish from my readiness grid? Does it grey out? Does it just... stop updating, silently, until someone notices the room is one short? The non-disclosure principle in the archived change was about not telling *that person* why they lost access — but if their disappearance from my screen is itself informative ("oh, X just dropped off, wonder why"), that's a disclosure to the *rest of the room*, not just an internal implementation detail. That's squarely a "readiness without spoilers" and "don't spotlight anyone" concern, and it isn't mentioned once in these notes.
+
+4. **Open question 5 (in-flight vote state) only asks about the affected client's own composing state.** I'd broaden it: if someone's connection silently closes and reopens (SEC-25 sweep closing a still-mid-vote connection, or SEC-26 refresh taking long enough to look like a blip), does their *readiness state* — locked in or not — survive the reconnect cleanly on my grid? A flicker in the readiness grid during a session is exactly the kind of thing that erodes trust that the tool is showing me the truth in real time.
+
+5. **Timing relative to the reveal moment isn't addressed.** Reveal simultaneity is the property I evaluate everything else against. Is there any chance a periodic SEC-25 sweep, or a SEC-26 refresh cycle, coincides with an active reveal broadcast and introduces the smallest possible seam — a socket that's mid-refresh at the exact instant the reveal fires? I'm not assuming this is a real risk given the delivery-time re-check already sits on the push path, but the notes don't say it's been considered, and I want it said explicitly in design.md rather than assumed obvious. If the answer is "delivery-time authorization already covers this independent of any re-auth timer," write that down so nobody has to re-derive it later.
+
+6. **Open question 4 correctly routes the SEC-26 re-auth UX to me** ("that's Priya's call to make with actual client mockups, not mine to assert here"). Good — I'll hold the team to that. I want to see mockups before this ships, not a description of intended behavior. Same as my standing ask for the facilitator view generally: I test it before the first live team sees it.
+
+7. **Continuity across facilitators isn't considered for this failure mode.** If I hand a team off mid-rotation and a connection was silently closed and recovered during a prior session, does that leave any trace I'd want in session history — not "user X was revoked" (that stays non-disclosed, correctly), but something more like "a reconnect occurred" for my own diagnostic purposes if a team later asks "why did the app hiccup last time"? I don't need to know *why* someone dropped, but I might want to know a hiccup happened at all, so I'm not caught flat-footed by a team's memory of a weird moment I can't explain. Worth a decision either way, not a silent omission.
+
+8. **The "no admin-configurable interval" point is one I'd underline, not just note.** Whoever picks a number for the SEC-25 interval and the SEC-26 grace period should treat both as fixed the same way the no-manager rule is fixed. I don't have opinions on the technology stack, but I have strong opinions on anything that could quietly become "set it to never" — this is the same category as an admin being able to disable outlier flagging. Glad the notes already say this; flagging it as something I'll hold the line on if it resurfaces at design or implementation.
+
+## Questions for whoever writes design.md
+
+- Does a facilitator-role connection get any priority treatment in the refresh/re-auth path, given a facilitator dying mid-session has no workaround (nobody else can advance the topic)?
+- What does a participant's tile do on the facilitator's readiness grid when their connection is closed by a SEC-25 revocation sweep versus a SEC-26 refresh failure versus an ordinary network drop? Are those three cases visually distinguishable to me — and if so, does that distinguishability leak anything about *why* the person is gone?
+- Is there any interaction, even a theoretical one, between the re-authorization timers and the reveal-broadcast path? I want this stated as "considered, not a risk, because X" — not left unaddressed.
+- If a connection silently recovers mid-session, does anything land in session history / the trend dashboard, or is this entirely invisible to facilitators by design? I can live with either answer, but I want it to be a decision.
+
+## Would this disappear into the background?
+
+Mostly yes, and the instinct throughout the document is right. The gap is that "background" has been scoped to mean invisible to the individual affected client. I need it to also mean invisible-in-a-good-way to me and to the rest of the room — nobody's tile should flicker, vanish ambiguously, or make me wonder mid-session whether the tool is glitching or a teammate just lost access. That's a UX/architecture question as much as a security one, and I'd like it named as a first-class concern in design.md rather than something that falls out incidentally from getting the non-disclosure code path right.

@@ -33,6 +33,7 @@ function makeConn(overrides: Partial<RegisteredConnection> = {}): RegisteredConn
     socket: fakeSocket(1),
     userId: "user-1",
     sessionCreatedAt: Date.now(),
+    fastifySessionId: "fastify-sess-1",
     ...overrides,
   };
 }
@@ -102,6 +103,52 @@ describe("ConnectionRegistry", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("clears a pending reauthSweepTimer on deregistration (websocket-connection-reauthorization, task 1.8)", () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ConnectionRegistry();
+      const timer = setInterval(() => {}, 1000);
+      const conn = makeConn({ reauthSweepTimer: timer });
+      registry.register("session", "session-1", conn);
+
+      const clearSpy = vi.spyOn(global, "clearInterval");
+      registry.deregister("session", "session-1", conn);
+
+      expect(clearSpy).toHaveBeenCalledWith(timer);
+      expect(conn.reauthSweepTimer).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a pending tokenRefreshTimer on deregistration (websocket-connection-reauthorization, task 1.8)", () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ConnectionRegistry();
+      const timer = setTimeout(() => {}, 1000);
+      const conn = makeConn({ tokenRefreshTimer: timer });
+      registry.register("session", "session-1", conn);
+
+      const clearSpy = vi.spyOn(global, "clearTimeout");
+      registry.deregister("session", "session-1", conn);
+
+      expect(clearSpy).toHaveBeenCalledWith(timer);
+      expect(conn.tokenRefreshTimer).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("calling deregister() twice on the same connection is a safe no-op (design.md double-close risk)", () => {
+    const registry = new ConnectionRegistry();
+    const conn = makeConn();
+    registry.register("session", "session-1", conn);
+
+    registry.deregister("session", "session-1", conn);
+    expect(() => registry.deregister("session", "session-1", conn)).not.toThrow();
+    expect(registry.candidates("session", "session-1")).toEqual([]);
   });
 });
 

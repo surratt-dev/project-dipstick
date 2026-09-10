@@ -161,8 +161,28 @@ export interface EMContentView {
   topics: EMTopicResult[];
 }
 
+/**
+ * A single resolved SEC-26 grace-period recovery diagnostic entry
+ * (websocket-connection-reauthorization, design.md Decision D9) — a
+ * generic "this participant's connection recovered" signal. Deliberately
+ * carries no cause: whether the underlying token failure was a definitive
+ * revocation or a transient/exhausted-retry failure is never disclosed here.
+ */
+export interface ConnectionRecoveryEntry {
+  userId: string;
+  recoveredAt: string; // ISO 8601
+}
+
 export interface FacilitatorContentView {
   sessionId: string;
   sessionStatus: string;
   topics: FacilitatorTopicResult[];
+  /**
+   * SEC-26 grace-period recovery diagnostic trail for this session
+   * (websocket-connection-reauthorization, design.md Decision D9) — never
+   * merged with session.access_revoked_live or
+   * session.token_refresh_failed_live rows, which are not facilitator-
+   * visible.
+   */
+  connectionRecoveries: ConnectionRecoveryEntry[];
 }

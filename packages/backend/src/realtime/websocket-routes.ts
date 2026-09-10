@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import websocketPlugin from "@fastify/websocket";
 import { registerOriginCheck } from "./origin-check.js";
 import { connectionRegistry, type RegisteredConnection } from "./connection-registry.js";
@@ -9,6 +9,12 @@ import { createWsSubscriber } from "./ws-pubsub.js";
 import { attachWsEventDispatcher } from "./ws-event-dispatcher.js";
 import { STALE_SIGNAL_CLOSE_CODE } from "./staleness-signal.js";
 import type { SessionData } from "../auth/session-store.js";
+import { scheduleReauthorizationSweep } from "./connection-reauthorization.js";
+import {
+  scheduleTokenRefreshMonitor,
+  consumeGraceRecoveryMarker,
+  recordConnectionRecoveredAudit,
+} from "./connection-token-refresh.js";
 
 // ---------------------------------------------------------------------------
 // WebSocket route registration
@@ -81,12 +87,22 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
         }
 
         const sessionCreatedAt = new Date(session.sessionCreatedAt).getTime();
-        const conn: RegisteredConnection = { socket, userId: session.userId, sessionCreatedAt };
+        const conn: RegisteredConnection = {
+          socket,
+          userId: session.userId,
+          sessionCreatedAt,
+          fastifySessionId: request.session.sessionId,
+        };
 
         connectionRegistry.register("session", sessionId, conn);
         scheduleForceClose(conn, sessionCreatedAt, () => {
           connectionRegistry.deregister("session", sessionId, conn);
         });
+        // websocket-connection-reauthorization (SEC-25/26): design.md
+        // Decisions D2, D3.
+        scheduleReauthorizationSweep(conn, "session", sessionId, connectionRegistry, request.log);
+        scheduleTokenRefreshMonitor(conn, "session", sessionId, connectionRegistry, request.log);
+        await checkAndRecordGraceRecovery(session.userId, "session", sessionId, request.log);
 
         const cleanup = () => connectionRegistry.deregister("session", sessionId, conn);
         socket.on("close", cleanup);
@@ -112,12 +128,22 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
         }
 
         const sessionCreatedAt = new Date(session.sessionCreatedAt).getTime();
-        const conn: RegisteredConnection = { socket, userId: session.userId, sessionCreatedAt };
+        const conn: RegisteredConnection = {
+          socket,
+          userId: session.userId,
+          sessionCreatedAt,
+          fastifySessionId: request.session.sessionId,
+        };
 
         connectionRegistry.register("team", teamId, conn);
         scheduleForceClose(conn, sessionCreatedAt, () => {
           connectionRegistry.deregister("team", teamId, conn);
         });
+        // websocket-connection-reauthorization (SEC-25/26): design.md
+        // Decisions D2, D3.
+        scheduleReauthorizationSweep(conn, "team", teamId, connectionRegistry, request.log);
+        scheduleTokenRefreshMonitor(conn, "team", teamId, connectionRegistry, request.log);
+        await checkAndRecordGraceRecovery(session.userId, "team", teamId, request.log);
 
         const cleanup = () => connectionRegistry.deregister("team", teamId, conn);
         socket.on("close", cleanup);
@@ -125,6 +151,26 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
       })();
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// websocket-connection-reauthorization (SEC-26): design.md Decisions D4/D9,
+// tasks.md task 4.4 (marker consumption) + task 5.1 (audit write) —
+// implemented together at this single registration-time call site per
+// those tasks' own coordination note: splitting marker consumption from
+// its audit write across separately-landed changes risks a connection that
+// silently consumes the recovery marker with no audit trail ever written.
+// ---------------------------------------------------------------------------
+async function checkAndRecordGraceRecovery(
+  userId: string,
+  scope: "session" | "team",
+  id: string,
+  log: FastifyBaseLogger,
+): Promise<void> {
+  const wasGraceRecovery = await consumeGraceRecoveryMarker(userId);
+  if (wasGraceRecovery) {
+    await recordConnectionRecoveredAudit(userId, scope, id, log);
+  }
 }
 
 // ---------------------------------------------------------------------------
