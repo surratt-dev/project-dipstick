@@ -1,5 +1,16 @@
 -- Migration 8 Rollback: Restore role_change_audit and remove audit_log
 --
+-- NOT AUTO-RUN. This file lives in migrations-manual/, not migrations/,
+-- specifically so `npm run db:migrate` (node-pg-migrate, which treats every
+-- .sql file in the -m directory as its own runnable Up migration) never
+-- discovers it. It previously lived in migrations/ as 8_rollback.sql and was
+-- silently auto-executed immediately after 8_audit_log.sql on every fresh
+-- migrate, dropping audit_log on every run since 2026-07-07 (see GitHub
+-- issue #39). Do not move this file back into migrations/.
+--
+-- To run this rollback manually:
+--   dotenv -e ../../.env -- psql "$DATABASE_URL" -f migrations-manual/8_rollback.sql
+--
 -- This script must be validated in a non-production environment before the
 -- production deployment gate is cleared (task 2a.11).
 --

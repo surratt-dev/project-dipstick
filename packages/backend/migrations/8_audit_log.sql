@@ -15,8 +15,11 @@
 -- positions the system for future audit requirements without schema gymnastics.
 --
 -- Rollback: restore role_change_audit from backup or reverse migration (see
--- migration 8_rollback.sql). The rollback script must be validated in a
--- non-production environment before Phase 2 ships to production (task 2a.11).
+-- migrations-manual/8_rollback.sql — deliberately NOT in this migrations/
+-- directory, so node-pg-migrate never auto-discovers and runs it; see that
+-- file's header and GitHub issue #39 for why this matters). The rollback
+-- script must be validated in a non-production environment before Phase 2
+-- ships to production (task 2a.11).
 
 -- Up
 
@@ -92,7 +95,9 @@ BEGIN
   END IF;
 END $$;
 
--- Down (reference — execute manually or via 8_rollback.sql)
--- See migration 8_rollback.sql for the validated rollback procedure.
+-- Down (reference — execute manually via migrations-manual/8_rollback.sql)
+-- See migrations-manual/8_rollback.sql for the validated rollback procedure.
 -- Do NOT add a DROP TABLE audit_log here; this comment is intentional.
+-- Do NOT add a runnable rollback .sql file to this migrations/ directory —
+-- node-pg-migrate auto-discovers and runs every file here (see issue #39).
 -- The rollback requires restoring role_change_audit from backup first.
