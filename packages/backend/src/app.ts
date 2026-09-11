@@ -12,6 +12,7 @@ import { sessionRoutes } from "./routes/sessions.js";
 import { emViewRoutes } from "./routes/em-views.js";
 import { contentRoutes } from "./routes/content.js";
 import { facilitatorSessionRoutes } from "./routes/facilitator-sessions.js";
+import { actionItemRoutes } from "./routes/action-items.js";
 import { config, getAllowedOrigins } from "./config.js";
 import { redis } from "./redis.js";
 import { createRedisStore } from "./auth/session-store.js";
@@ -108,6 +109,7 @@ export async function buildApp() {
   await app.register(emViewRoutes);
   await app.register(contentRoutes);
   await app.register(facilitatorSessionRoutes);
+  await app.register(actionItemRoutes);
 
   return app;
 }

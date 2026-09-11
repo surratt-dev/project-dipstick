@@ -120,7 +120,19 @@ export type AuditEventName =
   // endpoint surfaces it), unlike session.connection_recovered. metadata:
   // { scope: "session", scopeId, teamId }.
   | "session.facilitator_connected"
-  | "session.facilitator_disconnected";
+  | "session.facilitator_disconnected"
+  // action_item.status_changed: actionitem-updated-live-broadcast (issues
+  // #64 + #65 + #95, combined), design.md Decision D13. `action_item_history`
+  // (packages/backend/migrations/2_create_tables.sql:152-161) is a correctly
+  // designed business record — read back by ordinary users through
+  // content.ts/em-views.ts — but is not this codebase's security audit
+  // trail (no actor_global_role, no actor_ip). This event's audit_log row is
+  // written in the same transaction as the action_items.status update and
+  // the action_item_history insert (packages/backend/src/routes/
+  // action-items.ts), matching recordRevealTriggeredAudit's shape. metadata:
+  // { action_item_id, previous_status, new_status, authorization_path:
+  // "owner" | "facilitator", session_id? }.
+  | "action_item.status_changed";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

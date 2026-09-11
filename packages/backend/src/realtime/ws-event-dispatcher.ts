@@ -1,5 +1,6 @@
 import type { Redis } from "ioredis";
 import type { FastifyBaseLogger } from "fastify";
+import { db } from "../db.js";
 import { WS_EVENTS_CHANNEL } from "./ws-pubsub.js";
 import {
   connectionRegistry,
@@ -82,6 +83,8 @@ export async function handleIncomingMessage(
       return dispatchParticipantJoined(envelope, registry, logger);
     case "participant_left":
       return dispatchParticipantLeft(envelope, registry, logger);
+    case "action_item_status_updated":
+      return dispatchActionItemStatusUpdated(envelope, registry, logger);
     default: {
       // Exhaustiveness guard — a new WsEventType added to the shared union
       // without a corresponding dispatch case fails here at runtime (and,
@@ -341,6 +344,59 @@ async function dispatchParticipantLeft(
       if (grant?.path === "facilitator") {
         sendClientMessage(registry, "session", envelope.sessionId, conn, {
           eventType: "participant_left",
+          payload: envelope.payload,
+        });
+      }
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// action_item_status_updated — actionitem-updated-live-broadcast (issues
+// #64 + #65 + #95, combined), design.md Decision D2/D14.
+//
+// Delivered to any valid session subscriber (participant OR facilitator —
+// session_state_change's recipient breadth, not participant_joined/left's
+// facilitator-only pattern), gated to sessions in `pre_session` status.
+//
+// Decision D14: SessionSubscriberGrant's `participant` branch carries no
+// `sessionStatus` (only the `facilitator` branch does), so this gate cannot
+// be evaluated off the per-candidate grant the way dispatchVoteReadinessUpdate
+// does. `envelope.payload.sessionStatus`, stamped once by the mutation
+// handler at publish time, is used as a fast bail-out instead; when it says
+// `pre_session`, ONE additional live read confirms the session hasn't left
+// `pre_session` between publish and delivery (status only ever moves
+// forward, so a stale `pre_session` envelope value can only be *more* stale,
+// never falsely still-current) — once per dispatch, not per-candidate, since
+// status is uniform across every candidate of one session. Per-candidate
+// evaluateSessionSubscriberAccess authorization still runs for every
+// candidate regardless, exactly as every other event in this dispatcher.
+// ---------------------------------------------------------------------------
+async function dispatchActionItemStatusUpdated(
+  envelope: Extract<WsEventEnvelope, { eventType: "action_item_status_updated" }>,
+  registry: ConnectionRegistry,
+  logger: FastifyBaseLogger,
+): Promise<void> {
+  if (envelope.sessionStatus !== "pre_session") return;
+
+  const candidates = registry.candidates("session", envelope.sessionId);
+  if (candidates.length === 0) return;
+
+  const freshStatusResult = await db.query<{ status: string }>(
+    `SELECT status FROM sessions WHERE id = $1`,
+    [envelope.sessionId],
+  );
+  const freshStatus = (freshStatusResult.rows[0] as { status: string } | undefined)?.status;
+  if (freshStatus !== "pre_session") return;
+
+  await Promise.all(
+    candidates.map(async (conn) => {
+      if (isConnectionExpired(conn, logger)) return;
+
+      const grant = await evaluateSessionSubscriberAccess(conn.userId, envelope.sessionId);
+      if (grant !== null) {
+        sendClientMessage(registry, "session", envelope.sessionId, conn, {
+          eventType: "action_item_status_updated",
           payload: envelope.payload,
         });
       }
