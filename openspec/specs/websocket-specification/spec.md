@@ -12,6 +12,25 @@ This spec does NOT cover: authorization mechanics, idle re-auth/token refresh, c
 
 ---
 
+## Event Registry
+
+This table is the authoritative, exhaustive list of every WebSocket event this application sends to a client, checked automatically against `WsClientMessage` (`packages/shared/src/types/realtime.ts`) by `packages/shared/src/__tests__/websocket-spec-conformance.test.ts`. Every event in that union SHALL have a row here marked Implemented, and no row marked Implemented SHALL be absent from that union — this is the anchor the automated check reads, so an entry added or removed here without a matching code change (or vice versa) fails CI. The narrative catalog below (prior-name corrections, requirements, scenarios) explains and cross-references these same events; this table exists so a machine doesn't have to parse that prose to verify it.
+
+| Event | Status |
+|---|---|
+| `vote_readiness_update` | Implemented |
+| `session_state_change` | Implemented |
+| `vote_revealed` | Implemented |
+| `reauth_required` | Implemented |
+| `topic_history_update` | Implemented |
+| `session_registration_snapshot` | Implemented |
+| `participant.joined` / `participant.left` | NOT IMPLEMENTED — tracked in issue #94 |
+| `actionitem.updated` (live, pre-finalization case) | NOT IMPLEMENTED — tracked in issue #95 |
+
+`actionitem.created` (see the corrected-names table below) is deliberately excluded from this registry: no FR names it directly, per design.md's original scoping decision, so it is not carried forward as a tracked future-state entry — it remains only as a historical note that the old dot-notation name maps to no event.
+
+---
+
 ## Requirements
 
 ### Requirement: The event catalog states corrected, shipped event names and supersedes prior dot-notation naming
@@ -39,6 +58,17 @@ The application's WebSocket message catalog SHALL be documented using the event 
 
 - **WHEN** the catalog lists `vote.locked`, `session.revealed`, or `topic.advance`/`topic.advanced`
 - **THEN** each entry states both the prior name and the real, currently-implemented mechanism, and does not present the prior name as itself still in use
+
+---
+
+### Requirement: The catalog documents `session_state_change`, the session-status-transition broadcast
+
+The application's WebSocket message catalog SHALL document `session_state_change` as **Implemented**. It is published to session subscribers after each committed session-status transition (`draft`→`lobby`, `lobby`→`pre_session`, `pre_session`→`active`, `active`→`wrap_up`/`complete`), carrying `sessionId`, `teamId`, `previousStatus`, `newStatus`, and `changedAt`. This event had no prior dot-notation name in Appendix D and was absent from this document's catalog at introduction, despite this document's Purpose promising the full event inventory. Ownership of the underlying phase-transition logic that triggers each publish belongs to `session-topic-lifecycle` (per this document's Non-Goals) — this entry documents only the wire-level event itself.
+
+#### Scenario: A reader consults the catalog for the session-status-transition event
+
+- **WHEN** a reader looks for the WebSocket event fired on any session-status transition
+- **THEN** they find `session_state_change` listed as Implemented, with its payload fields, and the underlying phase-transition logic correctly attributed to `session-topic-lifecycle` rather than redefined here
 
 ---
 
