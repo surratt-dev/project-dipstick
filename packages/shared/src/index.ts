@@ -73,5 +73,6 @@ export type {
   VoteRevealedTriggerPayload,
   TopicHistoryUpdatePayload,
   SessionRegistrationSnapshotPayload,
+  ObservedRevealLatencyReport,
 } from "./types/realtime.js";
 export { STALE_SIGNAL_CLOSE_CODE, REAUTH_GRACE_EXPIRED_CLOSE_CODE } from "./types/ws-close-codes.js";

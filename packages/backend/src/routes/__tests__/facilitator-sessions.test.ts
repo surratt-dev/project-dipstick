@@ -669,7 +669,13 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     expect(mockPublishVoteRevealed).toHaveBeenCalledTimes(1);
     expect(mockPublishVoteRevealed).toHaveBeenCalledWith(
       "sess-1",
-      expect.objectContaining({ sessionId: "sess-1", sessionStatus: "active" }),
+      expect.objectContaining({
+        sessionId: "sess-1",
+        sessionStatus: "active",
+        // FR-4.6.1 (websocket-specification Decision D2): stamped here,
+        // once, after the transaction above commits.
+        serverTimestamp: expect.any(String),
+      }),
     );
   });
 

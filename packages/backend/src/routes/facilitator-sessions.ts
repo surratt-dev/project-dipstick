@@ -1101,9 +1101,15 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     // Publish-after-commit ordering: only after the transaction above has
     // committed — never before, never inside it. This is now the real call
     // site (issue #26 is resolved by this change).
+    //
+    // serverTimestamp (FR-4.6.1, websocket-specification Decision D2): captured
+    // exactly once, here, before publish — never inside dispatchVoteRevealed,
+    // which runs once per pod and would otherwise produce a different value
+    // per pod for the same reveal.
     await publishVoteRevealed(sessionId, {
       sessionId,
       sessionStatus: sr.status as SessionStatus,
+      serverTimestamp: new Date().toISOString(),
     });
 
     return reply.code(200).send({

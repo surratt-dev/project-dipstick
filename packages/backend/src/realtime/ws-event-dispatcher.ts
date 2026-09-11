@@ -190,6 +190,17 @@ async function dispatchSessionStateChange(
 // facilitator-sessions.ts, POST .../reveal) now commits the voting ->
 // revealed transition and publishes this event after that transaction
 // commits.
+//
+// serverTimestamp (FR-4.6.1, websocket-specification Decision D2, corrected
+// on Design-stage review): this function runs once PER POD, independently,
+// each time that pod's own subscriber receives the envelope. It MUST read
+// envelope.payload.serverTimestamp and forward that single value, unmodified,
+// to every local recipient — it must NEVER call `new Date()`/generate a
+// fresh timestamp here. Doing so would give every recipient on one pod an
+// identical value while each pod computed its own, independently, which
+// breaks the "every recipient of one reveal receives an identical
+// serverTimestamp" guarantee in the multi-pod topology this event's
+// candidates are drawn from.
 // ---------------------------------------------------------------------------
 async function dispatchVoteRevealed(
   envelope: Extract<WsEventEnvelope, { eventType: "vote_revealed" }>,
@@ -198,6 +209,8 @@ async function dispatchVoteRevealed(
 ): Promise<void> {
   const candidates = registry.candidates("session", envelope.sessionId);
   if (candidates.length === 0) return;
+
+  const { serverTimestamp } = envelope.payload;
 
   await Promise.all(
     candidates.map(async (conn) => {
@@ -210,6 +223,7 @@ async function dispatchVoteRevealed(
       sendClientMessage(registry, "session", envelope.sessionId, conn, {
         eventType: "vote_revealed",
         payload,
+        serverTimestamp,
       });
     }),
   );
