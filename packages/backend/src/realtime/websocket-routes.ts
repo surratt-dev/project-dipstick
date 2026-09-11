@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import websocketPlugin from "@fastify/websocket";
 import { registerOriginCheck } from "./origin-check.js";
-import { connectionRegistry, type RegisteredConnection } from "./connection-registry.js";
+import { connectionRegistry, safeSend, type RegisteredConnection } from "./connection-registry.js";
 import { ABSOLUTE_LIFETIME_MS } from "../auth/middleware.js";
 import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
 import { evaluateTeamAccess } from "../auth/team-content-access-helper.js";
@@ -15,6 +15,7 @@ import {
   consumeGraceRecoveryMarker,
   recordConnectionRecoveredAudit,
 } from "./connection-token-refresh.js";
+import { buildSessionRegistrationSnapshot } from "./session-registration-snapshot.js";
 
 // ---------------------------------------------------------------------------
 // WebSocket route registration
@@ -104,6 +105,16 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
         scheduleTokenRefreshMonitor(conn, "session", sessionId, connectionRegistry, request.log);
         await checkAndRecordGraceRecovery(session.userId, "session", sessionId, request.log);
 
+        // vote-compose-recovery (issue #31): design.md Decision D3c's
+        // "Ordering and failure containment" note. MUST run strictly after
+        // the three calls above — never before or interleaved between them,
+        // since those schedule/record the SEC-25/26 timers and grace-
+        // recovery flag this connection depends on for the rest of its
+        // lifetime, and this change's own new fallible DB read must never
+        // be positioned where a failure in it could prevent them from
+        // running.
+        await sendSessionRegistrationSnapshot(session.userId, sessionId, conn, request.log);
+
         const cleanup = () => connectionRegistry.deregister("session", sessionId, conn);
         socket.on("close", cleanup);
         socket.on("error", cleanup);
@@ -170,6 +181,50 @@ async function checkAndRecordGraceRecovery(
   const wasGraceRecovery = await consumeGraceRecoveryMarker(userId);
   if (wasGraceRecovery) {
     await recordConnectionRecoveredAudit(userId, scope, id, log);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// vote-compose-recovery (issue #31): design.md Decision D3c's "Ordering and
+// failure containment" note, tasks.md task 7.4.
+//
+// This is a deliberate silent-discard-shaped failure mode, not an
+// oversight: on any failure — a DB error, or buildSessionRegistrationSnapshot
+// returning null for the zero-row race case — this logs at `warn` and sends
+// no session_registration_snapshot message at all. It never throws past
+// this point, never surfaces as an unhandled promise rejection, and never
+// closes or otherwise degrades the connection. restoreDraft (the frontend
+// consumer, packages/frontend/src/realtime/voteDraft.ts) already never
+// applies a value before a registration payload arrives, so "no snapshot
+// arrives this registration" degrades to "this tab's draft, if any, is not
+// restored this load" — the same discard-by-default posture that module
+// applies everywhere else.
+//
+// No audit_log row is written here (design.md Decision D3e): this is a
+// passive read of state the participant already has standing to see, not
+// an auditable action like vote submission, reveal, or topic advance.
+// ---------------------------------------------------------------------------
+async function sendSessionRegistrationSnapshot(
+  userId: string,
+  sessionId: string,
+  conn: RegisteredConnection,
+  log: FastifyBaseLogger,
+): Promise<void> {
+  try {
+    const payload = await buildSessionRegistrationSnapshot(userId, sessionId);
+    if (payload === null) {
+      log.warn({ sessionId }, "session_registration_snapshot: no matching session row, skipping send");
+      return;
+    }
+    safeSend(
+      connectionRegistry,
+      "session",
+      sessionId,
+      conn,
+      JSON.stringify({ eventType: "session_registration_snapshot", payload }),
+    );
+  } catch (err) {
+    log.warn({ err, sessionId }, "session_registration_snapshot: failed to build/send, skipping");
   }
 }
 

@@ -1,4 +1,4 @@
-import type { SessionStatus } from "./session.js";
+import type { SessionStatus, SessionTopicStatus } from "./session.js";
 import type { ParticipantContentView, FacilitatorContentView } from "./team-content-views.js";
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,35 @@ export interface VoteRevealedTriggerPayload {
 }
 
 /**
+ * session_registration_snapshot payload — vote-compose-recovery: design.md
+ * Decision D3a. Sent directly to a session-scoped connection on every
+ * successful registration (`GET /ws/sessions/:sessionId`), never published
+ * to the internal `ws:events` Redis channel and never cached — see
+ * packages/backend/src/realtime/session-registration-snapshot.ts's
+ * `buildSessionRegistrationSnapshot`, which assembles this from one live
+ * database read per send (design.md Decision D3c).
+ *
+ * `currentTopic` is `null` whenever `sessions.current_topic_id` is `null` —
+ * this covers both `lobby`/`pre_session` (voting hasn't started) and
+ * `wrap_up` (cleared per SESSION-012) identically; a consumer does not need
+ * to special-case `wrap_up`, only check `currentTopic === null`.
+ */
+export interface SessionRegistrationSnapshotPayload {
+  sessionId: string;
+  sessionStatus: SessionStatus;
+  currentTopic: { sessionTopicId: string; status: SessionTopicStatus } | null;
+  /**
+   * This connection's own lock-in status only — never another
+   * participant's (design.md Decision D3d, self-disclosure only). Only
+   * meaningful when `currentTopic` is non-null and its `status` is
+   * `"voting"`; it is computed and sent regardless (always this
+   * connection's own true status), and consumers are responsible for only
+   * consulting it under those conditions.
+   */
+  hasLockedInVote: boolean;
+}
+
+/**
  * topic_history_update payload — pushed to team event-stream subscribers
  * when historical session data changes (e.g., an action item is finalized
  * during wrap-up, or a topic advances). No vote values ever appear here —
@@ -155,10 +184,17 @@ export type WsEventEnvelope =
  * definitive revocation response, starting the grace period (Decision D4).
  * Never published to the internal `ws:events` Redis channel — sent directly
  * to the one affected connection only.
+ *
+ * session_registration_snapshot — vote-compose-recovery, design.md
+ * Decision D3a/D3b. Sent directly to a session-scoped connection on every
+ * successful registration, the same connection-specific delivery pattern
+ * `reauth_required` uses (never published to the internal `ws:events`
+ * Redis channel).
  */
 export type WsClientMessage =
   | { eventType: "vote_readiness_update"; payload: VoteReadinessUpdatePayload }
   | { eventType: "session_state_change"; payload: SessionStateChangePayload }
   | { eventType: "vote_revealed"; payload: VoteRevealedPayload }
   | { eventType: "reauth_required" }
-  | { eventType: "topic_history_update"; payload: TopicHistoryUpdatePayload };
+  | { eventType: "topic_history_update"; payload: TopicHistoryUpdatePayload }
+  | { eventType: "session_registration_snapshot"; payload: SessionRegistrationSnapshotPayload };
