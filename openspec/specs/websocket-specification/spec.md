@@ -8,7 +8,7 @@ This spec assembles from and points into five existing specs rather than re-deri
 
 This spec does NOT cover: authorization mechanics, idle re-auth/token refresh, client connection-health rendering, vote draft persistence, or session/topic phase-transition logic — all owned by the five specs above and cited, not redefined, here.
 
-**Production trigger status:** the event catalog reflects shipped production code as of this spec's introduction. `serverTimestamp` on `vote_revealed` is implemented and tested, including a cross-pod case, closing a compliance gap against FR-4.6.1 that existed in the shipped payload prior to this change. `participant.joined`/`participant.left` (FR-2.5, `[PREF]`) and a live, pre-finalization `actionitem.updated` broadcast (FR-3.3, `[PREF]`) are documented future-state entries only — **NOT IMPLEMENTED**, tracked in issue #91, implementation unscheduled.
+**Production trigger status:** the event catalog reflects shipped production code as of this spec's introduction. `serverTimestamp` on `vote_revealed` is implemented and tested, including a cross-pod case, closing a compliance gap against FR-4.6.1 that existed in the shipped payload prior to this change. `participant.joined`/`participant.left` (FR-2.5, `[PREF]`) and a live, pre-finalization `actionitem.updated` broadcast (FR-3.3, `[PREF]`) are documented future-state entries only — **NOT IMPLEMENTED**, tracked in issue #94 and issue #95 respectively, implementation unscheduled.
 
 ---
 
@@ -216,14 +216,14 @@ Connection and error states in this catalog SHALL be rendered as recoverable and
 
 ### Requirement: `participant.joined`/`participant.left` and live `actionitem.updated` are documented future-state entries, not silently omitted
 
-The catalog SHALL document `participant.joined` (FR-2.5, `[PREF]`), `participant.left` (FR-2.5, `[PREF]`), and a live `actionitem.updated` broadcast for pre-finalization status changes (FR-3.3, `[PREF]`) as normative future-state entries, each marked **NOT IMPLEMENTED** and tracked in issue #91, implementation unscheduled. These events SHALL NOT be built as part of this change.
+The catalog SHALL document `participant.joined` (FR-2.5, `[PREF]`) and `participant.left` (FR-2.5, `[PREF]`) as normative future-state entries, marked **NOT IMPLEMENTED** and tracked in issue #94, and a live `actionitem.updated` broadcast for pre-finalization status changes (FR-3.3, `[PREF]`) marked **NOT IMPLEMENTED** and tracked in issue #95, implementation unscheduled. These events SHALL NOT be built as part of this change.
 
 #### Scenario: A reader checking FR-2.5's real-time lobby list finds a documented gap, not silence
 
 - **WHEN** a reader consults this catalog for the WebSocket event backing FR-2.5's real-time participant list
-- **THEN** they find `participant.joined`/`participant.left` listed as NOT IMPLEMENTED, tied to FR-2.5, with a pointer to tracking issue #91
+- **THEN** they find `participant.joined`/`participant.left` listed as NOT IMPLEMENTED, tied to FR-2.5, with a pointer to tracking issue #94
 
 #### Scenario: A reader checking FR-3.3's live status-update requirement finds the same treatment
 
 - **WHEN** a reader consults this catalog for the WebSocket event backing FR-3.3's live pre-session status-update requirement
-- **THEN** they find live `actionitem.updated` (the pre-finalization case) listed as NOT IMPLEMENTED, tied to FR-3.3, distinguished from the already-implemented wrap-up finalization case (`topic_history_update`'s `action_item_finalized`)
+- **THEN** they find live `actionitem.updated` (the pre-finalization case) listed as NOT IMPLEMENTED, tied to FR-3.3, with a pointer to tracking issue #95, distinguished from the already-implemented wrap-up finalization case (`topic_history_update`'s `action_item_finalized`)
