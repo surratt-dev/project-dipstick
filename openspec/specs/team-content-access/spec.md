@@ -362,6 +362,8 @@ The expiry check is evaluated in-database: `s.status = 'complete' AND s.facilita
 
 The application SHALL provide distinct, named error states for facilitators encountering access control failures during a live session. These error states MUST NOT inherit the general 403/404 error presentation. An authorization failure during a live session is a UX emergency: the facilitator is in a room with participants and cannot navigate away to investigate.
 
+**Implementation note — full-stack E2E coverage (`facilitator-error-states-e2e`):** Error States 1 (both the recoverable and non-recoverable paths), 1a, 1b (backend contract only), 2, 3 (real-trigger case), and 4 have real full-stack test coverage — real Postgres, real Redis, no mocked `db.query` anywhere in the covering tests — run via the existing `integration` CI workflow with no new CI wiring required. Error State 3's coverage is asserted against its real production trigger: a real committed session-state transition (via the topic-advance wrap-up-entry branch or session completion) that publishes `session_state_change` and delivers it to a real subscriber over the actual Redis pub/sub channel, not a directly-invoked function call or a manually-published stand-in event. Error State 3's "system timeout" trigger variant is explicitly not covered by this test suite: no timeout-driven auto-transition mechanism exists anywhere in this codebase, so there is nothing to trigger. The frontend "Required display" behavior each state below describes remains open follow-up work, tracked under GitHub issue #38 — this coverage proves the backend/WebSocket contract these displays will consume, not the UI itself.
+
 **Named error states:**
 
 **Error State 1 — Authorization failure during vote reveal:**
