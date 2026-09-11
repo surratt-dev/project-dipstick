@@ -78,6 +78,10 @@ export async function handleIncomingMessage(
       return dispatchVoteRevealed(envelope, registry, logger);
     case "topic_history_update":
       return dispatchTopicHistoryUpdate(envelope, registry, logger);
+    case "participant_joined":
+      return dispatchParticipantJoined(envelope, registry, logger);
+    case "participant_left":
+      return dispatchParticipantLeft(envelope, registry, logger);
     default: {
       // Exhaustiveness guard — a new WsEventType added to the shared union
       // without a corresponding dispatch case fails here at runtime (and,
@@ -284,6 +288,62 @@ async function dispatchTopicHistoryUpdate(
         eventType: "topic_history_update",
         payload: envelope.payload,
       });
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// participant_joined / participant_left — GitHub issue #94, FR-2.5.
+//
+// Delivered ONLY to the active facilitator for this session, unrestricted by
+// session status (session_state_change's pattern) — FR-2.5's real-time
+// lobby participant list is facilitator-only, not gated to a particular
+// session phase. Published from websocket-routes.ts's session-scoped
+// connect/disconnect handlers, not from any durable DB write — see
+// ws-pubsub.ts's publishParticipantJoined/publishParticipantLeft.
+// ---------------------------------------------------------------------------
+async function dispatchParticipantJoined(
+  envelope: Extract<WsEventEnvelope, { eventType: "participant_joined" }>,
+  registry: ConnectionRegistry,
+  logger: FastifyBaseLogger,
+): Promise<void> {
+  const candidates = registry.candidates("session", envelope.sessionId);
+  if (candidates.length === 0) return;
+
+  await Promise.all(
+    candidates.map(async (conn) => {
+      if (isConnectionExpired(conn, logger)) return;
+
+      const grant = await evaluateSessionSubscriberAccess(conn.userId, envelope.sessionId);
+      if (grant?.path === "facilitator") {
+        sendClientMessage(registry, "session", envelope.sessionId, conn, {
+          eventType: "participant_joined",
+          payload: envelope.payload,
+        });
+      }
+    }),
+  );
+}
+
+async function dispatchParticipantLeft(
+  envelope: Extract<WsEventEnvelope, { eventType: "participant_left" }>,
+  registry: ConnectionRegistry,
+  logger: FastifyBaseLogger,
+): Promise<void> {
+  const candidates = registry.candidates("session", envelope.sessionId);
+  if (candidates.length === 0) return;
+
+  await Promise.all(
+    candidates.map(async (conn) => {
+      if (isConnectionExpired(conn, logger)) return;
+
+      const grant = await evaluateSessionSubscriberAccess(conn.userId, envelope.sessionId);
+      if (grant?.path === "facilitator") {
+        sendClientMessage(registry, "session", envelope.sessionId, conn, {
+          eventType: "participant_left",
+          payload: envelope.payload,
+        });
+      }
     }),
   );
 }

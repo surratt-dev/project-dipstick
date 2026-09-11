@@ -8,7 +8,7 @@ This spec assembles from and points into five existing specs rather than re-deri
 
 This spec does NOT cover: authorization mechanics, idle re-auth/token refresh, client connection-health rendering, vote draft persistence, or session/topic phase-transition logic — all owned by the five specs above and cited, not redefined, here.
 
-**Production trigger status:** the event catalog reflects shipped production code as of this spec's introduction. `serverTimestamp` on `vote_revealed` is implemented and tested, including a cross-pod case, closing a compliance gap against FR-4.6.1 that existed in the shipped payload prior to this change. `participant.joined`/`participant.left` (FR-2.5, `[PREF]`) and a live, pre-finalization `actionitem.updated` broadcast (FR-3.3, `[PREF]`) are documented future-state entries only — **NOT IMPLEMENTED**, tracked in issue #94 and issue #95 respectively, implementation unscheduled.
+**Production trigger status:** the event catalog reflects shipped production code as of this spec's introduction, updated as future-state entries close. `serverTimestamp` on `vote_revealed` is implemented and tested, including a cross-pod case, closing a compliance gap against FR-4.6.1 that existed in the shipped payload prior to this change. `participant_joined`/`participant_left` (FR-2.5, `[PREF]`) closed issue #94 and are now Implemented — see the dedicated Requirement below. A live, pre-finalization `actionitem.updated` broadcast (FR-3.3, `[PREF]`) remains a documented future-state entry only — **NOT IMPLEMENTED**, tracked in issue #95, implementation unscheduled.
 
 ---
 
@@ -24,7 +24,7 @@ This table is the authoritative, exhaustive list of every WebSocket event this a
 | `reauth_required` | Implemented |
 | `topic_history_update` | Implemented |
 | `session_registration_snapshot` | Implemented |
-| `participant.joined` / `participant.left` | NOT IMPLEMENTED — tracked in issue #94 |
+| `participant_joined` / `participant_left` | Implemented |
 | `actionitem.updated` (live, pre-finalization case) | NOT IMPLEMENTED — tracked in issue #95 |
 
 `actionitem.created` (see the corrected-names table below) is deliberately excluded from this registry: no FR names it directly, per design.md's original scoping decision, so it is not carried forward as a tracked future-state entry — it remains only as a historical note that the old dot-notation name maps to no event.
@@ -45,7 +45,7 @@ The application's WebSocket message catalog SHALL be documented using the event 
 | `session.revealed` | Folded into `vote_revealed` | Implemented |
 | `topic.advance` (trigger) | REST `POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance` (`SESSION-012`) | Implemented |
 | `topic.advanced` (broadcast) | `topic_history_update`, team-scoped (not session-scoped) | Implemented |
-| `participant.joined` / `participant.left` | No event exists | NOT IMPLEMENTED |
+| `participant.joined` / `participant.left` | `participant_joined` / `participant_left`, delivered to the facilitator only, identity + timestamp, session-scoped, triggered by WebSocket connect/disconnect (not `session_participants` DB membership) | Implemented |
 | `actionitem.created` | No event exists | NOT IMPLEMENTED |
 | `actionitem.updated` | Partially subsumed by `topic_history_update`'s `action_item_finalized` updateType (wrap-up finalization only); the pre-finalization live-broadcast case does not exist | NOT IMPLEMENTED (live case only) |
 
@@ -69,6 +69,27 @@ The application's WebSocket message catalog SHALL document `session_state_change
 
 - **WHEN** a reader looks for the WebSocket event fired on any session-status transition
 - **THEN** they find `session_state_change` listed as Implemented, with its payload fields, and the underlying phase-transition logic correctly attributed to `session-topic-lifecycle` rather than redefined here
+
+---
+
+### Requirement: The catalog documents `participant_joined`/`participant_left`, the lobby presence broadcast
+
+The application's WebSocket message catalog SHALL document `participant_joined` and `participant_left` (FR-2.5, `[PREF]`) as **Implemented** (GitHub issue #94). Each is delivered to the active facilitator's connection only — never to other participants, and never to the facilitator's own connection about itself — carrying `sessionId`, `userId`, and `joinedAt`/`leftAt` (ISO 8601). Delivery is unrestricted by session status, matching `session_state_change`'s pattern rather than `vote_readiness_update`'s narrower `pre_session`/`active` gate.
+
+These events are triggered by the session-scoped WebSocket connection itself registering/deregistering (`GET /ws/sessions/:sessionId` in `packages/backend/src/realtime/websocket-routes.ts`), not by a `session_participants` database write — there is no corresponding REST "leave" endpoint, and none is introduced by this requirement. One consequence of this trigger choice: a participant with more than one simultaneous connection (e.g. two browser tabs) produces one `participant_joined`/`participant_left` pair per connection, not deduplicated by `userId`. This is documented behavior, not a defect, and any future consumer building a deduplicated presence list must account for it.
+
+The facilitator's own session-scoped connection registering/deregistering is separately recorded as an `audit_log` row (`session.facilitator_connected` / `session.facilitator_disconnected`) rather than a client-facing event — ops/audit visibility only, not part of FR-2.5's lobby-list requirement.
+
+#### Scenario: The facilitator sees a participant join and leave the session lobby
+
+- **WHEN** a participant's session-scoped WebSocket connection registers, and later deregisters (tab close, navigation away, or connection drop)
+- **THEN** the active facilitator's connection receives a `participant_joined` message, and later a `participant_left` message, each carrying that participant's `userId` and a timestamp
+- **AND** no other participant's connection receives either message
+
+#### Scenario: The facilitator's own connection does not generate participant_joined/participant_left about itself
+
+- **WHEN** the active facilitator's own session-scoped WebSocket connection registers or deregisters
+- **THEN** no `participant_joined` or `participant_left` message is published for that connection
 
 ---
 
@@ -244,14 +265,9 @@ Connection and error states in this catalog SHALL be rendered as recoverable and
 
 ---
 
-### Requirement: `participant.joined`/`participant.left` and live `actionitem.updated` are documented future-state entries, not silently omitted
+### Requirement: Live `actionitem.updated` is a documented future-state entry, not silently omitted
 
-The catalog SHALL document `participant.joined` (FR-2.5, `[PREF]`) and `participant.left` (FR-2.5, `[PREF]`) as normative future-state entries, marked **NOT IMPLEMENTED** and tracked in issue #94, and a live `actionitem.updated` broadcast for pre-finalization status changes (FR-3.3, `[PREF]`) marked **NOT IMPLEMENTED** and tracked in issue #95, implementation unscheduled. These events SHALL NOT be built as part of this change.
-
-#### Scenario: A reader checking FR-2.5's real-time lobby list finds a documented gap, not silence
-
-- **WHEN** a reader consults this catalog for the WebSocket event backing FR-2.5's real-time participant list
-- **THEN** they find `participant.joined`/`participant.left` listed as NOT IMPLEMENTED, tied to FR-2.5, with a pointer to tracking issue #94
+The catalog SHALL document a live `actionitem.updated` broadcast for pre-finalization status changes (FR-3.3, `[PREF]`) as **NOT IMPLEMENTED**, tracked in issue #95, implementation unscheduled. This event SHALL NOT be built as part of this change.
 
 #### Scenario: A reader checking FR-3.3's live status-update requirement finds the same treatment
 

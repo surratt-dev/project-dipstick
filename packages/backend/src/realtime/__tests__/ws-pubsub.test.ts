@@ -30,6 +30,8 @@ import {
   publishSessionStateChange,
   publishVoteRevealed,
   publishTopicHistoryUpdate,
+  publishParticipantJoined,
+  publishParticipantLeft,
   createWsSubscriber,
 } from "../ws-pubsub.js";
 
@@ -96,6 +98,26 @@ describe("typed publish wrappers", () => {
     await publishTopicHistoryUpdate("t1", { teamId: "t1", updateType: "action_item_finalized", sessionId: "s1", updatedAt: "2026-01-01T00:00:00.000Z" });
     const [, body] = mockPublish.mock.calls[0] as [string, string];
     expect(JSON.parse(body)).toMatchObject({ eventType: "topic_history_update", teamId: "t1" });
+  });
+
+  it("publishParticipantJoined wraps the payload in the correct envelope shape", async () => {
+    await publishParticipantJoined("s1", { sessionId: "s1", userId: "u1", joinedAt: "2026-01-01T00:00:00.000Z" });
+    const [, body] = mockPublish.mock.calls[0] as [string, string];
+    expect(JSON.parse(body)).toEqual({
+      eventType: "participant_joined",
+      sessionId: "s1",
+      payload: { sessionId: "s1", userId: "u1", joinedAt: "2026-01-01T00:00:00.000Z" },
+    });
+  });
+
+  it("publishParticipantLeft wraps the payload in the correct envelope shape", async () => {
+    await publishParticipantLeft("s1", { sessionId: "s1", userId: "u1", leftAt: "2026-01-01T00:00:00.000Z" });
+    const [, body] = mockPublish.mock.calls[0] as [string, string];
+    expect(JSON.parse(body)).toEqual({
+      eventType: "participant_left",
+      sessionId: "s1",
+      payload: { sessionId: "s1", userId: "u1", leftAt: "2026-01-01T00:00:00.000Z" },
+    });
   });
 });
 

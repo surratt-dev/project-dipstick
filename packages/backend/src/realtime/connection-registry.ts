@@ -42,6 +42,17 @@ export interface RegisteredConnection {
    * store by Fastify session id, independent of any live HTTP request.
    */
   readonly fastifySessionId: string;
+  /**
+   * Which session-subscriber grant path this connection registered under
+   * ("participant" or "facilitator") — set once, at registration time, by
+   * the session-scoped WebSocket route only (GitHub issue #94, FR-2.5).
+   * Read at disconnect time to decide whether to publish participant_left
+   * or record a facilitator-disconnect audit row, without a second live
+   * evaluateSessionSubscriberAccess DB read — and so it reflects what this
+   * connection WAS at registration even if the underlying grant changed
+   * mid-connection. Undefined for team-scoped connections.
+   */
+  subscriberPath?: "participant" | "facilitator";
   /** Handle for the scheduled 90-minute force-close (task 3.6); cleared on deregistration. */
   forceCloseTimer?: ReturnType<typeof setTimeout>;
   /**

@@ -7,6 +7,8 @@ import type {
   SessionStateChangePayload,
   VoteRevealedTriggerPayload,
   TopicHistoryUpdatePayload,
+  ParticipantJoinedPayload,
+  ParticipantLeftPayload,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -100,6 +102,26 @@ export async function publishTopicHistoryUpdate(
   payload: TopicHistoryUpdatePayload,
 ): Promise<void> {
   await publishWsEvent({ eventType: "topic_history_update", teamId, payload });
+}
+
+// Wired into the session-scoped WebSocket route's connect/disconnect
+// handlers (packages/backend/src/realtime/websocket-routes.ts, GitHub issue
+// #94, FR-2.5). Unlike the wrappers above, these are NOT governed by the
+// publish-after-commit rule documented above this section — a WebSocket
+// connect/disconnect has no backing database transaction to commit before.
+// This is a live-connection presence signal, not a durable-state broadcast.
+export async function publishParticipantJoined(
+  sessionId: string,
+  payload: ParticipantJoinedPayload,
+): Promise<void> {
+  await publishWsEvent({ eventType: "participant_joined", sessionId, payload });
+}
+
+export async function publishParticipantLeft(
+  sessionId: string,
+  payload: ParticipantLeftPayload,
+): Promise<void> {
+  await publishWsEvent({ eventType: "participant_left", sessionId, payload });
 }
 
 // ---------------------------------------------------------------------------

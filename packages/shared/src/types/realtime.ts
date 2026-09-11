@@ -20,7 +20,9 @@ export type WsEventType =
   | "vote_readiness_update"
   | "session_state_change"
   | "vote_revealed"
-  | "topic_history_update";
+  | "topic_history_update"
+  | "participant_joined"
+  | "participant_left";
 
 /**
  * vote_readiness_update payload — pushed to the facilitator's connection when
@@ -121,6 +123,31 @@ export interface SessionRegistrationSnapshotPayload {
 }
 
 /**
+ * participant_joined / participant_left payload — FR-2.5's real-time lobby
+ * presence signal (GitHub issue #94). Pushed to the facilitator's connection
+ * only when a participant's session-scoped WebSocket connection registers /
+ * deregisters. Identity + timing only, never vote content, mirroring
+ * VoteReadinessUpdatePayload's convention.
+ *
+ * Triggered by WebSocket connect/disconnect on the session-scoped route
+ * (`GET /ws/sessions/:sessionId`), NOT by `session_participants` DB
+ * membership — a participant with multiple simultaneous connections (e.g.
+ * two browser tabs) produces one event per connection, not deduplicated by
+ * userId.
+ */
+export interface ParticipantJoinedPayload {
+  sessionId: string;
+  userId: string;
+  joinedAt: string; // ISO 8601
+}
+
+export interface ParticipantLeftPayload {
+  sessionId: string;
+  userId: string;
+  leftAt: string; // ISO 8601
+}
+
+/**
  * topic_history_update payload — pushed to team event-stream subscribers
  * when historical session data changes (e.g., an action item is finalized
  * during wrap-up, or a topic advances). No vote values ever appear here —
@@ -160,7 +187,11 @@ export type WsEventPayloadFor<E extends WsEventType> = E extends "vote_readiness
       ? VoteRevealedTriggerPayload
       : E extends "topic_history_update"
         ? TopicHistoryUpdatePayload
-        : never;
+        : E extends "participant_joined"
+          ? ParticipantJoinedPayload
+          : E extends "participant_left"
+            ? ParticipantLeftPayload
+            : never;
 
 /**
  * The envelope published on the single `ws:events` Redis channel
@@ -192,6 +223,16 @@ export type WsEventEnvelope =
       eventType: "topic_history_update";
       teamId: string;
       payload: TopicHistoryUpdatePayload;
+    }
+  | {
+      eventType: "participant_joined";
+      sessionId: string;
+      payload: ParticipantJoinedPayload;
+    }
+  | {
+      eventType: "participant_left";
+      sessionId: string;
+      payload: ParticipantLeftPayload;
     };
 
 /**
@@ -222,4 +263,6 @@ export type WsClientMessage =
   | { eventType: "vote_revealed"; payload: VoteRevealedPayload; serverTimestamp: string }
   | { eventType: "reauth_required" }
   | { eventType: "topic_history_update"; payload: TopicHistoryUpdatePayload }
-  | { eventType: "session_registration_snapshot"; payload: SessionRegistrationSnapshotPayload };
+  | { eventType: "session_registration_snapshot"; payload: SessionRegistrationSnapshotPayload }
+  | { eventType: "participant_joined"; payload: ParticipantJoinedPayload }
+  | { eventType: "participant_left"; payload: ParticipantLeftPayload };

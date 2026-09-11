@@ -19,6 +19,9 @@ import type { AddressInfo } from "node:net";
 
 const mockEvaluateSessionSubscriberAccess = vi.fn();
 const mockEvaluateTeamAccess = vi.fn();
+const mockPublishParticipantJoined = vi.fn().mockResolvedValue(undefined);
+const mockPublishParticipantLeft = vi.fn().mockResolvedValue(undefined);
+const mockDbQuery = vi.fn().mockResolvedValue({ rows: [] });
 
 vi.mock("../../auth/session-subscriber-access-helper.js", () => ({
   evaluateSessionSubscriberAccess: (...args: unknown[]) => mockEvaluateSessionSubscriberAccess(...args),
@@ -32,6 +35,8 @@ vi.mock("../ws-pubsub.js", () => ({
     on: vi.fn(),
     quit: vi.fn().mockResolvedValue(undefined),
   })),
+  publishParticipantJoined: (...args: unknown[]) => mockPublishParticipantJoined(...args),
+  publishParticipantLeft: (...args: unknown[]) => mockPublishParticipantLeft(...args),
 }));
 vi.mock("../ws-event-dispatcher.js", () => ({
   attachWsEventDispatcher: vi.fn(),
@@ -45,7 +50,11 @@ vi.mock("../../config.js", () => ({
 // clients during this test file's module load, mirroring how ws-pubsub.js
 // is already mocked for the same reason.
 vi.mock("../../redis.js", () => ({ redis: {} }));
-vi.mock("../../db.js", () => ({ db: {} }));
+// FR-2.5 (issue #94): recordFacilitatorConnectionAudit writes directly via
+// db.query — given a working spy (not the bare `{}` this file previously
+// used) so that flow can be asserted rather than only silently swallowed by
+// its own try/catch.
+vi.mock("../../db.js", () => ({ db: { query: (...args: unknown[]) => mockDbQuery(...args) } }));
 // websocket-connection-reauthorization (SEC-25/26): this file's stated scope
 // is the three-check-point connection-lifecycle model, not the sweep/refresh
 // mechanisms themselves — those have their own dedicated test suites
@@ -54,6 +63,8 @@ vi.mock("../../db.js", () => ({ db: {} }));
 // so this file doesn't require a real Redis/Postgres connection.
 vi.mock("../connection-reauthorization.js", () => ({
   scheduleReauthorizationSweep: vi.fn(),
+  resolveActorGlobalRole: vi.fn().mockResolvedValue("engineer"),
+  resolveTeamIdForAudit: vi.fn().mockResolvedValue("team-1"),
 }));
 vi.mock("../connection-token-refresh.js", () => ({
   scheduleTokenRefreshMonitor: vi.fn(),
@@ -175,6 +186,74 @@ describe("registerWebSocketRoutes", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(connectionRegistry.candidates("session", "session-close-cleanup")).toHaveLength(0);
+    });
+  });
+
+  describe("/ws/sessions/:sessionId — FR-2.5 participant_joined/participant_left presence signal (issue #94)", () => {
+    it("publishes participant_joined on connect and participant_left on disconnect for a participant grant", async () => {
+      mockEvaluateSessionSubscriberAccess.mockResolvedValue({
+        path: "participant",
+        sessionId: "session-presence",
+        teamId: "team-1",
+        actorGlobalRole: "engineer",
+      });
+      const built = await buildAndListen();
+      app = built.app;
+
+      const socket = connect(built.url, "/ws/sessions/session-presence");
+      await waitFor(socket, "open");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mockPublishParticipantJoined).toHaveBeenCalledWith(
+        "session-presence",
+        expect.objectContaining({ sessionId: "session-presence", userId: "user-1" }),
+      );
+      // db.query IS called (by buildSessionRegistrationSnapshot's real read)
+      // for every connection regardless of grant path — what must NOT
+      // happen for a participant is the facilitator-connect audit write.
+      expect(mockDbQuery).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.anything());
+
+      socket.close();
+      await waitFor(socket, "close");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mockPublishParticipantLeft).toHaveBeenCalledWith(
+        "session-presence",
+        expect.objectContaining({ sessionId: "session-presence", userId: "user-1" }),
+      );
+    });
+
+    it("records an audit_log row on connect and disconnect for a facilitator grant, and never publishes participant_joined/left", async () => {
+      mockEvaluateSessionSubscriberAccess.mockResolvedValue({
+        path: "facilitator",
+        sessionId: "session-facilitator-presence",
+        teamId: "team-1",
+        sessionStatus: "active",
+        actorGlobalRole: "facilitator",
+      });
+      const built = await buildAndListen();
+      app = built.app;
+
+      const socket = connect(built.url, "/ws/sessions/session-facilitator-presence");
+      await waitFor(socket, "open");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mockPublishParticipantJoined).not.toHaveBeenCalled();
+      expect(mockDbQuery).toHaveBeenCalledWith(
+        expect.stringContaining("INSERT INTO audit_log"),
+        expect.arrayContaining(["user-1", "engineer", "session.facilitator_connected", "team-1"]),
+      );
+
+      mockDbQuery.mockClear();
+      socket.close();
+      await waitFor(socket, "close");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mockPublishParticipantLeft).not.toHaveBeenCalled();
+      expect(mockDbQuery).toHaveBeenCalledWith(
+        expect.stringContaining("INSERT INTO audit_log"),
+        expect.arrayContaining(["user-1", "engineer", "session.facilitator_disconnected", "team-1"]),
+      );
     });
   });
 
