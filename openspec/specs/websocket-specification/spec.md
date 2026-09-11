@@ -8,7 +8,7 @@ This spec assembles from and points into five existing specs rather than re-deri
 
 This spec does NOT cover: authorization mechanics, idle re-auth/token refresh, client connection-health rendering, vote draft persistence, or session/topic phase-transition logic — all owned by the five specs above and cited, not redefined, here.
 
-**Production trigger status:** the event catalog reflects shipped production code as of this spec's introduction, updated as future-state entries close. `serverTimestamp` on `vote_revealed` is implemented and tested, including a cross-pod case, closing a compliance gap against FR-4.6.1 that existed in the shipped payload prior to this change. `participant_joined`/`participant_left` (FR-2.5, `[PREF]`) closed issue #94 and are now Implemented — see the dedicated Requirement below. A live, pre-finalization `actionitem.updated` broadcast (FR-3.3, `[PREF]`) remains a documented future-state entry only — **NOT IMPLEMENTED**, tracked in issue #95, implementation unscheduled.
+**Production trigger status:** the event catalog reflects shipped production code as of this spec's introduction, updated as future-state entries close. `serverTimestamp` on `vote_revealed` is implemented and tested, including a cross-pod case, closing a compliance gap against FR-4.6.1 that existed in the shipped payload prior to this change. `participant_joined`/`participant_left` (FR-2.5, `[PREF]`) closed issue #94 and are now Implemented — see the dedicated Requirement below. A live, pre-finalization action-item status-change broadcast (FR-3.3, `[PREF]`) closed issues #64 + #65 + #95 (combined) and is now Implemented as `action_item_status_updated` — see the dedicated Requirement below.
 
 ---
 
@@ -25,7 +25,7 @@ This table is the authoritative, exhaustive list of every WebSocket event this a
 | `topic_history_update` | Implemented |
 | `session_registration_snapshot` | Implemented |
 | `participant_joined` / `participant_left` | Implemented |
-| `actionitem.updated` (live, pre-finalization case) | NOT IMPLEMENTED — tracked in issue #95 |
+| `action_item_status_updated` | Implemented |
 
 `actionitem.created` (see the corrected-names table below) is deliberately excluded from this registry: no FR names it directly, per design.md's original scoping decision, so it is not carried forward as a tracked future-state entry — it remains only as a historical note that the old dot-notation name maps to no event.
 
@@ -47,7 +47,7 @@ The application's WebSocket message catalog SHALL be documented using the event 
 | `topic.advanced` (broadcast) | `topic_history_update`, team-scoped (not session-scoped) | Implemented |
 | `participant.joined` / `participant.left` | `participant_joined` / `participant_left`, delivered to the facilitator only, identity + timestamp, session-scoped, triggered by WebSocket connect/disconnect (not `session_participants` DB membership) | Implemented |
 | `actionitem.created` | No event exists | NOT IMPLEMENTED |
-| `actionitem.updated` | Partially subsumed by `topic_history_update`'s `action_item_finalized` updateType (wrap-up finalization only); the pre-finalization live-broadcast case does not exist | NOT IMPLEMENTED (live case only) |
+| `actionitem.updated` | Wrap-up finalization case: subsumed by `topic_history_update`'s `action_item_finalized` updateType (unchanged by this entry). Live, pre-finalization case: `action_item_status_updated`, session-scoped, delivered to any valid session subscriber, gated to `pre_session` status | Implemented |
 
 #### Scenario: A reader tracing `reveal.trigger` from a prior document reaches the real mechanism
 
@@ -58,6 +58,11 @@ The application's WebSocket message catalog SHALL be documented using the event 
 
 - **WHEN** the catalog lists `vote.locked`, `session.revealed`, or `topic.advance`/`topic.advanced`
 - **THEN** each entry states both the prior name and the real, currently-implemented mechanism, and does not present the prior name as itself still in use
+
+#### Scenario: A reader tracing `actionitem.updated` finds both cases distinguished, neither silently conflated with the other
+
+- **WHEN** a reader encounters `actionitem.updated` in prior documents or issue #24
+- **THEN** they find two distinct real mechanisms — the wrap-up finalization case (`topic_history_update`'s `action_item_finalized`) and the live pre-finalization case (`action_item_status_updated`) — and neither is presented as subsuming the other
 
 ---
 
@@ -265,11 +270,37 @@ Connection and error states in this catalog SHALL be rendered as recoverable and
 
 ---
 
-### Requirement: Live `actionitem.updated` is a documented future-state entry, not silently omitted
+### Requirement: The catalog documents live `actionitem.updated`, the pre-session status-change broadcast
 
-The catalog SHALL document a live `actionitem.updated` broadcast for pre-finalization status changes (FR-3.3, `[PREF]`) as **NOT IMPLEMENTED**, tracked in issue #95, implementation unscheduled. This event SHALL NOT be built as part of this change.
+The application's WebSocket message catalog SHALL document the live, pre-finalization `actionitem.updated` broadcast (FR-3.3, `[PREF]`) as **Implemented** (GitHub issues #64 + #65 + #95, combined). It is delivered as `action_item_status_updated` to every session subscriber holding a valid grant — participant or facilitator — for the session currently in `pre_session` status that is reviewing the team's action item backlog. Unlike `participant_joined`/`participant_left`, delivery is **not** restricted to the facilitator's connection alone — it matches `session_state_change`'s recipient breadth, because FR-3.3's own text is "visible to all session participants." The payload carries `sessionId`, `actionItemId`, `previousStatus`, `newStatus`, and `updatedAt` (ISO 8601) — matching `SessionStateChangePayload`'s previous/new shape — and does not carry `resolution_note` or `resolvedInSessionId`, consistent with this catalog's existing payload-minimalism convention (`VoteReadinessUpdatePayload`, `ParticipantJoinedPayload`): both are durable-record fields meaningful to the REST caller and to a later re-fetch (per `VOTE-002`'s response shape), not needed by another connection to render a live "this item changed" signal. This event is distinct from, and SHALL NOT be folded into, `topic_history_update`'s existing `action_item_finalized` updateType, which covers only wrap-up finalization — a separate case, unchanged by this Requirement.
 
-#### Scenario: A reader checking FR-3.3's live status-update requirement finds the same treatment
+Delivery is gated to sessions in `pre_session` status. A status change made with no session currently in live pre-session review for that team, or made after the reviewing session has left `pre_session`, publishes no broadcast — the underlying status mutation still succeeds (see `action-item-status-management`'s requirements); only the broadcast is conditional. How the triggering mutation resolves which session's channel to publish to is resolved in this change's design.md ("Open Questions — Resolved" §2, Decision D11): an optional `sessionId` request-body field on the triggering PATCH, validated against the item's team.
 
-- **WHEN** a reader consults this catalog for the WebSocket event backing FR-3.3's live pre-session status-update requirement
-- **THEN** they find live `actionitem.updated` (the pre-finalization case) listed as NOT IMPLEMENTED, tied to FR-3.3, with a pointer to tracking issue #95, distinguished from the already-implemented wrap-up finalization case (`topic_history_update`'s `action_item_finalized`)
+**Resolved (design.md Decision D14, per engineering review finding on dispatcher data availability and security review finding F5):** gating is not publish-time-only. The triggering mutation stamps the session's status onto the internal publish envelope at publish time; the dispatcher uses that value as an initial gate, and — when it indicates `pre_session` — performs one additional live read of the session's current status immediately before delivery, closing the race window between a broadcast being published and a session leaving `pre_session` in the interim.
+
+#### Scenario: Session participants see another participant's status change live during pre-session review
+
+- **WHEN** an action item's status is changed by its owner or an authorized facilitator while the session reviewing it is in `pre_session` status
+- **THEN** every session subscriber holding a valid participant or facilitator grant for that session receives an `action_item_status_updated` message carrying `previousStatus` and `newStatus`
+- **AND** no other session's subscribers receive it
+
+#### Scenario: A status change made outside any live pre-session review publishes no broadcast
+
+- **WHEN** an action item's status is changed and no session for that team is currently in `pre_session` status reviewing it
+- **THEN** the status mutation succeeds
+- **AND** no `action_item_status_updated` message is published, because no session-scoped channel is in play
+
+#### Scenario: A same-status no-op does not publish a broadcast
+
+- **WHEN** a status update is accepted as a same-status no-op (per `action-item-status-management`'s no-op requirement)
+- **THEN** no `action_item_status_updated` message is published, since no state observable to another participant changed
+
+#### Scenario: A session that leaves pre_session between publish and delivery receives no delivery
+
+- **WHEN** an action item's status is changed while the reviewing session is in `pre_session`, and that session transitions out of `pre_session` before the dispatcher completes delivery
+- **THEN** no session subscriber receives the `action_item_status_updated` message, even though the triggering mutation's publish-time status check passed
+
+#### Scenario: The event is distinguished from the wrap-up finalization case
+
+- **WHEN** a reader consults the catalog for live pre-finalization action-item status changes
+- **THEN** they find `action_item_status_updated` documented as the mechanism, explicitly distinguished from `topic_history_update`'s `action_item_finalized` updateType (wrap-up only)

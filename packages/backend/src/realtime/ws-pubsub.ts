@@ -9,6 +9,8 @@ import type {
   TopicHistoryUpdatePayload,
   ParticipantJoinedPayload,
   ParticipantLeftPayload,
+  ActionItemStatusUpdatedPayload,
+  SessionStatus,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -122,6 +124,24 @@ export async function publishParticipantLeft(
   payload: ParticipantLeftPayload,
 ): Promise<void> {
   await publishWsEvent({ eventType: "participant_left", sessionId, payload });
+}
+
+// Wired into the action-item status mutation handler
+// (packages/backend/src/routes/action-items.ts, PATCH
+// /api/v1/action-items/:actionItemId/status) — called after 3.4a's
+// transaction commits, only when a session context resolved (design.md
+// Decision D7). Per Decision D14, `sessionStatus` is stamped by the caller
+// immediately after that commit (the value validated by 3.1c/D11) and
+// carried on the envelope only — NOT part of ActionItemStatusUpdatedPayload
+// — mirroring publishVoteRevealed's serverTimestamp precedent above, so
+// dispatchActionItemStatusUpdated can gate delivery to `pre_session` for
+// both grant paths without a per-candidate DB read.
+export async function publishActionItemStatusUpdated(
+  sessionId: string,
+  payload: ActionItemStatusUpdatedPayload,
+  sessionStatus: SessionStatus,
+): Promise<void> {
+  await publishWsEvent({ eventType: "action_item_status_updated", sessionId, payload, sessionStatus });
 }
 
 // ---------------------------------------------------------------------------

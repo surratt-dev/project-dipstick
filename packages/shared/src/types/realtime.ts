@@ -1,5 +1,6 @@
 import type { SessionStatus, SessionTopicStatus } from "./session.js";
 import type { ParticipantContentView, FacilitatorContentView } from "./team-content-views.js";
+import type { ActionItemStatus } from "./action-item.js";
 
 // ---------------------------------------------------------------------------
 // WebSocket delivery-time authorization — shared event/envelope types
@@ -22,7 +23,8 @@ export type WsEventType =
   | "vote_revealed"
   | "topic_history_update"
   | "participant_joined"
-  | "participant_left";
+  | "participant_left"
+  | "action_item_status_updated";
 
 /**
  * vote_readiness_update payload — pushed to the facilitator's connection when
@@ -148,6 +150,28 @@ export interface ParticipantLeftPayload {
 }
 
 /**
+ * action_item_status_updated payload — FR-3.3's live, pre-finalization
+ * action-item status-change broadcast (issues #64 + #95, combined; design.md
+ * Decision D4). Delivered to any valid session subscriber (participant or
+ * facilitator) for a session currently in `pre_session` status.
+ *
+ * Shape matches SessionStateChangePayload's previous/new convention.
+ * Deliberately does NOT carry `resolutionNote` or `resolvedInSessionId` —
+ * those are durable-record fields meaningful to the REST caller and a later
+ * re-fetch (VOTE-002's response shape), not needed by another connection to
+ * render a live "this item changed" signal (design.md Decision D4,
+ * payload-minimalism convention already used by VoteReadinessUpdatePayload /
+ * ParticipantJoinedPayload).
+ */
+export interface ActionItemStatusUpdatedPayload {
+  sessionId: string;
+  actionItemId: string;
+  previousStatus: ActionItemStatus;
+  newStatus: ActionItemStatus;
+  updatedAt: string; // ISO 8601
+}
+
+/**
  * topic_history_update payload — pushed to team event-stream subscribers
  * when historical session data changes (e.g., an action item is finalized
  * during wrap-up, or a topic advances). No vote values ever appear here —
@@ -191,7 +215,9 @@ export type WsEventPayloadFor<E extends WsEventType> = E extends "vote_readiness
           ? ParticipantJoinedPayload
           : E extends "participant_left"
             ? ParticipantLeftPayload
-            : never;
+            : E extends "action_item_status_updated"
+              ? ActionItemStatusUpdatedPayload
+              : never;
 
 /**
  * The envelope published on the single `ws:events` Redis channel
@@ -233,6 +259,21 @@ export type WsEventEnvelope =
       eventType: "participant_left";
       sessionId: string;
       payload: ParticipantLeftPayload;
+    }
+  | {
+      eventType: "action_item_status_updated";
+      sessionId: string;
+      payload: ActionItemStatusUpdatedPayload;
+      /**
+       * Internal-only, envelope-level field (design.md Decision D14) — NOT
+       * part of the client-facing ActionItemStatusUpdatedPayload. Stamped by
+       * the mutation handler immediately after its transaction commits
+       * (mirroring VoteRevealedTriggerPayload's serverTimestamp precedent),
+       * so dispatchActionItemStatusUpdated can gate delivery to
+       * `pre_session` for BOTH grant paths — SessionSubscriberGrant's
+       * `participant` branch carries no `sessionStatus` of its own.
+       */
+      sessionStatus: SessionStatus;
     };
 
 /**
@@ -265,4 +306,5 @@ export type WsClientMessage =
   | { eventType: "topic_history_update"; payload: TopicHistoryUpdatePayload }
   | { eventType: "session_registration_snapshot"; payload: SessionRegistrationSnapshotPayload }
   | { eventType: "participant_joined"; payload: ParticipantJoinedPayload }
-  | { eventType: "participant_left"; payload: ParticipantLeftPayload };
+  | { eventType: "participant_left"; payload: ParticipantLeftPayload }
+  | { eventType: "action_item_status_updated"; payload: ActionItemStatusUpdatedPayload };

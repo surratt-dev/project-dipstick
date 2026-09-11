@@ -391,6 +391,151 @@ describe("ws-event-dispatcher", () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // action_item_status_updated — actionitem-updated-live-broadcast (issues
+  // #64 + #65 + #95, combined), design.md Decision D2/D14, tasks.md 6.4/6.4a/6.6.
+  // ---------------------------------------------------------------------------
+  describe("action_item_status_updated", () => {
+    const basePayload = {
+      sessionId: "s1",
+      actionItemId: "ai-1",
+      previousStatus: "open" as const,
+      newStatus: "in_progress" as const,
+      updatedAt: new Date().toISOString(),
+    };
+
+    it("delivers to an active participant when the envelope says pre_session and the fresh read confirms it", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("participant-1");
+      registry.register("session", "s1", conn);
+
+      // Fresh-read query (dispatcher-internal, once per dispatch, D14).
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "pre_session" }] });
+      // Per-candidate evaluateSessionSubscriberAccess query.
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "pre_session",
+          global_role: "engineer", participant_row_id: "p1", membership_removed_at: null, membership_exists: true,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "action_item_status_updated", sessionId: "s1", payload: basePayload, sessionStatus: "pre_session" },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(1);
+    });
+
+    it("delivers to a facilitator-path grant too — not restricted to one path (D2, matches session_state_change's breadth)", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("facilitator-1");
+      registry.register("session", "s1", conn);
+
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "pre_session" }] });
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "facilitator-1", session_status: "pre_session",
+          global_role: "facilitator", participant_row_id: null, membership_removed_at: null, membership_exists: false,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "action_item_status_updated", sessionId: "s1", payload: basePayload, sessionStatus: "pre_session" },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(1);
+    });
+
+    it("does not deliver when the envelope's sessionStatus is not pre_session (fast bail-out, no DB query at all)", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("participant-1");
+      registry.register("session", "s1", conn);
+
+      await dispatch(
+        { eventType: "action_item_status_updated", sessionId: "s1", payload: basePayload, sessionStatus: "active" },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(0);
+      expect(mockDbQuery).not.toHaveBeenCalled();
+    });
+
+    it("does not deliver to other sessions' candidates", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("participant-1");
+      registry.register("session", "s2", conn);
+
+      await dispatch(
+        { eventType: "action_item_status_updated", sessionId: "s1", payload: basePayload, sessionStatus: "pre_session" },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(0);
+      expect(mockDbQuery).not.toHaveBeenCalled();
+    });
+
+    // Decision D14 (Marcus Oyelaran's Blocker 1 / Tomás Ferreira's F5): the
+    // envelope's sessionStatus is captured at publish time and can go stale
+    // by delivery time. A fresh, once-per-dispatch read must catch a session
+    // that left pre_session in that window and suppress delivery to EVERY
+    // candidate, including facilitator-path ones.
+    it("a session that left pre_session between publish and delivery (stale envelope) receives no delivery to any candidate, including facilitator-path ones", async () => {
+      const registry = new ConnectionRegistry();
+      const participantConn = fakeConn("participant-1");
+      const facilitatorConn = fakeConn("facilitator-1");
+      registry.register("session", "s1", participantConn);
+      registry.register("session", "s1", facilitatorConn);
+
+      // Envelope says pre_session (stale — captured at publish time); the
+      // fresh read shows the session has since moved on.
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "active" }] });
+
+      await dispatch(
+        { eventType: "action_item_status_updated", sessionId: "s1", payload: basePayload, sessionStatus: "pre_session" },
+        registry,
+      );
+
+      expect(participantConn.sent).toHaveLength(0);
+      expect(facilitatorConn.sent).toHaveLength(0);
+      // Only the fresh-read query ran — no per-candidate authorization calls
+      // after the freshness check suppresses delivery.
+      expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    });
+
+    // Task 6.6 / Decision D4: the client-facing payload must never carry
+    // resolutionNote, resolvedInSessionId, or the internal-only sessionStatus
+    // (D14) — those live on the REST response and the envelope respectively,
+    // never on the wire frame a session subscriber actually receives.
+    it("the delivered client-facing payload carries only sessionId/actionItemId/previousStatus/newStatus/updatedAt", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("participant-1");
+      registry.register("session", "s1", conn);
+
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "pre_session" }] });
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "pre_session",
+          global_role: "engineer", participant_row_id: "p1", membership_removed_at: null, membership_exists: true,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "action_item_status_updated", sessionId: "s1", payload: basePayload, sessionStatus: "pre_session" },
+        registry,
+      );
+
+      const sent = JSON.parse(conn.sent[0]!) as { payload: Record<string, unknown> };
+      expect(Object.keys(sent.payload).sort()).toEqual(
+        ["actionItemId", "newStatus", "previousStatus", "sessionId", "updatedAt"].sort(),
+      );
+      expect(sent.payload).not.toHaveProperty("resolutionNote");
+      expect(sent.payload).not.toHaveProperty("resolvedInSessionId");
+      expect(sent).not.toHaveProperty("sessionStatus");
+    });
+  });
+
   describe("vote_revealed — task 5.1 (one authorized/unauthorized test per event)", () => {
     it("delivers to an authorized participant subscriber, via buildVoteRevealedPayload (Decision D4 — no independent payload logic)", async () => {
       const registry = new ConnectionRegistry();

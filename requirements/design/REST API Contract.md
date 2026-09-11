@@ -1877,11 +1877,13 @@ PATCH /api/v1/action-items/:actionItemId/status
 **Description**
 Updates the status of an action item following directed transitions only. Permitted: `open` → `in_progress`, `open` → `resolved`, `in_progress` → `resolved`. Backward transitions and changes from `resolved` are rejected. If transitioning to `resolved`, an optional resolution note may be included. A history record is written on every status change.
 
+Implemented by `actionitem-updated-live-broadcast` (GitHub issues #64 + #65 + #95, combined) — `packages/backend/src/routes/action-items.ts`.
+
 **Auth:** Protected.
 
 **Authorization:**
 - `engineer`: may only update action items they own (`action_items.owner_id = authenticated_user_id`) and that belong to a team they are a member of.
-- `facilitator`: may update any action item belonging to a team they are actively facilitating (active session exists), including items owned by others.
+- `facilitator`: may update any action item belonging to a team they are **actively facilitating**, defined narrowly (design.md Decision D10) as a session for that team currently in `lobby`, `pre_session`, `active`, or `wrap_up` status — not this application's broader `evaluateTeamAccess` grant, which additionally covers a session's `draft` (24h) and `complete` (`facilitator_access_expires_at`) grace windows. Those grace windows are appropriate for read access to session content but do not extend to this write endpoint.
 - `engineering_manager`: no write access.
 
 **Request**
@@ -1917,21 +1919,23 @@ interface UpdateActionItemStatusResponse {
 
 **Error Responses**
 
+Error ordering (design.md Decision D12): `404` and `403` are **not independent** — they reflect an ordered lookup-then-authorize check, not two flat conditions. A caller with zero relationship to the item's team receives the same `404` as a genuinely nonexistent `actionItemId`, indistinguishable in body/shape; `403` is reserved for a caller who already has *some* relationship to the item's team (a plain member, an Application Admin, or a facilitator whose relationship exists but falls outside the narrowed active-facilitating window above) but is neither the item's owner nor a currently-authorized facilitator. This closes an `actionItemId` enumeration oracle this endpoint's URL — which carries no `teamId` to gate on the way other team-scoped endpoints do — would otherwise reopen.
+
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Engineer attempting to update an item they do not own; EM attempting any update; facilitator attempting to update outside an active session context |
-| `404 Not Found` | Action item does not exist |
-| `409 Conflict` | Requested transition is not permitted: backward transitions (`in_progress` → `open`) and any transition from `resolved` are rejected (FR-7.3) |
-| `422 Unprocessable Entity` | `resolutionNote` exceeds 500 characters; `sessionId` references a session not in an active state |
+| `403 Forbidden` | Caller has *some* relationship to the item's team (member, Application Admin, or a facilitator outside the narrowed active-facilitating window) but is neither the owner nor a currently-authorized facilitator; EM attempting any update |
+| `404 Not Found` | Action item does not exist, **or** exists but the caller has zero relationship to its team (not a member, not the owner, not ever a facilitator for that team) — the two cases are indistinguishable in response |
+| `409 Conflict` | Requested transition is not permitted: backward transitions (`in_progress` → `open`) and any transition targeting an item whose current status is already `resolved` are rejected (FR-7.3) |
+| `422 Unprocessable Entity` | `resolutionNote` exceeds 500 characters; `sessionId` references a session not in an active state (same narrowed status set as the facilitator-authorization window above) |
 
 **Notes**
 - **Directed state machine (FR-7.3):** Permitted transitions: `open` → `in_progress`, `open` → `resolved`, `in_progress` → `resolved`. All other transitions return `409 Conflict`. The application must read the current status before writing and reject invalid transitions. A same-status write (no-op) resets the staleness clock and is permitted for `open` and `in_progress`; a no-op write on `resolved` is also rejected since `resolved` is terminal.
-- A database CHECK constraint should enforce the transition rule at the persistence layer as a secondary guard: `(old_status, new_status) IN (('open','in_progress'), ('open','resolved'), ('in_progress','resolved'))`.
-- An `action_item_history` row is written for every accepted status change.
+- A database CHECK constraint enforcing the transition rule at the persistence layer as a secondary guard (`(old_status, new_status) IN (('open','in_progress'), ('open','resolved'), ('in_progress','resolved'))`) remains a deliberate no-op, not an oversight: enforcement stays application-level, matching this codebase's consistent pattern for transition and ownership checks elsewhere (e.g. the facilitator-authorization and anti-enumeration checks above, both application-level).
+- An `action_item_history` row is written for every accepted, non-no-op status change, in the same transaction as the `action_items.status` update and (design.md Decision D13) an `audit_log` row (`operation = 'action_item.status_changed'`) — `action_item_history` is a business record read back by ordinary users; `audit_log` is this codebase's security audit trail, and every other sensitive mutation writes to both.
 - `resolved_in_session_id` on `action_items` is set to `sessionId` when `status = 'resolved'` and a `sessionId` is provided.
-- After this REST write, the WebSocket layer broadcasts `actionitem.updated` to all session participants if `sessionId` is provided and active.
-- The database CHECK constraint `action_items_resolved_has_session` requires `resolved_in_session_id IS NOT NULL` when `status = 'resolved'`. The application enforces this before writing.
+- After this REST write, the WebSocket layer broadcasts `action_item_status_updated` (the shipped wire name — `actionitem.updated` was this catalog's pre-correction dot-notation name for the same live, pre-finalization mechanism, per `openspec/specs/websocket-specification/spec.md`'s naming-correction convention, not a contradiction of this contract's intent) to every session subscriber holding a valid grant, gated to sessions currently in `pre_session` status — narrower than the `sessionId` request-body validation's active-state set above, since FR-3.3 places this review strictly before the first voting topic is presented.
+- The database CHECK constraint `action_items_resolved_has_session` does **not** exist in this codebase (`packages/backend/migrations/2_create_tables.sql`) — a pre-existing inaccuracy in this contract, not introduced by the change that implemented this endpoint. The application enforces this invariant before writing; no migration backfills the constraint.
 
 ---
 
