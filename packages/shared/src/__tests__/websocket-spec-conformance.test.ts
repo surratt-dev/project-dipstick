@@ -37,16 +37,22 @@ const specSource = readFileSync(
   "utf-8",
 );
 
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
+}
+
 function extractWsClientMessageEventTypes(source: string): string[] {
   const unionMatch = source.match(/export type WsClientMessage =([\s\S]*?);\n/);
-  if (!unionMatch) {
+  const unionBody = unionMatch?.[1];
+  if (unionBody === undefined) {
     throw new Error(
       "Could not find `export type WsClientMessage = ...;` in realtime.ts — " +
         "has it been renamed or restructured? This test needs updating to match.",
     );
   }
-  const unionBody = unionMatch[1];
-  const eventTypes = [...unionBody.matchAll(/eventType:\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  const eventTypes = [...unionBody.matchAll(/eventType:\s*"([a-z_]+)"/g)]
+    .map((m) => m[1])
+    .filter(isDefined);
   if (eventTypes.length === 0) {
     throw new Error("Found WsClientMessage but extracted zero eventType literals from it.");
   }
@@ -61,34 +67,41 @@ interface RegistryRow {
 
 function extractEventRegistry(source: string): RegistryRow[] {
   const sectionMatch = source.match(/## Event Registry\n([\s\S]*?)\n---/);
-  if (!sectionMatch) {
+  const sectionBody = sectionMatch?.[1];
+  if (sectionBody === undefined) {
     throw new Error(
       "Could not find a `## Event Registry` section (terminated by a `---` line) in " +
         "spec.md — has it been renamed, removed, or restructured? This test needs " +
         "updating to match, or the section needs to be restored.",
     );
   }
-  const tableRows = sectionMatch[1]
+  const tableRows = sectionBody
     .split("\n")
     .filter((line) => line.trim().startsWith("|"))
     .slice(2); // drop the header row and the |---|---| separator
 
-  return tableRows.map((line) => {
-    const cells = line
-      .split("|")
-      .map((c) => c.trim())
-      .filter((c) => c.length > 0);
-    const [eventCell, statusCell] = cells;
-    const implemented = statusCell.startsWith("Implemented");
-    // A cell may name one event (`vote_revealed`) or a pair
-    // (`participant.joined` / `participant.left`) — extract every
-    // backtick-quoted name in the cell.
-    const names = [...eventCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
-    if (names.length === 0) {
-      throw new Error(`Event Registry row has no backtick-quoted event name: "${line}"`);
-    }
-    return names.map((name) => ({ name, implemented, raw: line }));
-  }).flat();
+  return tableRows
+    .map((line) => {
+      const cells = line
+        .split("|")
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0);
+      const eventCell = cells[0];
+      const statusCell = cells[1];
+      if (eventCell === undefined || statusCell === undefined) {
+        throw new Error(`Event Registry row does not have two cells: "${line}"`);
+      }
+      const implemented = statusCell.startsWith("Implemented");
+      // A cell may name one event (`vote_revealed`) or a pair
+      // (`participant.joined` / `participant.left`) — extract every
+      // backtick-quoted name in the cell.
+      const names = [...eventCell.matchAll(/`([^`]+)`/g)].map((m) => m[1]).filter(isDefined);
+      if (names.length === 0) {
+        throw new Error(`Event Registry row has no backtick-quoted event name: "${line}"`);
+      }
+      return names.map((name) => ({ name, implemented, raw: line }));
+    })
+    .flat();
 }
 
 describe("WebSocket event catalog matches the published spec (openspec/specs/websocket-specification)", () => {
