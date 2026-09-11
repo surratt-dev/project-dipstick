@@ -1,0 +1,31 @@
+## Why
+
+A participant who has composed but not yet locked in a vote — the closed-fist moment the simultaneous-reveal ritual depends on — loses that in-progress selection whenever a SEC-26 grace-period recovery forces a full top-level re-login. The re-authentication is invisible to the participant as an authentication event; what they experience is the tool silently discarding something they were in the middle of doing. `websocket-connection-reauthorization`'s Decision D7/D4 established, correctly, that the backend never sees this value and structurally cannot lose it — but named the frontend gap explicitly and handed it off as GitHub issue #31. That gap is a trust and ritual-integrity problem, not a UX nicety: the Health Check works because participants trust the tool to hold the moment steady until everyone commits together, and an unexplained vanished answer erodes exactly that trust, especially on a team's first few sessions when the cost of a bad first impression is highest.
+
+## What Changes
+
+- Add a client-local, single-use persistence module (`persistDraft`/`restoreDraft` or equivalent) that writes the composed-but-unsubmitted vote value to `sessionStorage` on every compose-value change, keyed to `(sessionId, sessionTopicId)`.
+- Add restore logic that runs exactly once, on the first WebSocket registration a tab performs after page load: it waits for server-authoritative state (current topic, this participant's own lock-in status) to arrive, then applies the persisted draft only if the topic matches and is still `voting` and the participant has not already locked in a vote by another path; otherwise it discards the draft silently.
+- Restore-or-discard resolves before the compose control's first paint — no spinner, no flash of stale content, no visible transition.
+- No facilitator-visible signal of any kind distinguishes "disconnected, mid-recovery, with a draft queued" from any other disconnected state; no participant-visible toast, banner, sound, or animation marks a restore or a discard.
+- Ship as a standalone, unit-testable contract now, independent of issue #32 (the redirect-trigger/login-screen work) and independent of the compose UI itself, which does not yet exist. Wiring the compose UI to call this module is tracked as a follow-up integration task wherever that UI is built, not blocked on it.
+- Design and build, as a first-class part of this change, the backend WS registration payload (`session_registration_snapshot`) that `restoreDraft` consumes: current topic + status, and this participant's own lock-in status for it, sent directly to the connection on every successful session-scoped WS registration (`GET /ws/sessions/:sessionId`), assembled from one live DB read, and composed with the existing `evaluateSessionSubscriberAccess` grant so it never discloses another participant's state. See design.md Decision D3 for the full payload shape and assembly.
+
+## Capabilities
+
+### New Capabilities
+- `vote-compose-recovery`: client-local persistence and restore of a composed-but-unsubmitted vote across a same-tab page reload (SEC-26 grace-period recovery, and incidentally an ordinary manual refresh or tab-close/crash), scoped to exactly one `(sessionId, sessionTopicId)` tuple, subordinate to server-authoritative topic/lock-in state, with no facilitator-visible trace and no new UI chrome.
+
+### Modified Capabilities
+(none — this capability consumes existing state from `websocket-connection-reauthorization` and `session-topic-lifecycle` without changing their requirements. `websocket-connection-reauthorization`'s spec.md references issue #31 as the tracked gap this proposal closes; no delta to that spec's requirements is needed since it already scoped this out explicitly as future frontend work.)
+
+## Impact
+
+This is a full-stack change. It has two parts, both owned by this change: (1) the frontend persistence/restore contract, and (2) the backend WS registration payload that contract is designed to consume. Neither part is deferred to a future change.
+
+- **Affected code:**
+  - Frontend: new module(s) under `packages/frontend/src` (persistence/restore logic) plus, later, wiring into the not-yet-built compose UI and `useConnectionHealth`'s registration flow (tasks.md Group 8, tracked as a follow-up once the compose UI exists — not blocked on this change's own completion).
+  - Backend: a new `session_registration_snapshot` `WsClientMessage` variant and payload type in `packages/shared/src/types/realtime.ts`; a new query module `packages/backend/src/realtime/session-registration-snapshot.ts`; one new call site in `packages/backend/src/realtime/websocket-routes.ts`'s existing `GET /ws/sessions/:sessionId` handler, sending the payload via the existing `safeSend` connection-registry path (tasks.md Group 7). No new database table or column — the new query reads existing `sessions`/`session_topics`/`votes` columns.
+- **Affected specs:** one new spec added (`vote-compose-recovery`), including a requirement for the registration payload itself (see `specs/vote-compose-recovery/spec.md` Requirement 3). `websocket-connection-reauthorization` and `session-topic-lifecycle` are read from, not modified — no delta to either spec.
+- **Dependencies:** none on issue #32's redirect trigger or on the compose UI's existence — the persistence/restore contract is verified at the contract level with fixture data, and independently, the registration-payload capability (Group 7) ships as a concrete, testable backend addition regardless of whether the compose UI or issue #32 have landed. The compose UI's own wiring (tasks.md Group 8) remains a follow-up tracked wherever that UI is built, since the UI itself is out of this change's scope — but the interface it will call is no longer an open dependency this change hands off unbuilt.
+- **Non-goals preserved:** no admin-facing toggle; no cross-device or server-backed draft resume; no second place vote state lives in the DB or Redis; no age-based staleness cutoff beyond topic/session match. The new backend payload does not introduce a second place vote state lives either — it is computed fresh from `votes`/`session_topics`/`sessions` on every send, never stored or cached (design.md D3c).
