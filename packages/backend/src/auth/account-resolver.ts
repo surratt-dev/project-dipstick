@@ -101,34 +101,10 @@ export async function resolveOrCreateAccount(
   const rawRoleClaim = claims[ROLE_CLAIM_NAME];
   const globalRole = mapRoleClaimToGlobalRole(rawRoleClaim, logger);
 
-  // Determine whether this is a new user before the upsert.
-  //
-  // Task 10 — CONSTRAINT on isNewUser reliability under concurrent load:
-  //   This SELECT executes before the upsert below. In a concurrent scenario
-  //   where two authentication callbacks arrive simultaneously for the same
-  //   sub/iss before any account exists, both reads will see zero rows and
-  //   both will set isNewUser = true. The upsert (below) handles this
-  //   correctly at the database level — exactly one account is created — but
-  //   any downstream consumer of isNewUser may fire twice.
-  //
-  //   This is a HARD CONSTRAINT on future work: before any feature that
-  //   consumes isNewUser is merged, this SELECT-before-upsert pattern MUST
-  //   be replaced with a pattern that derives isNewUser from the upsert
-  //   result (e.g., via xmax inspection or an INSERT-returning flag column),
-  //   or the consuming feature MUST treat duplicate firings as idempotent.
-  //
-  //   The current only consumer of isNewUser is the auth.first_access_created
-  //   audit event, which is safe to emit twice (the audit trail is the only
-  //   side effect and a duplicate is detectable by correlation ID).
-  const existing = await db.query(
-    `SELECT id, oidc_subject, oidc_issuer, display_name, email FROM users
-     WHERE oidc_subject = $1 AND oidc_issuer = $2`,
-    [claims.sub, claims.iss],
-  );
-
-  const isNewUser = existing.rows.length === 0;
-
-  // Upsert: insert or update profile data on conflict.
+  // Upsert with xmax idempotency: isNewUser is derived from (xmax = 0) on the
+  // upsert's own RETURNING clause rather than a prior SELECT, so it is
+  // computed within the same statement that performs the write and is
+  // race-free (mirrors teams.ts TEAM-006).
   //
   // Task 11 — Identity match key is (oidc_subject, oidc_issuer) only.
   // Email appears in the SET clause below (it is updated on each
@@ -151,7 +127,7 @@ export async function resolveOrCreateAccount(
        email = EXCLUDED.email,
        global_role = EXCLUDED.global_role,
        updated_at = NOW()
-     RETURNING id, oidc_subject, oidc_issuer, display_name, email, global_role`,
+     RETURNING id, oidc_subject, oidc_issuer, display_name, email, global_role, (xmax = 0) AS is_new_user`,
     [claims.sub, claims.iss, displayName, email, globalRole],
   );
 
@@ -162,6 +138,7 @@ export async function resolveOrCreateAccount(
     display_name: string;
     email: string;
     global_role: string;
+    is_new_user: boolean;
   };
 
   return {
@@ -171,6 +148,6 @@ export async function resolveOrCreateAccount(
     displayName: row.display_name,
     email: row.email,
     globalRole: row.global_role,
-    isNewUser,
+    isNewUser: row.is_new_user,
   };
 }

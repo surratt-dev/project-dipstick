@@ -1,0 +1,39 @@
+# Implementation Review — Solution Architect
+
+**Reviewer:** Ingrid Sollenberger, Principal Solution Architect
+**Change:** fix-isnewuser-atomic-upsert
+**Scope of review:** Architectural conformance of the implementation to design.md's decisions and tasks.md's task list. Domain correctness of the auth flow and test quality are adjacent concerns I've checked incidentally but are properly the security/engineering reviewers' territory.
+
+## Verdict: Approved
+
+This is a clean, structurally-contained fix. It does exactly what the design says, touches exactly what the design says it will touch, and closes the guardrail it set out to close. I have no blocking findings.
+
+## What I checked
+
+**Boundary discipline.** `git status --short` shows exactly three modified files: `account-resolver.ts`, `account-resolver.test.ts`, and `openspec/specs/first-access/spec.md`, plus the untracked `openspec/changes/fix-isnewuser-atomic-upsert/` proposal directory itself. I confirmed `packages/backend/src/routes/auth.ts` has zero diff (`git diff -- packages/backend/src/routes/auth.ts` produces no output). Task 1.4 is satisfied literally, not just claimed. This matters to me specifically because this is a "close a guardrail" change, not a "build the feature the guardrail was protecting against" change — and the implementation respects that line. No new `isNewUser` consumer was introduced anywhere in the diff.
+
+**Decision 1 — SQL matches exactly.** The upsert in `account-resolver.ts:121-132` is character-for-character the statement in design.md Decision 1: same column list, same `ON CONFLICT (oidc_subject, oidc_issuer)`, same `DO UPDATE SET` clause, same `RETURNING ... (xmax = 0) AS is_new_user`. The pre-upsert SELECT is fully deleted, not left dead or short-circuited. `isNewUser` in the return object is sourced from `row.is_new_user` (line 151), not a local boolean — the exact substitution the design calls for.
+
+**Pattern consistency with `teams.ts` (TEAM-006).** I read `teams.ts:745-764` alongside the new code. Same idiom, same justification structure, appropriately scaled: `teams.ts`'s comment additionally documents a partial-index precondition and a two-write atomicity requirement, because that call site wraps the upsert in an explicit transaction with a paired `audit_log` insert. `account-resolver.ts`'s comment (lines 104-107) is four lines, covers only the xmax mechanism, and correctly omits the partial-index and transaction concerns because neither applies here — the design's non-goal on transaction wrapping is honored, not just asserted. The stale 19-line "HARD CONSTRAINT" block is gone, not merely edited around (task 1.3 satisfied, including the "should be shorter, not length-matched" instruction).
+
+**Comment placement.** One nit, not a blocker: the new comment at lines 104-107 opens with the xmax explanation before task 11's identity-key comment (lines 109-116). It reads fine sequentially and I don't think it needs to change, but if I were the implementer I'd have put the "why xmax" comment immediately above the `RETURNING` line rather than above the whole query, since the identity-key comment is unrelated to the xmax decision and now sits between two things that are actually both about the same query. Not asking for a revision over this.
+
+**Decision 2 — concurrency test proves derivation, not call count.** Verified the rewritten test at `account-resolver.test.ts:180-231`. It mocks two independent single-row responses, one `is_new_user: true` and one `is_new_user: false`, asserts `mockQuery` called exactly twice, and asserts `result1.isNewUser === true` / `result2.isNewUser === false` — divergent expected values, which is the only way this assertion could fail if the implementation collapsed back to a shared/hoisted boolean. This is the test design.md explicitly warned against being satisfied "mechanically" (both calls returning `true`), and it was not.
+
+**Decision 3 / task 2.3a — the two-invocation test was genuinely rewritten.** Checked `account-resolver.test.ts:122-159` line by line against the design's warning. The two assertions moved to `calls[0]`/`calls[1]` (not `calls[2]`), and — the part a naive index bump would have missed — the assertion content changed from `expect(selectCallA[1]).toEqual(["sub-A", "https://idp.example.com"])` (2-element SELECT params) to `expect(upsertCallA[1].slice(0, 2)).toEqual(["sub-A", "https://idp.example.com"])` (a slice of the 5-element upsert params). Variable names were also renamed from `selectCallA/B` to `upsertCallA/B`, which itself is evidence this wasn't a search-and-replace on the index alone.
+
+**Task 2.4 — full-file grep for stragglers.** I ran my own grep independent of the implementer's report: `grep -n "mock.calls\[" account-resolver.test.ts` returns only `calls[0]` and one legitimate `calls[1]` (the AC-2 two-invocation test, where index 1 is correct — it's the second of two separate `resolveOrCreateAccount` invocations, not a stale reference to a second query within one call). `grep -n "mockResolvedValueOnce"` shows every `it()` block queuing exactly one response per invocation except the concurrency test (two invocations, two responses — correct) and the AC-2 test (two invocations, two responses — correct). No test still asserts against the old two-call shape.
+
+**Test suite — ran independently, did not trust the reported number.** `npx vitest run` in `packages/backend`: **41 test files passed, 516 tests passed**, 0 failures. This matches the implementer's claim and I verified it myself rather than taking the report at face value, per the review brief.
+
+**Spec doc.** `openspec/specs/first-access/spec.md` diff covers all three tasks: the "Automatic account creation" and "Concurrent First Access handling" requirement text now describes the xmax mechanism instead of the SELECT (task 3.1); the Known Limitations entry is replaced with a closed-status note naming this change (task 3.2); the Open Issues line for #8 is removed with no dangling "Resolved" section invented (task 3.3, matches the design's explicit instruction not to introduce a resolved-list structure that doesn't already exist).
+
+**Audit-event behavior note.** Design.md Decision 1's note — that this change is not fully behavior-preserving in the race case, and that's the correct call, not a regression — is carried through consistently into proposal.md's Modified Capabilities section. I don't see this claim overclaimed as "no observable behavior change" anywhere I looked. That's the right level of honesty for a change like this: the audit trail's event *frequency* in the race case is a deliberate, disclosed change, and it's disclosed in the one place (the spec/proposal) where a future auditor would need to find it.
+
+**Issue closeout.** `gh issue view 8` shows the issue already closed. Task 4.1 is satisfied in substance regardless of which mechanism (closing keyword vs. manual close) ends up in the merged PR.
+
+## Architectural framing
+
+This is exactly the kind of change I want to see when a documented guardrail gets closed: the fix eliminates the class of bug structurally (xmax is evaluated server-side, per-statement, with no session-affinity dependency — the design correctly notes this remains true even if a statement-level pooler were introduced later, which is a fair thing to have checked given this app connects via plain `pg.Pool` today), it reuses an idiom already reviewed and shipped elsewhere in the codebase rather than inventing a second pattern for the same problem, and it resists the temptation to bundle in the feature work the guardrail was blocking. The "no transaction wrapping" non-goal is correctly justified by the absence of a second write to keep atomic — I checked that there isn't one hiding in the caller (`auth.ts` is untouched, confirming `auth.first_access_created` really is a log emission, not a DB write).
+
+No follow-up actions from me. This is ready to move forward.
