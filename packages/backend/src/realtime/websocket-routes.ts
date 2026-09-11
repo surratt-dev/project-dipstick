@@ -5,17 +5,19 @@ import { connectionRegistry, safeSend, type RegisteredConnection } from "./conne
 import { ABSOLUTE_LIFETIME_MS } from "../auth/middleware.js";
 import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
 import { evaluateTeamAccess } from "../auth/team-content-access-helper.js";
-import { createWsSubscriber } from "./ws-pubsub.js";
+import { createWsSubscriber, publishParticipantJoined, publishParticipantLeft } from "./ws-pubsub.js";
 import { attachWsEventDispatcher } from "./ws-event-dispatcher.js";
 import { STALE_SIGNAL_CLOSE_CODE } from "./staleness-signal.js";
 import type { SessionData } from "../auth/session-store.js";
-import { scheduleReauthorizationSweep } from "./connection-reauthorization.js";
+import { scheduleReauthorizationSweep, resolveActorGlobalRole, resolveTeamIdForAudit } from "./connection-reauthorization.js";
 import {
   scheduleTokenRefreshMonitor,
   consumeGraceRecoveryMarker,
   recordConnectionRecoveredAudit,
 } from "./connection-token-refresh.js";
 import { buildSessionRegistrationSnapshot } from "./session-registration-snapshot.js";
+import { db } from "../db.js";
+import { emitAuditEvent } from "../auth/audit-logger.js";
 
 // ---------------------------------------------------------------------------
 // WebSocket route registration
@@ -96,6 +98,10 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
         };
 
         connectionRegistry.register("session", sessionId, conn);
+        // FR-2.5 (GitHub issue #94): remember which grant path this
+        // connection registered under so disconnect-time cleanup below can
+        // decide what to publish/audit without a second live grant read.
+        conn.subscriberPath = grant.path;
         scheduleForceClose(conn, sessionCreatedAt, () => {
           connectionRegistry.deregister("session", sessionId, conn);
         });
@@ -115,7 +121,43 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
         // running.
         await sendSessionRegistrationSnapshot(session.userId, sessionId, conn, request.log);
 
-        const cleanup = () => connectionRegistry.deregister("session", sessionId, conn);
+        // FR-2.5 (GitHub issue #94): notify the facilitator this participant
+        // joined the session lobby. Never fires for the facilitator's own
+        // connection — see recordFacilitatorConnectionAudit below for that
+        // (ops/audit trail only, not a client-facing event).
+        if (grant.path === "participant") {
+          publishParticipantJoined(sessionId, {
+            sessionId,
+            userId: session.userId,
+            joinedAt: new Date().toISOString(),
+          }).catch((err: unknown) => {
+            request.log.warn({ err, sessionId }, "participant_joined: failed to publish, skipping");
+          });
+        } else {
+          recordFacilitatorConnectionAudit(session.userId, sessionId, "connected", request.log);
+        }
+
+        // "close" and "error" can both fire for the same socket (e.g. an
+        // abrupt teardown); guarded so participant_left/the facilitator
+        // disconnect audit fire at most once per connection, matching
+        // connectionRegistry.deregister's own idempotent Set.delete.
+        let didCleanup = false;
+        const cleanup = () => {
+          if (didCleanup) return;
+          didCleanup = true;
+          connectionRegistry.deregister("session", sessionId, conn);
+          if (conn.subscriberPath === "participant") {
+            publishParticipantLeft(sessionId, {
+              sessionId,
+              userId: session.userId,
+              leftAt: new Date().toISOString(),
+            }).catch((err: unknown) => {
+              request.log.warn({ err, sessionId }, "participant_left: failed to publish, skipping");
+            });
+          } else if (conn.subscriberPath === "facilitator") {
+            recordFacilitatorConnectionAudit(session.userId, sessionId, "disconnected", request.log);
+          }
+        };
         socket.on("close", cleanup);
         socket.on("error", cleanup);
       })();
@@ -181,6 +223,48 @@ async function checkAndRecordGraceRecovery(
   const wasGraceRecovery = await consumeGraceRecoveryMarker(userId);
   if (wasGraceRecovery) {
     await recordConnectionRecoveredAudit(userId, scope, id, log);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub issue #94: ops/audit trail for the active facilitator's own
+// session-scoped WebSocket connect/disconnect. NOT part of FR-2.5's
+// client-facing participant_joined/participant_left events (those never
+// fire for the facilitator's own connection) — this is "the system should
+// know if the facilitator dropped," addressed as an audit_log row, never
+// surfaced to any facilitator-visible read endpoint. Mirrors
+// recordConnectionRecoveredAudit above exactly. Fire-and-forget from the
+// caller; failures are logged here and never propagate to the connection
+// lifecycle.
+// ---------------------------------------------------------------------------
+async function recordFacilitatorConnectionAudit(
+  userId: string,
+  sessionId: string,
+  event: "connected" | "disconnected",
+  log: FastifyBaseLogger,
+): Promise<void> {
+  try {
+    const [actorGlobalRole, teamId] = await Promise.all([
+      resolveActorGlobalRole(userId),
+      resolveTeamIdForAudit("session", sessionId),
+    ]);
+    const operation = event === "connected" ? "session.facilitator_connected" : "session.facilitator_disconnected";
+
+    await db.query(
+      `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+       VALUES ($1, $2, NULL, $3, $4, $5)`,
+      [userId, actorGlobalRole, operation, teamId, JSON.stringify({ scope: "session", scopeId: sessionId })],
+    );
+
+    emitAuditEvent(log, operation, {
+      actorUserId: userId,
+      actorGlobalRole,
+      scope: "session",
+      scopeId: sessionId,
+      teamId,
+    });
+  } catch (err) {
+    log.warn({ err, sessionId, event }, "facilitator connection audit: failed to write, skipping");
   }
 }
 

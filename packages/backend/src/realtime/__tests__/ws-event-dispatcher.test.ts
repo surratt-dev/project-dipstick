@@ -144,6 +144,108 @@ describe("ws-event-dispatcher", () => {
     });
   });
 
+  describe("participant_joined", () => {
+    it("delivers only to the active facilitator, unrestricted by session status", async () => {
+      const registry = new ConnectionRegistry();
+      const facilitatorConn = fakeConn("facilitator-1");
+      const participantConn = fakeConn("participant-1");
+      registry.register("session", "s1", facilitatorConn);
+      registry.register("session", "s1", participantConn);
+
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{
+            session_id: "s1", team_id: "t1", facilitator_id: "facilitator-1", session_status: "wrap_up",
+            global_role: "facilitator", participant_row_id: null, membership_removed_at: null, membership_exists: false,
+          }],
+        })
+        .mockResolvedValueOnce({
+          rows: [{
+            session_id: "s1", team_id: "t1", facilitator_id: "facilitator-1", session_status: "wrap_up",
+            global_role: "engineer", participant_row_id: "p1", membership_removed_at: null, membership_exists: true,
+          }],
+        });
+
+      await dispatch(
+        { eventType: "participant_joined", sessionId: "s1", payload: { sessionId: "s1", userId: "new-joiner", joinedAt: new Date().toISOString() } },
+        registry,
+      );
+
+      expect(facilitatorConn.sent).toHaveLength(1);
+      expect(participantConn.sent).toHaveLength(0);
+    });
+
+    it("does not deliver to a subscriber whose team membership was removed", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("removed-facilitator");
+      registry.register("session", "s1", conn);
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "active",
+          global_role: "engineer", participant_row_id: "p1", membership_removed_at: new Date(), membership_exists: true,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "participant_joined", sessionId: "s1", payload: { sessionId: "s1", userId: "new-joiner", joinedAt: new Date().toISOString() } },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(0);
+    });
+  });
+
+  describe("participant_left", () => {
+    it("delivers only to the active facilitator, unrestricted by session status", async () => {
+      const registry = new ConnectionRegistry();
+      const facilitatorConn = fakeConn("facilitator-1");
+      const participantConn = fakeConn("participant-1");
+      registry.register("session", "s1", facilitatorConn);
+      registry.register("session", "s1", participantConn);
+
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{
+            session_id: "s1", team_id: "t1", facilitator_id: "facilitator-1", session_status: "active",
+            global_role: "facilitator", participant_row_id: null, membership_removed_at: null, membership_exists: false,
+          }],
+        })
+        .mockResolvedValueOnce({
+          rows: [{
+            session_id: "s1", team_id: "t1", facilitator_id: "facilitator-1", session_status: "active",
+            global_role: "engineer", participant_row_id: "p1", membership_removed_at: null, membership_exists: true,
+          }],
+        });
+
+      await dispatch(
+        { eventType: "participant_left", sessionId: "s1", payload: { sessionId: "s1", userId: "departed", leftAt: new Date().toISOString() } },
+        registry,
+      );
+
+      expect(facilitatorConn.sent).toHaveLength(1);
+      expect(participantConn.sent).toHaveLength(0);
+    });
+
+    it("does not deliver to a non-facilitator subscriber", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("participant-1");
+      registry.register("session", "s1", conn);
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "active",
+          global_role: "engineer", participant_row_id: "p1", membership_removed_at: null, membership_exists: true,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "participant_left", sessionId: "s1", payload: { sessionId: "s1", userId: "departed", leftAt: new Date().toISOString() } },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(0);
+    });
+  });
+
   describe("session_state_change", () => {
     it("delivers to an active participant", async () => {
       const registry = new ConnectionRegistry();

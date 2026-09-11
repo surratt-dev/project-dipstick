@@ -110,7 +110,17 @@ export type AuditEventName =
   // construction rather than by a separate, less-controlled destination.
   // metadata: { sessionId, serverTimestamp, observedLatencyMs }. No vote
   // value or vote type — this event carries timing data only.
-  | "session.reveal_latency_observed";
+  | "session.reveal_latency_observed"
+  // session.facilitator_connected / session.facilitator_disconnected:
+  // GitHub issue #94. Distinct from participant_joined/participant_left
+  // (FR-2.5's client-facing WebSocket events, which never fire for the
+  // facilitator's own connection) — this is an ops/audit trail only,
+  // recording when the active facilitator's own session-scoped WebSocket
+  // connection registers/deregisters. Never facilitator-visible (no read
+  // endpoint surfaces it), unlike session.connection_recovered. metadata:
+  // { scope: "session", scopeId, teamId }.
+  | "session.facilitator_connected"
+  | "session.facilitator_disconnected";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

@@ -39,6 +39,13 @@ vi.mock("../ws-pubsub.js", () => ({
     on: vi.fn(),
     quit: vi.fn().mockResolvedValue(undefined),
   })),
+  // FR-2.5 (issue #94): websocket-routes.ts's session-scoped route now
+  // calls these on every participant connect/disconnect. This file's tests
+  // all use grant path "participant", so a missing stub here would throw
+  // synchronously inside the connection handler, outside this file's own
+  // buildSessionRegistrationSnapshot-focused failure-containment tests.
+  publishParticipantJoined: vi.fn().mockResolvedValue(undefined),
+  publishParticipantLeft: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../ws-event-dispatcher.js", () => ({
   attachWsEventDispatcher: vi.fn(),
@@ -48,9 +55,11 @@ vi.mock("../../config.js", () => ({
   config: { REDIS_URL: "redis://unused", DATABASE_URL: "postgres://unused" },
 }));
 vi.mock("../../redis.js", () => ({ redis: {} }));
-vi.mock("../../db.js", () => ({ db: {} }));
+vi.mock("../../db.js", () => ({ db: { query: vi.fn().mockResolvedValue({ rows: [] }) } }));
 vi.mock("../connection-reauthorization.js", () => ({
   scheduleReauthorizationSweep: (...args: unknown[]) => mockScheduleReauthorizationSweep(...args),
+  resolveActorGlobalRole: vi.fn().mockResolvedValue("engineer"),
+  resolveTeamIdForAudit: vi.fn().mockResolvedValue("team-1"),
 }));
 vi.mock("../connection-token-refresh.js", () => ({
   scheduleTokenRefreshMonitor: (...args: unknown[]) => mockScheduleTokenRefreshMonitor(...args),
