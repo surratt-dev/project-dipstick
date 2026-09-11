@@ -138,7 +138,7 @@ describe("Reveal-timing independence (design.md Decision D8, tasks.md Group 6)",
     const envelope: WsEventEnvelope = {
       eventType: "vote_revealed",
       sessionId: "s1",
-      payload: { sessionId: "s1", sessionStatus: "active" },
+      payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
     };
     await handleIncomingMessage(JSON.stringify(envelope), noopLogger as never, registry);
 
@@ -177,7 +177,7 @@ describe("Reveal-timing independence (design.md Decision D8, tasks.md Group 6)",
     const envelope: WsEventEnvelope = {
       eventType: "vote_revealed",
       sessionId: "s1",
-      payload: { sessionId: "s1", sessionStatus: "active" },
+      payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
     };
     await handleIncomingMessage(JSON.stringify(envelope), noopLogger as never, registry);
 

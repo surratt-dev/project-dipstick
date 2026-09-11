@@ -97,7 +97,20 @@ export type AuditEventName =
   // detail. This is the ONLY one of these three new operations that is
   // facilitator-visible (via content.ts's new read query) — see that
   // query's explicit non-wildcard filter requirement.
-  | "session.connection_recovered";
+  | "session.connection_recovered"
+  // session.reveal_latency_observed: FR-4.6.1 (websocket-specification
+  // Decision D2). Not a security audit record — a client-reported
+  // observed_latency metric (received_at - serverTimestamp) for one
+  // vote_revealed delivery. Emitted via this same emitAuditEvent pipe,
+  // deliberately, per Security review (Tomás Ferreira): this metric is
+  // session-tagged and therefore SHALL route to a monitoring destination
+  // access-controlled at least as tightly as this file's other
+  // session-tagged operational logs (e.g. session.access_revoked_live) —
+  // reusing this exact structured-log surface is how that bar is met by
+  // construction rather than by a separate, less-controlled destination.
+  // metadata: { sessionId, serverTimestamp, observedLatencyMs }. No vote
+  // value or vote type — this event carries timing data only.
+  | "session.reveal_latency_observed";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

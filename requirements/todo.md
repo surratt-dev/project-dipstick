@@ -20,7 +20,9 @@ design/Engineering Health Check - REST API Contract - Validation Report.md
 
 ## Outstanding Documents
 
-### WebSocket Specification [ ]
+### WebSocket Specification [x]
+
+**Closed by the `websocket-specification` OpenSpec change (2026-09-11):** see `openspec/specs/websocket-specification/spec.md` (synced to the main spec tree; the change directory retains a copy plus the proposal/design/tasks history at `openspec/changes/websocket-specification/`).
 A WebSocket Specification document is required before the real-time layer can be implemented.
 
 The REST API contract (Appendix D) defers all real-time behaviors to WebSocket. That document must specify, at minimum:

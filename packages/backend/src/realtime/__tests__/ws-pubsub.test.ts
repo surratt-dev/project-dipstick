@@ -79,12 +79,16 @@ describe("typed publish wrappers", () => {
   });
 
   it("publishVoteRevealed wraps a minimal trigger payload — not the revealed vote content (this wrapper is unreachable in production pending #26)", async () => {
-    await publishVoteRevealed("s1", { sessionId: "s1", sessionStatus: "active" });
+    await publishVoteRevealed("s1", {
+      sessionId: "s1",
+      sessionStatus: "active",
+      serverTimestamp: "2026-01-01T00:00:00.000Z",
+    });
     const [, body] = mockPublish.mock.calls[0] as [string, string];
     expect(JSON.parse(body)).toEqual({
       eventType: "vote_revealed",
       sessionId: "s1",
-      payload: { sessionId: "s1", sessionStatus: "active" },
+      payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
     });
   });
 

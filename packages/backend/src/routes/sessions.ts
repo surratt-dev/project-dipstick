@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import type { SessionData } from "../auth/session-store.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { publishVoteReadinessUpdate } from "../realtime/ws-pubsub.js";
+import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
 
 // ---------------------------------------------------------------------------
 // Session participation routes
@@ -400,4 +401,68 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(201).send({ voteId });
     },
   );
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/sessions/:sessionId/reveal-latency
+  //
+  // FR-4.6.1 client obligation (websocket-specification Decision D2, tasks.md
+  // tasks 2.4/2.5/2.8): the WebSocket client computes
+  // observed_latency = received_at - serverTimestamp on receiving a
+  // vote_revealed message and reports it here. This handler does not
+  // recompute or validate the arithmetic — the client's own receive time is
+  // authoritative for a client-side latency measurement, by definition.
+  //
+  // Authorization: reuses evaluateSessionSubscriberAccess unmodified (the
+  // same grant check vote_revealed delivery itself requires) rather than a
+  // new check — only a caller who could legitimately have received this
+  // session's vote_revealed event may report a latency observation for it.
+  //
+  // Access-control confirmation (task 2.8, per Security review, Tomás
+  // Ferreira): this metric is logged via emitAuditEvent using the
+  // "session.reveal_latency_observed" event, the SAME structured-log pipe
+  // (Fastify's audit-level child logger) as this application's other
+  // session-tagged operational logs (e.g. session.access_revoked_live). It
+  // does not route to any separate, newer, or more broadly-readable
+  // destination — reusing the existing pipe is how "access-controlled at
+  // least as tightly as session-tagged audit logs" is satisfied by
+  // construction, not assumed. No new monitoring infrastructure is
+  // introduced.
+  // -------------------------------------------------------------------------
+  app.post<{
+    Params: { sessionId: string };
+    Body: { serverTimestamp: string; observedLatencyMs: number };
+  }>("/api/v1/sessions/:sessionId/reveal-latency", async (request, reply) => {
+    const session = request.session as unknown as SessionData;
+    const { sessionId } = request.params;
+    const { serverTimestamp, observedLatencyMs } = request.body;
+
+    const grant = await evaluateSessionSubscriberAccess(session.userId, sessionId);
+    if (grant === null) {
+      return reply.code(403).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "You do not have access to this session.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    if (typeof serverTimestamp !== "string" || typeof observedLatencyMs !== "number" || !Number.isFinite(observedLatencyMs)) {
+      return reply.code(422).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "Invalid observed-latency report.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    emitAuditEvent(request.log, "session.reveal_latency_observed", {
+      sessionId,
+      serverTimestamp,
+      observedLatencyMs,
+    });
+
+    return reply.code(202).send({ recorded: true });
+  });
 }

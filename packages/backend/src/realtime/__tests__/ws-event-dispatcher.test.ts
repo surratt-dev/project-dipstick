@@ -308,13 +308,20 @@ describe("ws-event-dispatcher", () => {
         .mockResolvedValueOnce({ rows: [] });
 
       await dispatch(
-        { eventType: "vote_revealed", sessionId: "s1", payload: { sessionId: "s1", sessionStatus: "active" } },
+        {
+          eventType: "vote_revealed",
+          sessionId: "s1",
+          payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
+        },
         registry,
       );
 
       expect(conn.sent).toHaveLength(1);
       const message = JSON.parse(conn.sent[0]!);
       expect(message.eventType).toBe("vote_revealed");
+      // FR-4.6.1: the wire frame forwards the envelope's serverTimestamp
+      // unmodified — it is never regenerated in this function.
+      expect(message.serverTimestamp).toBe("2026-01-01T00:00:00.000Z");
     });
 
     it("does not deliver to an unauthorized subscriber (null grant) and never calls the payload builder", async () => {
@@ -325,7 +332,11 @@ describe("ws-event-dispatcher", () => {
       mockDbQuery.mockResolvedValueOnce({ rows: [] }); // evaluateSessionSubscriberAccess: no session/user row
 
       await dispatch(
-        { eventType: "vote_revealed", sessionId: "s1", payload: { sessionId: "s1", sessionStatus: "active" } },
+        {
+          eventType: "vote_revealed",
+          sessionId: "s1",
+          payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
+        },
         registry,
       );
 
@@ -341,12 +352,69 @@ describe("ws-event-dispatcher", () => {
       registry.register("session", "s1", stale);
 
       await dispatch(
-        { eventType: "vote_revealed", sessionId: "s1", payload: { sessionId: "s1", sessionStatus: "active" } },
+        {
+          eventType: "vote_revealed",
+          sessionId: "s1",
+          payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
+        },
         registry,
       );
 
       expect(stale.sent).toHaveLength(0);
       expect(mockDbQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  // FR-4.6.1 (websocket-specification Decision D2, tasks.md task 2.3): this
+  // function runs once PER POD, independently, each time that pod's own
+  // Redis subscriber receives the envelope. A single-ConnectionRegistry test
+  // (all the vote_revealed tests above) can only ever model one pod's local
+  // candidates — it cannot distinguish "reads envelope.payload.serverTimestamp"
+  // from "calls new Date() itself," because both would pass if the whole test
+  // runs fast enough. Constructing two independent registries and dispatching
+  // the SAME published message string to each is what actually exercises the
+  // cross-pod guarantee.
+  describe("serverTimestamp cross-pod forwarding (FR-4.6.1, websocket-specification Decision D2, task 2.3)", () => {
+    it("forwards the identical serverTimestamp to recipients on two independent pods for the same published envelope", async () => {
+      const podARegistry = new ConnectionRegistry();
+      const podBRegistry = new ConnectionRegistry();
+      const podAConn = fakeConn("participant-1");
+      const podBConn = fakeConn("participant-2");
+      podARegistry.register("session", "s1", podAConn);
+      podBRegistry.register("session", "s1", podBConn);
+
+      const envelope: WsEventEnvelope = {
+        eventType: "vote_revealed",
+        sessionId: "s1",
+        payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
+      };
+      // Both pods' subscribers receive the exact same serialized message —
+      // this is what a single Redis PUBLISH actually fans out as.
+      const raw = JSON.stringify(envelope);
+
+      const grantRow = (participantRowId: string) => ({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "active",
+          global_role: "engineer", participant_row_id: participantRowId, membership_role: "participant",
+          membership_removed_at: null, membership_exists: true,
+        }],
+      });
+
+      // Pod A's subscriber fires first.
+      mockDbQuery.mockResolvedValueOnce(grantRow("p1")).mockResolvedValueOnce({ rows: [] });
+      await handleIncomingMessage(raw, noopLogger, podARegistry);
+
+      // Pod B's subscriber fires independently, on its own event-loop tick,
+      // against a fresh ConnectionRegistry holding a different candidate.
+      mockDbQuery.mockResolvedValueOnce(grantRow("p2")).mockResolvedValueOnce({ rows: [] });
+      await handleIncomingMessage(raw, noopLogger, podBRegistry);
+
+      expect(podAConn.sent).toHaveLength(1);
+      expect(podBConn.sent).toHaveLength(1);
+      const messageA = JSON.parse(podAConn.sent[0]!);
+      const messageB = JSON.parse(podBConn.sent[0]!);
+      expect(messageA.serverTimestamp).toBe("2026-01-01T00:00:00.000Z");
+      expect(messageB.serverTimestamp).toBe(messageA.serverTimestamp);
     });
   });
 
@@ -380,7 +448,11 @@ describe("ws-event-dispatcher", () => {
         .mockResolvedValueOnce({ rows: [] });
 
       await dispatch(
-        { eventType: "vote_revealed", sessionId: "s1", payload: { sessionId: "s1", sessionStatus: "active" } },
+        {
+          eventType: "vote_revealed",
+          sessionId: "s1",
+          payload: { sessionId: "s1", sessionStatus: "active", serverTimestamp: "2026-01-01T00:00:00.000Z" },
+        },
         registry,
       );
 

@@ -395,3 +395,75 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
     expect(mockPublishVoteReadinessUpdate).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/sessions/:sessionId/reveal-latency
+//
+// FR-4.6.1 client obligation (websocket-specification Decision D2, tasks.md
+// tasks 2.4/2.5/2.8).
+// ---------------------------------------------------------------------------
+describe("POST /api/v1/sessions/:sessionId/reveal-latency", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const participantGrantRow = {
+    rows: [{
+      session_id: "s1", team_id: "team-1", facilitator_id: "someone-else", session_status: "active",
+      global_role: "engineer", participant_row_id: "p1", membership_role: "participant",
+      membership_removed_at: null, membership_exists: true,
+    }],
+  };
+
+  it("task 2.5: an authorized session subscriber's report is accepted and emitted via the existing audit-logger structured-log surface", async () => {
+    mockDbQuery.mockResolvedValueOnce(participantGrantRow); // evaluateSessionSubscriberAccess
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/reveal-latency",
+      payload: { serverTimestamp: "2026-01-01T00:00:00.000Z", observedLatencyMs: 842 },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(mockEmitAuditEvent).toHaveBeenCalledTimes(1);
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "session.reveal_latency_observed",
+      expect.objectContaining({
+        sessionId: "s1",
+        serverTimestamp: "2026-01-01T00:00:00.000Z",
+        observedLatencyMs: 842,
+      }),
+    );
+  });
+
+  // task 2.8: this is the check that a caller with no legitimate claim on
+  // this session's vote_revealed delivery cannot inject arbitrary latency
+  // metrics into the monitoring surface for a session they cannot observe.
+  it("task 2.8: rejects a caller with no session-subscriber grant (403) and never emits the metric", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // evaluateSessionSubscriberAccess: no session/user row
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/reveal-latency",
+      payload: { serverTimestamp: "2026-01-01T00:00:00.000Z", observedLatencyMs: 842 },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed report (non-numeric observedLatencyMs) with 422 and never emits the metric", async () => {
+    mockDbQuery.mockResolvedValueOnce(participantGrantRow);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/reveal-latency",
+      payload: { serverTimestamp: "2026-01-01T00:00:00.000Z", observedLatencyMs: "not-a-number" },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+});
