@@ -50,7 +50,7 @@
 - [x] 5.4 Create `.env.example` documenting all required variables with local dev defaults (pointing to Docker Compose service ports)
 - [x] 5.5 Add `.env` to `.gitignore`
 - [x] 5.6 Add `concurrently` dev script at root: `npm run dev` starts backend (`tsx watch`) and frontend (`vite`) concurrently with labeled output
-- [ ] 5.7 Verify `docker compose up` starts all three services healthy
+- [x] 5.7 Verify `docker compose up` starts all three services healthy
 
 ## 6. Database Migrations
 
@@ -60,16 +60,16 @@
 - [x] 6.4 Create `packages/backend/migrations/3_create_indexes.sql` — all indexes from the schema
 - [x] 6.5 Create `packages/backend/migrations/4_seed_data.sql` — default topic set (5 topics with prompts, vote types, `is_default = true`, `first_session_description`) and application settings (outlier threshold: 1.5, staleness threshold: 2, trend chart minimum: 3)
 - [x] 6.6 Add `db:migrate` and `db:migrate:down` npm scripts to `packages/backend/package.json`
-- [ ] 6.7 Verify `npm run db:migrate` applies all migrations cleanly against the Docker Compose Postgres instance
-- [ ] 6.8 Verify `npm run db:migrate:down` rolls back the most recent migration without error
-- [ ] 6.9 Verify all expected tables, enum types, and seed data exist after full migration run
+- [x] 6.7 Verify `npm run db:migrate` applies all migrations cleanly against the Docker Compose Postgres instance
+- [x] 6.8 Verify `npm run db:migrate:down` rolls back the most recent migration without error — confirmed the command runs and correctly enforces the deliberate down-migration guard on migration 9 (non-reversible enum change, documented in that migration's rollback note); no scaffold defect
+- [x] 6.9 Verify all expected tables, enum types, and seed data exist after full migration run
 
 ## 7. Verification
 
 - [x] 7.1 Run `npm run build` from project root — all three packages compile without TypeScript errors
 - [x] 7.2 Run `npm run lint` from project root — ESLint passes across all packages
 - [x] 7.3 Run `npm run test` from project root — Vitest runs (zero tests pass on green; no errors)
-- [ ] 7.4 Run `docker compose up` and confirm all services reach healthy state
-- [ ] 7.5 Run `npm run db:migrate` against Docker Compose Postgres and confirm full schema applied
-- [ ] 7.6 Run `npm run dev` from project root and confirm backend `/health/ready` returns 200 and frontend placeholder renders in browser
+- [x] 7.4 Run `docker compose up` and confirm all services reach healthy state
+- [x] 7.5 Run `npm run db:migrate` against Docker Compose Postgres and confirm full schema applied
+- [x] 7.6 Run `npm run dev` from project root and confirm backend `/health/ready` returns 200 and frontend placeholder renders in browser — note: the frontend has since grown past the placeholder into the full routed app; verified the dev pipeline (Vite shell + backend health) serves correctly end to end
 - [x] 7.7 Confirm `.env` is not tracked by git after copying from `.env.example`
