@@ -7,7 +7,7 @@ Defines requirements for automatic account creation on first authentication, OID
 ## Requirements
 
 ### Requirement: Automatic account creation on first authentication
-The application SHALL automatically create a new user account when a valid identity assertion is received and no existing account matches the IdP's subject claim (`sub`) and issuer (`iss`). The new account SHALL have no team memberships and no assigned roles. Account creation SHALL NOT require manual provisioning or administrator action. The implementation uses an upsert (`INSERT ... ON CONFLICT DO UPDATE`) keyed on the compound unique constraint `(oidc_subject, oidc_issuer)`. Whether the account is newly created (`isNewUser`) is determined by a SELECT query executed before the upsert; see Known Limitations for the documented race constraint on this flag under concurrent load.
+The application SHALL automatically create a new user account when a valid identity assertion is received and no existing account matches the IdP's subject claim (`sub`) and issuer (`iss`). The new account SHALL have no team memberships and no assigned roles. Account creation SHALL NOT require manual provisioning or administrator action. The implementation uses a single upsert (`INSERT ... ON CONFLICT DO UPDATE ... RETURNING`) keyed on the compound unique constraint `(oidc_subject, oidc_issuer)`. Whether the account is newly created (`isNewUser`) is derived from that same upsert's `RETURNING` clause via `(xmax = 0) AS is_new_user` — a PostgreSQL-internal idiom that is true only for a row this statement inserted and false for a row it updated via `DO UPDATE`. No separate SELECT is performed to determine `isNewUser`; the flag is race-free because it is computed within the single statement that performs the write.
 
 #### Scenario: First-time user authenticated
 - **WHEN** a valid ID token is received with `sub` and `iss` claims that do not match any existing user's `oidc_subject` and `oidc_issuer`
@@ -37,7 +37,7 @@ The application SHALL match identity assertions to existing accounts using the c
 ---
 
 ### Requirement: Concurrent First Access handling
-The application SHALL handle concurrent First Access account creations without serialization. The upsert pattern (`ON CONFLICT DO UPDATE`) ensures that duplicate `sub`/`iss` arrivals result in one account record with an update, not an error. Concurrency is handled at the database level: when two callbacks arrive simultaneously for the same new user, exactly one INSERT succeeds and the other performs an update; both return the correct user record. The `isNewUser` flag is derived via a SELECT executed before the upsert; see Known Limitations for the documented race on this flag under concurrent load.
+The application SHALL handle concurrent First Access account creations without serialization. The upsert pattern (`ON CONFLICT DO UPDATE`) ensures that duplicate `sub`/`iss` arrivals result in one account record with an update, not an error. Concurrency is handled at the database level: when two callbacks arrive simultaneously for the same new user, exactly one INSERT succeeds and the other performs an update; both return the correct user record. The `isNewUser` flag is derived per-call from that call's own upsert `RETURNING` result (`(xmax = 0) AS is_new_user`), not from a prior SELECT. Because the flag is computed within the same statement that performs the write, at most one of the two racing callbacks can observe `isNewUser = true` for a given identity — the SELECT-before-upsert race that previously allowed both callbacks to observe `isNewUser = true` cannot occur.
 
 #### Scenario: Batch first-time authentication
 - **WHEN** 10 users authenticate for the first time within 30 seconds
@@ -45,7 +45,7 @@ The application SHALL handle concurrent First Access account creations without s
 
 #### Scenario: Duplicate subject claim race condition
 - **WHEN** two concurrent callbacks arrive for the same user (same `sub`/`iss`)
-- **THEN** one insert succeeds and the other performs an upsert update; both callbacks result in a valid session for the same user account
+- **THEN** one insert succeeds and the other performs an upsert update; both callbacks result in a valid session for the same user account; exactly one of the two callbacks observes `isNewUser = true` and the other observes `isNewUser = false`, each derived from its own upsert's `RETURNING` result
 
 ---
 
@@ -198,7 +198,7 @@ During the OIDC authentication flow, the application SHALL read a designated rol
 
 ## Known Limitations
 
-**isNewUser SELECT-before-upsert race (hard constraint on future work):** The `isNewUser` flag in `resolveOrCreateAccount` is determined by a SELECT query executed before the upsert. Two concurrent authentication callbacks for the same new user may both read zero existing rows and both set `isNewUser = true`. The upsert handles data correctly at the database level (exactly one account is created), but any downstream consumer of `isNewUser` may fire twice. This is a hard constraint on future work: before any feature that consumes `isNewUser` is merged, the SELECT-before-upsert pattern must be replaced with a pattern that derives `isNewUser` from the upsert result (e.g., via `xmax` inspection or an INSERT-returning flag column), or the consuming feature must be designed to treat duplicate firings as idempotent. The current only consumer (`auth.first_access_created` audit event) is safe: a duplicate event is detectable by its correlation ID and produces no incorrect side effect.
+**isNewUser SELECT-before-upsert race — closed (fix-isnewuser-atomic-upsert):** The `isNewUser` flag in `resolveOrCreateAccount` is now derived from `(xmax = 0) AS is_new_user` on the upsert's own `RETURNING` clause, computed within the same statement that performs the write. The previously documented SELECT-before-upsert race, under which two concurrent callbacks for the same new user could both observe `isNewUser = true`, is structurally impossible under this mechanism.
 
 ---
 
@@ -212,4 +212,3 @@ The following GitHub issues were opened as known follow-on items at the close of
 - **#5** — [Audit] executeJoinFlow hardcodes "callback" as sourceIp in join rejection audit events
 - **#6** — [Test] No assertion that session.destroy is not called after session fixation fix
 - **#7** — [Clarity] MissingClaimError("sub") is misleading when the entire claims object is null
-- **#8** — [Architecture] isNewUser SELECT-before-upsert race: hard constraint on future features
