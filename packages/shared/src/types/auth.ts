@@ -15,6 +15,19 @@ export interface AuthSession {
   expiresAt: string;
 }
 
+// Persona login (local-dev-only sign-in shortcut). Shared so the frontend's
+// unseeded-caveat rendering keys off the same `seeded` field the backend
+// computes, rather than a frontend-maintained list of account ids (design.md D5).
+export interface DevLoginOption {
+  accountId: string;
+  roleLabel: string;
+  seeded: boolean;
+}
+
+export interface DevLoginOptionsResponse {
+  options: DevLoginOption[];
+}
+
 export interface JoinLink {
   id: string;
   teamId: string;

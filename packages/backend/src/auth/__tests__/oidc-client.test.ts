@@ -61,6 +61,32 @@ describe("oidc-client", () => {
       expect(result.url.toString()).toContain("idp.example.com/authorize");
       expect(result.codeVerifier).toBe("verifier-1");
       expect(mockCalculatePKCE).toHaveBeenCalledWith("verifier-1");
+      expect(mockBuildAuthorizationUrl).toHaveBeenCalledWith(
+        mockOidcConfig,
+        expect.not.objectContaining({ login_hint: expect.anything() }),
+      );
+    });
+
+    it("should forward login_hint when provided", async () => {
+      mockCalculatePKCE.mockResolvedValue("challenge-hash");
+      mockBuildAuthorizationUrl.mockReturnValue(new URL("https://idp.example.com/authorize?state=s1"));
+
+      await getAuthorizationUrl("state-1", "nonce-1", "verifier-1", "manager-001");
+      expect(mockBuildAuthorizationUrl).toHaveBeenCalledWith(
+        mockOidcConfig,
+        expect.objectContaining({ login_hint: "manager-001" }),
+      );
+    });
+
+    it("should omit login_hint when not provided", async () => {
+      mockCalculatePKCE.mockResolvedValue("challenge-hash");
+      mockBuildAuthorizationUrl.mockReturnValue(new URL("https://idp.example.com/authorize?state=s1"));
+
+      await getAuthorizationUrl("state-1", "nonce-1", "verifier-1");
+      expect(mockBuildAuthorizationUrl).toHaveBeenCalledWith(
+        mockOidcConfig,
+        expect.not.objectContaining({ login_hint: expect.anything() }),
+      );
     });
   });
 

@@ -24,6 +24,7 @@ export async function getAuthorizationUrl(
   state: string,
   nonce: string,
   codeVerifier: string,
+  loginHint?: string,
 ): Promise<{ url: URL; codeVerifier: string }> {
   const oidc = await getOidcConfig();
   const codeChallenge = await client.calculatePKCECodeChallenge(codeVerifier);
@@ -36,6 +37,7 @@ export async function getAuthorizationUrl(
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     response_type: "code",
+    ...(loginHint ? { login_hint: loginHint } : {}),
   });
 
   return { url, codeVerifier };

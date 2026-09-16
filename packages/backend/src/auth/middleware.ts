@@ -5,7 +5,14 @@ import { getDecryptedTokens } from "./session-store.js";
 import type { SessionData } from "./session-store.js";
 import { emitAuditEvent } from "./audit-logger.js";
 
-const PUBLIC_ROUTES = ["/health", "/auth/login", "/auth/callback", "/auth/logout", "/api/join/"];
+const PUBLIC_ROUTES = [
+  "/health",
+  "/auth/login",
+  "/auth/callback",
+  "/auth/logout",
+  "/auth/dev-login-options",
+  "/api/join/",
+];
 
 // Exported for reuse by the WebSocket delivery-time authorization layer
 // (websocket-delivery-time-authorization, design.md Decision D8): a
