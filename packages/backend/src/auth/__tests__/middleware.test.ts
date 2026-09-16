@@ -75,7 +75,14 @@ describe("authMiddleware", () => {
     const hook = app.getHook()!;
     const reply = createMockReply();
 
-    for (const url of ["/health", "/auth/login", "/auth/callback", "/auth/logout", "/api/join/abc"]) {
+    for (const url of [
+      "/health",
+      "/auth/login",
+      "/auth/callback",
+      "/auth/logout",
+      "/auth/dev-login-options",
+      "/api/join/abc",
+    ]) {
       const req = createMockRequest({ url });
       await hook(req, reply);
       expect(reply.code).not.toHaveBeenCalled();

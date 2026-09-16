@@ -1,36 +1,11 @@
 import { Provider } from "oidc-provider";
+import { accounts } from "./accounts.js";
+import { createInteractionRouter } from "./interactions.js";
 
 const ISSUER = process.env.OIDC_ISSUER ?? "http://localhost:4011";
 const CLIENT_ID = process.env.OIDC_CLIENT_ID ?? "dipstick-local";
 const CLIENT_SECRET = process.env.OIDC_CLIENT_SECRET ?? "dipstick-local-secret";
 const REDIRECT_URI = process.env.OIDC_REDIRECT_URI ?? "http://localhost:3000/auth/callback";
-
-const accounts = {
-  "participant-001": {
-    sub: "participant-001",
-    email: "participant@example.com",
-    name: "Alex Participant",
-    password: "password",
-  },
-  "facilitator-001": {
-    sub: "facilitator-001",
-    email: "facilitator@example.com",
-    name: "Sam Facilitator",
-    password: "password",
-  },
-  "manager-001": {
-    sub: "manager-001",
-    email: "manager@example.com",
-    name: "Morgan Manager",
-    password: "password",
-  },
-  "admin-001": {
-    sub: "admin-001",
-    email: "admin@example.com",
-    name: "Riley Admin",
-    password: "password",
-  },
-};
 
 const configuration = {
   clients: [
@@ -46,15 +21,41 @@ const configuration = {
   ],
   pkce: { required: () => true },
   features: {
-    devInteractions: { enabled: true },
+    // persona-login design.md D10: devInteractions is replaced by the
+    // login_hint-aware auto-approve handler in interactions.js, mounted
+    // below via provider.use(). devInteractions must be disabled (not left
+    // enabled alongside a custom interactions.url) or its own routes would
+    // shadow the custom ones.
+    devInteractions: { enabled: false },
     resourceIndicators: { enabled: false },
     rpInitiatedLogout: { enabled: true },
   },
   scopes: ["openid", "profile", "email", "offline_access"],
   claims: {
-    profile: ["name"],
+    // `role` rides on the `profile` scope (already requested by this
+    // client -- oidc-client.ts requests "openid profile email
+    // offline_access") rather than a dedicated scope: a claim not listed
+    // under any requested scope's claim map never enters the ID token's
+    // claims mask (see the conformIdTokenClaims comment on that flag,
+    // below), regardless of what findAccount's claims() returns.
+    profile: ["name", "role"],
     email: ["email"],
   },
+  // Pre-existing bug found and fixed while implementing persona-login
+  // (openspec/changes/persona-login): oidc-provider's default
+  // (conformIdTokenClaims: true) is spec-correct but means scope-requested
+  // claims (profile/email, and this change's role claim) are only returned
+  // from the userinfo endpoint once an access token is also issued -- they
+  // never land on the ID token itself. This backend never calls
+  // /userinfo (packages/backend/src/routes/auth.ts reads tokens.claims()
+  // directly, by design -- see proposal.md's "no changes to auth.ts's
+  // callback handler" commitment), so every sign-in through this stub was
+  // silently losing name/email/role to this masking, with the app going
+  // unnoticed because resolveOrCreateAccount falls back to `sub`-derived
+  // values. false here makes this dev-only stub put all consented-scope
+  // claims directly on the ID token, matching what this file already
+  // claims to do.
+  conformIdTokenClaims: false,
   ttl: {
     AccessToken: 3600, // 1 hour
     RefreshToken: 28800, // 8 hours
@@ -73,11 +74,18 @@ const configuration = {
     return {
       accountId: id,
       async claims() {
-        return {
+        const claims = {
           sub: account.sub,
           email: account.email,
           name: account.name,
         };
+        // Only manager-001 and admin-001 carry a role claim (see
+        // accounts.js) -- asserted in the ID token so the existing
+        // OIDC_ROLE_CLAIM mapping (account-resolver.ts) picks it up.
+        if (account.role) {
+          claims.role = account.role;
+        }
+        return claims;
       },
     };
   },
@@ -90,24 +98,40 @@ const configuration = {
     keys: ["dipstick-local-cookie-key"],
   },
   jwks: {
+    // Pre-existing bug found and fixed while implementing persona-login
+    // (openspec/changes/persona-login): this key was a 1760-bit RSA
+    // modulus, below the 2048-bit minimum the installed `jose` version (a
+    // transitive dependency of oidc-provider) enforces for RS256 signing.
+    // Every local sign-in -- persona shortcut or manual -- failed at ID
+    // token issuance with "RS256 requires key modulusLength to be 2048
+    // bits or larger" before this fix; confirmed by reproducing against
+    // the unmodified pre-persona-login server.js. Regenerated as a fresh
+    // 2048-bit key, still inline and still local-dev-only.
     keys: [
       {
         kty: "RSA",
-        // Inline test key — never use in production
-        n: "pjdss8ZaDfEH6K6U7GeW2nxDqR4IP049fk1fK0lndimbMMVBdPv_hSpm8T8EtBDxrUdi1OHZfMhUixGaut-3nQ4GG9nM2rWxwEdrjBys1No7MtJoDKrXf1n310JwYV3Q09X7n4-xoILH4BBuns-DnTDT93xfDaNHXqe8GGlSBCNaFkMYcrHPzLNcL5GkmFUMx4iFaF0FjmcWA7GHgmgFnIVIHNsYFmGiJlDHHbIIXfkGGU0X5EpGHB7hc2UcehPVoOVTkBEUkSEkqKH_I1Gvj8F8j7hV8BVQIDAQAB",
+        n: "slR01tp-gx9UJ4UTywJcm_YLGxkjxTPlsAHfXwPZ3Jl_H481XT2IzO_TUq2PmFw2XRW_Fwnc9X1wiHBa2ToqSpp5KswLS1FOKD7O4MnhQcd8LNRZ8VpxHaVqLG6LOBXE-zhM7Wv-oD0CiqZ_vwYjrm2lwW2nZ79uCHzlbeYx0yaDU6aPVJNNuAbDC8esyKqiYXWnUJ1r0FxqZjDuyfDz-J8-M3Fivmyuq_iU08O0aRXuGOJ6iovcoHU-8KMqhXYTwH62DDJrCC4-KAXurEetCmcJ7oknqB_ngRo7F0R91186tNbJRDlcUoKinu7LyZHeyGGcR2R3Ebf2TOozlC5cjQ",
         e: "AQAB",
-        d: "ksDmucdMJXkFGZxiomNHnroOZxe7fytu-Qn3i-GeLFh3GKMiVkMrV5_Y4slvQFWRCLkKMs0Po7B0ApESAhMpwq9QWdBdUnTHzwNEWuJAVCKwBD0VFxP6kM36HrqDmb2iJSB_b0tLkXpSudV-B0RxGt7tU2cAPANHXe29bpT_dFcgKnZS7qxEAMhF7Teb0YtFOIKr45e98kY0lxJIjGn7j6Wiz_8lMZVWvVc5gG9zB0P3E4RwNzVSMoO3vfT66Z4-TQwk6Pz6rV9zJxMdT3QkCbBJBWzJc4SXqhCb_FHVKQfmBFvqbRFBQVBiTUEh9cVLwMx4YHLpC6AwAQ",
-        p: "0GB3mMGBnNcMBFMh6MoNIDBrWIzLm7TuPDa8U_XGq7V9UJSOV73HBhv4_RkP9ELi9GaM9KY8Fq1FBs4vq8M4GkrHDa3R0S_-p-A-hDc3nxQNVbVw91UWQmUC9RQ6LWYRymIoHsz_MYkHLSb1MXDSAZkqK4PwxHQKBPt5nE",
-        q: "w2kqT1r5y-VKS7x-JDluuvTNNDGbIlnuv1cygT8cH73sD2KHPOiH7HIPVjuGPvGpd0JObI5oi2Y9HCYpDnz0Cz76vLbnj5LFkwqm_7P9PKxOAQl1Ax5b0JKlWU1TMFMqq9a6JBRdJa5UBxjxU3REPEQUkq5JmMHZNIjUbzU",
-        dp: "pDpgFtpHqsGsG3I3uqPVvfBJrJFMZ5e3bDtpGGwVGNvDNs1FPFGNBvmVDvH-x3YBDVP8nKHRJy8zQDJo6_Y2cAqdJzr4cN7CxZPv_JqFbJdvEJKhNmwO6H0lWJkEp9dGLl5E4vM3B3yWR8hcVVmST_FNkIDILVqC7mD7bc0",
-        dq: "wU9E7e3RrZ1U_JVj-DfUPU8jMNKHGE5kFENTHZMnWMF8aeMXKAZHKTdK1DsU-ELhWvs_RUo1X3V_yMV8m4FvG8Bn-dUVdcVKwXXCGlhvBNNr4vOKmrWMvWOx1HXLB1-Kh0HQVJT3BKgqOVKXe2N3CJHrBUgL37V4Y09wj0",
-        qi: "m5SJFDMFuvCRivJk3lzxCe0kAbBlGb0lXp4wqiPd5MwG9tgm5XrM5GTbBKxb8_P6d79s1dF3l0l0tEDkEBpg7nV-rTjJXvf48wMvQ_lWOULfB_D-7rDYzp1E4rkmqkLs0jHX06Y8g7VWzT9xQpfNxXD7XL5P2bSBkGJ4oFx4",
+        d: "PJurj8HthiMCRNQB59jxv9GmiWPyXkJNzFVTIZU5lxTSbZmdo2C94Unfaz9P_t5s_HDYFE25vxZoMV6yJ8uXx_AxXU4o4nVx0GHbYBiWxCAl0-0guUJRoa7BwrxudW8oAdIKN32TQjkLWbbDvmUsh3Qg8UtVEWiAAlEyOf_2YUrWCMnmhfG8eemmZ7GWn5XOF1PdtNDBktZC8A2sm8yEw_gbhau6g14RqtVZpIdGXDmgT5bqql8mMs5Y2A3dPcqsDBRsold0EZl4ABxMRF-gv7zPuVzUWFw5uaLGO7swQATkqg8ZQ6BGtCbhAfRcjrqgZwsqz-fcAnpQ_2FZJoOZ",
+        p: "5_OxS7A3iohgA7k8aZQqw9ZiZ-fqaUBRyszxstl7EyjaJcxMGrodV6Qny6668pBr0_9_lPyqO2VPsJ0j5gFO17Z2i6pwrFs-9eiiUUvCmcbsVAr7BGFEWrGfBxyXOpkj56nlOFbnaFOZVHGq2J4GFQqSYFku8lxb3SI5c5cSILk",
+        q: "xNGQvexYS5nP2LB2KzsQ9-OR-N93sqv1PYQAsuyLIj9QptTw-U5H3JqkJHxochh7EKErwTzgDDhGwvITXExjIWV58gH8VVCNzDK177lRb8jLqixIVtTmyxVFm2Jqk0bsyusyMuqC_6ZB8o5LbpyeJxIZQydtz93l0xnjrhDMqHU",
+        dp: "Rv2Es9-ZACNBD6Kv5LheZlXFBHwseE4hOmqDRvPdAT4tlgfy-vMfa-Vn8KTnvrmI5vd5usWh7E_TlgBiLlEUKl1D5vchSP8cQ_MRSsRfKOWDCy3ZKbwDSaa3P1v2xQ59uLd82kNuy7VaZkfrvCSRQ_taVXa2MaMm0oVZBBGmkLE",
+        dq: "CAulBg5-QYDlHS-BdRzyAaAc3HaOFxCucrhNqwK-YUUDT_6OZzKK_3qW0SMAxgE4LqLX_gs2AWnfgqKQpgo9VyUlyf3IydgEI9_CzizeJlqn8Knkvx_u20hgUwy_3IterKDWqXwqpLawJXEppjjiwigcPkGDXKbueSWqx_fJ1e0",
+        qi: "a-R2_wOcrZwvj7a-r9x7kKkRITWdmgnqikWgXkHfSd5uJgwmUTfeXQDXiDKHWyp5Uq5pOhYxmp0VFcFB5exzC1BxdXsYW-ETA3xxSH3WBzb83SmcCy-YKtEieszf8wtS4wQCDnHBC_aJT-rqB5Esc_7C39LJA8fyhzIEwjMVuhw",
       },
     ],
   },
 };
 
 const oidc = new Provider(ISSUER, configuration);
+
+// D10: mount the login_hint-aware interaction router. provider.use() inserts
+// custom middleware before the provider's own internal routing, so these
+// routes take effect (devInteractions is disabled above, so nothing else
+// handles /interaction/:uid).
+const interactionRouter = createInteractionRouter(oidc, accounts);
+oidc.use(interactionRouter.routes());
+oidc.use(interactionRouter.allowedMethods());
 
 const PORT = 4011;
 oidc.listen(PORT, () => {

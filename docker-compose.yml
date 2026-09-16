@@ -27,7 +27,16 @@ services:
   oidc:
     build: ./docker/oidc
     ports:
-      - "4011:4011"
+      # persona-login design.md D11: loopback-only. The generic short-syntax
+      # "4011:4011" binds to all host interfaces by default; the
+      # login_hint-aware auto-approve handler (docker/oidc/interactions.js)
+      # turns an unauthenticated GET carrying login_hint=<account-id> into a
+      # full sign-in with no credential of any kind, so this port must not
+      # be reachable beyond the machine running the stack.
+      # postgres/redis have the same underlying exposure but are out of
+      # scope here -- pre-existing, unrelated to authentication, tracked
+      # separately (design.md Risks).
+      - "127.0.0.1:4011:4011"
     environment:
       OIDC_ISSUER: http://localhost:4011
       OIDC_CLIENT_ID: dipstick-local

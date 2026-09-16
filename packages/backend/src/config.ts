@@ -19,7 +19,16 @@ type ConfigKey = (typeof required)[number];
 type OptionalConfigKey = (typeof optional)[number];
 type FullConfig = Record<ConfigKey, string> & Partial<Record<OptionalConfigKey, string>>;
 
-function isPrivateAddress(issuer: string): boolean {
+// Exported for reuse by the persona-login dev gate (routes/auth.ts,
+// GET /auth/dev-login-options) in addition to the production-boot guard
+// below. Known scope: IPv4 literals in the three RFC 1918 ranges plus the
+// literal strings localhost/127.0.0.1/0.0.0.0 only — no IPv6 (::1,
+// fc00::/7, fe80::/10 all fall through to false), no DNS resolution of a
+// hostname that resolves to a private address, no decimal/octal/hex-
+// obfuscated IPv4 literal handling. Fails closed (returns false) for
+// anything outside that coverage, which is the safe direction for both
+// call sites (see design.md D2, persona-login).
+export function isPrivateAddress(issuer: string): boolean {
   try {
     const url = new URL(issuer);
     const hostname = url.hostname;

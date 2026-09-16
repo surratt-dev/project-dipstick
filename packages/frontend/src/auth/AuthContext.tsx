@@ -6,7 +6,34 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import type { AuthSession } from "@dipstick/shared";
+
+// persona-login design.md D3: bounds the extra /auth/dev-login-options
+// round-trip so production sign-in is never made to wait on it. A same-origin
+// call that either says "no" instantly (production, no I/O) or sits in the
+// local dev stack; anything slower is itself a signal something's wrong.
+const DEV_LOGIN_OPTIONS_TIMEOUT_MS = 300;
+
+// persona-login design.md D9: AuthContext's job stays "decide where to
+// navigate on 401" -- it does not render the landing page itself. A timeout
+// is treated identically to a 404 response (fail open to the existing
+// redirect) in every environment, not only production.
+async function devLoginShortcutAvailable(): Promise<boolean> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DEV_LOGIN_OPTIONS_TIMEOUT_MS);
+  try {
+    const response = await fetch("/auth/dev-login-options", {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 interface AuthContextValue {
   session: AuthSession | null;
@@ -35,6 +62,7 @@ export function useAuth(): AuthContextValue {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   const fetchSession = useCallback(async () => {
     try {
@@ -43,7 +71,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (response.status === 401) {
-        // Not authenticated — redirect to login
+        // Not authenticated. Checked identically here (initial load) and
+        // after logout, since a post-logout redirect always lands back on
+        // this same SPA entry point and re-runs fetchSession (design.md D6:
+        // one gate, not a second independently-maintained determination).
+        if (await devLoginShortcutAvailable()) {
+          navigate("/auth/dev-login");
+          return;
+        }
         window.location.href = "/auth/login";
         return;
       }
@@ -57,7 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     void fetchSession();

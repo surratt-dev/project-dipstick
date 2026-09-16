@@ -5,6 +5,7 @@ import { NoTeamPage } from "./pages/NoTeamPage.js";
 import { TeamPage } from "./pages/TeamPage.js";
 import { AuthErrorPage } from "./pages/AuthErrorPage.js";
 import { AuthLoadingPage } from "./pages/AuthLoadingPage.js";
+import { DevLoginPage } from "./pages/DevLoginPage.js";
 import { JoinErrorPage } from "./pages/JoinErrorPage.js";
 import { SessionLobbyPage } from "./pages/SessionLobbyPage.js";
 import { SessionConnectionHost } from "./pages/SessionConnectionHost.js";
@@ -37,6 +38,14 @@ export function App() {
         <Routes>
           <Route path="/auth/error" element={<AuthErrorPage />} />
           <Route path="/auth/loading" element={<AuthLoadingPage />} />
+          {/*
+           * persona-login design.md D9: registered alongside /auth/error and
+           * /auth/loading, outside ProtectedRoute, no shared layout. This is
+           * the same pattern those routes already use -- a public page
+           * AuthContext client-side navigates to on a 401 when the local-dev
+           * shortcut is available, instead of the standard hard redirect.
+           */}
+          <Route path="/auth/dev-login" element={<DevLoginPage />} />
           {/*
            * /join-error is intentionally NOT wrapped in ProtectedRoute. A user
            * whose join link failed after OIDC authentication may not have an

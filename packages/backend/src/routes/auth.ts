@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { randomBytes } from "node:crypto";
 import * as oidcClient from "openid-client";
 import { redis } from "../redis.js";
-import { config } from "../config.js";
+import { config, isPrivateAddress } from "../config.js";
 import { db } from "../db.js";
 import {
   getAuthorizationUrl,
@@ -15,16 +15,71 @@ import type { SessionData } from "../auth/session-store.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { mapAuthError } from "../auth/error-handler.js";
 import { MissingClaimError } from "../auth/errors.js";
-import type { AuthSession } from "@dipstick/shared";
+import type { AuthSession, DevLoginOption, DevLoginOptionsResponse } from "@dipstick/shared";
 
 const STATE_TTL_SECONDS = 600; // 10 minutes
 const STATE_PREFIX = "dipstick:auth:state:";
 
+// Persona login (local-dev-only sign-in shortcut, see
+// openspec/changes/persona-login/design.md). This is the closed set of
+// account ids the simulated OIDC provider seeds (docker/oidc/server.js) —
+// the same set /auth/login validates loginHint against (D12) and the same
+// set the local stub's interaction handler (D10) looks up against.
+const SEEDED_ACCOUNT_IDS = [
+  "participant-001",
+  "facilitator-001",
+  "manager-001",
+  "admin-001",
+] as const;
+
+// `seeded` is the single source of truth for whether an account carries a
+// real application role (D5) — the frontend renders the unseeded-role
+// caveat whenever seeded is false, rather than hardcoding this list itself.
+const DEV_LOGIN_OPTIONS: DevLoginOption[] = [
+  { accountId: "participant-001", roleLabel: "Participant", seeded: true },
+  { accountId: "facilitator-001", roleLabel: "Facilitator", seeded: false },
+  { accountId: "manager-001", roleLabel: "Engineering Manager", seeded: true },
+  { accountId: "admin-001", roleLabel: "Application Admin", seeded: true },
+];
+
+function isSeededAccountId(value: string): value is (typeof SEEDED_ACCOUNT_IDS)[number] {
+  return (SEEDED_ACCOUNT_IDS as readonly string[]).includes(value);
+}
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
+  // GET /auth/dev-login-options
+  //
+  // Double-gated, independently-evaluated (design.md D2): NODE_ENV !==
+  // "production" AND isPrivateAddress(OIDC_ISSUER). On any gate failure,
+  // return 404 with no body and perform no Redis or database access — this
+  // must stay the very first thing the handler does.
+  app.get("/dev-login-options", async (_request, reply) => {
+    if (config.NODE_ENV === "production" || !isPrivateAddress(config.OIDC_ISSUER)) {
+      return reply.code(404).send();
+    }
+
+    const response: DevLoginOptionsResponse = { options: DEV_LOGIN_OPTIONS };
+    return reply.send(response);
+  });
+
   // GET /auth/login
   app.get<{
-    Querystring: { joinToken?: string };
+    Querystring: { joinToken?: string; loginHint?: string };
   }>("/login", async (request, reply) => {
+    const loginHint = request.query.loginHint;
+
+    // D12: validate loginHint against the closed set of seeded account ids
+    // before it is ever forwarded as the OIDC login_hint parameter.
+    if (loginHint !== undefined && !isSeededAccountId(loginHint)) {
+      return reply.code(400).send({
+        error: {
+          category: "invalid_request" as const,
+          message: `Invalid loginHint value: '${loginHint}'.`,
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
     const state = randomBytes(32).toString("base64url");
     const nonce = oidcClient.randomNonce();
     const codeVerifier = oidcClient.randomPKCECodeVerifier();
@@ -50,10 +105,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     emitAuditEvent(request.log, "auth.authorization_initiated", {
       sourceIp: request.ip,
       hasJoinContext: Boolean(joinToken),
+      hasLoginHint: Boolean(loginHint),
       stateNonce: state.substring(0, 8) + "...",
     });
 
-    const { url } = await getAuthorizationUrl(state, nonce, codeVerifier);
+    const { url } = await getAuthorizationUrl(state, nonce, codeVerifier, loginHint);
     return reply.redirect(url.toString());
   });
 

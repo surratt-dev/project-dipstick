@@ -23,8 +23,8 @@ vi.mock("../../redis.js", () => ({
     getdel: (...args: unknown[]) => mockRedisGetdel(...args),
   },
 }));
-vi.mock("../../config.js", () => ({
-  config: {
+const { mockConfig, mockIsPrivateAddress } = vi.hoisted(() => ({
+  mockConfig: {
     DATABASE_URL: "postgres://test",
     REDIS_URL: "redis://test",
     SESSION_SECRET: "test-secret",
@@ -32,9 +32,14 @@ vi.mock("../../config.js", () => ({
     OIDC_CLIENT_ID: "client-id",
     OIDC_CLIENT_SECRET: "client-secret",
     OIDC_REDIRECT_URI: "http://localhost:3000/auth/callback",
-    NODE_ENV: "test",
+    NODE_ENV: "test" as string,
     APP_ORIGIN: "http://localhost:5173",
   },
+  mockIsPrivateAddress: vi.fn(),
+}));
+vi.mock("../../config.js", () => ({
+  config: mockConfig,
+  isPrivateAddress: (...args: unknown[]) => mockIsPrivateAddress(...args),
 }));
 vi.mock("../../auth/oidc-client.js", () => ({
   getAuthorizationUrl: (...args: unknown[]) => mockGetAuthorizationUrl(...args),
@@ -129,6 +134,54 @@ function setupValidCallbackMocks(opts: {
 describe("authRoutes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockConfig.NODE_ENV = "test";
+    mockConfig.OIDC_ISSUER = "https://idp.example.com";
+    mockIsPrivateAddress.mockReturnValue(false);
+  });
+
+  describe("GET /auth/dev-login-options", () => {
+    it("returns options when both gates pass", async () => {
+      mockConfig.NODE_ENV = "development";
+      mockIsPrivateAddress.mockReturnValue(true);
+
+      const app = await buildApp();
+      const res = await app.inject({ method: "GET", url: "/auth/dev-login-options" });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockIsPrivateAddress).toHaveBeenCalledWith(mockConfig.OIDC_ISSUER);
+      const body = res.json() as { options: Array<{ accountId: string; seeded: boolean }> };
+      expect(body.options).toHaveLength(4);
+      expect(body.options.find((o) => o.accountId === "facilitator-001")?.seeded).toBe(false);
+      expect(body.options.find((o) => o.accountId === "manager-001")?.seeded).toBe(true);
+      expect(body.options.find((o) => o.accountId === "admin-001")?.seeded).toBe(true);
+      expect(body.options.find((o) => o.accountId === "participant-001")?.seeded).toBe(true);
+    });
+
+    it("returns 404 with no body when NODE_ENV=production, regardless of issuer", async () => {
+      mockConfig.NODE_ENV = "production";
+      mockIsPrivateAddress.mockReturnValue(true);
+
+      const app = await buildApp();
+      const res = await app.inject({ method: "GET", url: "/auth/dev-login-options" });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.body).toBe("");
+      expect(mockDbQuery).not.toHaveBeenCalled();
+      expect(mockRedisSetex).not.toHaveBeenCalled();
+      expect(mockRedisGetdel).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 with no body when the issuer is not private, regardless of NODE_ENV", async () => {
+      mockConfig.NODE_ENV = "development";
+      mockIsPrivateAddress.mockReturnValue(false);
+
+      const app = await buildApp();
+      const res = await app.inject({ method: "GET", url: "/auth/dev-login-options" });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.body).toBe("");
+      expect(mockDbQuery).not.toHaveBeenCalled();
+    });
   });
 
   describe("GET /auth/login", () => {
@@ -165,6 +218,68 @@ describe("authRoutes", () => {
       const setexCall = mockRedisSetex.mock.calls[0];
       const storedData = JSON.parse(setexCall[2] as string);
       expect(storedData.pendingJoinToken).toBe("join-abc");
+    });
+
+    it("forwards a valid loginHint to getAuthorizationUrl and sets hasLoginHint on the audit event", async () => {
+      mockRedisSetex.mockResolvedValue("OK");
+      mockGetAuthorizationUrl.mockResolvedValue({
+        url: new URL("https://idp.example.com/authorize?login_hint=manager-001"),
+        codeVerifier: "mock-verifier",
+      });
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/auth/login?loginHint=manager-001",
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(mockGetAuthorizationUrl).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        "manager-001",
+      );
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "auth.authorization_initiated",
+        expect.objectContaining({ hasLoginHint: true }),
+      );
+    });
+
+    it("returns 400 for an unrecognized loginHint and forwards nothing", async () => {
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/auth/login?loginHint=not-a-real-account",
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockGetAuthorizationUrl).not.toHaveBeenCalled();
+      expect(mockRedisSetex).not.toHaveBeenCalled();
+    });
+
+    it("omits loginHint from getAuthorizationUrl and sets hasLoginHint false when absent", async () => {
+      mockRedisSetex.mockResolvedValue("OK");
+      mockGetAuthorizationUrl.mockResolvedValue({
+        url: new URL("https://idp.example.com/authorize"),
+        codeVerifier: "mock-verifier",
+      });
+
+      const app = await buildApp();
+      await app.inject({ method: "GET", url: "/auth/login" });
+
+      expect(mockGetAuthorizationUrl).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        undefined,
+      );
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "auth.authorization_initiated",
+        expect.objectContaining({ hasLoginHint: false }),
+      );
     });
   });
 

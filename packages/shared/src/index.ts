@@ -36,7 +36,14 @@ export type {
   EmActionItem,
   EmActionItemsResponse,
 } from "./types/em-views.js";
-export type { AuthSession, JoinLink, AuthErrorCategory, AuthError } from "./types/auth.js";
+export type {
+  AuthSession,
+  JoinLink,
+  AuthErrorCategory,
+  AuthError,
+  DevLoginOption,
+  DevLoginOptionsResponse,
+} from "./types/auth.js";
 export type {
   TeamAccessGrant,
   SessionSubscriberGrant,
