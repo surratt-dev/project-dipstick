@@ -90,7 +90,6 @@ describe("session-lifecycle-transitions — full session run-through (tasks.md 8
         rows: [{ id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "lobby" }],
       })
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] })
-      .mockResolvedValueOnce({ rows: [{ value: "2" }] }) // staleness threshold
       .mockResolvedValueOnce({ rows: [] }); // no open action items
     mockDbConnect.mockResolvedValueOnce(
       makeMockClient([

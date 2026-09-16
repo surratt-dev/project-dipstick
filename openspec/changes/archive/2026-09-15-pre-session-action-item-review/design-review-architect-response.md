@@ -1,0 +1,35 @@
+# Architect Response — pre-session-action-item-review design review
+
+**Reviewer:** Ingrid Sollenberger, Principal Solution Architect
+**Inputs:** `design-review-engineer.md` (Marcus Oyelaran, 2 blocking + 3 non-blocking findings), `design-review-security.md` (Tomás Ferreira, F1-F4)
+**Verified against code, not taken on the reviewers' word:** `packages/backend/src/routes/facilitator-sessions.ts`, `packages/backend/src/auth/session-subscriber-access-helper.ts`, `packages/backend/src/routes/content.ts`, `packages/backend/src/content/timing-oracle.ts`, `packages/backend/src/realtime/ws-event-dispatcher.ts`, `packages/backend/src/auth/audit-logger.ts`, `packages/frontend/src/App.tsx`, `packages/frontend/src/pages/SessionLobbyPage.tsx`, `packages/shared/src/types/{auth,team-content-access,session}.ts`. Every specific file/line claim in both reviews checked out.
+
+Artifacts updated: `design.md`, `proposal.md`, `specs/pre-session-action-item-review/spec.md`, `tasks.md`.
+
+## Engineering findings — dispositions
+
+**#1 (blocking) — No frontend trigger for `POST /start` exists.** Confirmed by grep and direct read of `SessionLobbyPage.tsx`, `SessionConnectionHost.tsx`, `FacilitatorConnectionHost.tsx`: none call `/start`. Adopted as scoped. Added a facilitator-only "Start Session" control to `SessionLobbyPage`'s `lobby` branch (design.md Decision 3), wired to the existing unmodified `POST /start`. Flowed through to proposal.md's What Changes/Impact/Capabilities, a new spec.md requirement with scenarios, and new tasks.md items (1.3 renumbered work, tasks 4.1/4.3/6.4/7.0).
+
+**#2 (blocking) — Decision 3's status fetch needs a `teamId` the route doesn't have, and mixes `evaluateTeamAccess`/`evaluateSessionSubscriberAccess`.** Confirmed: `SessionLobbyPage`'s route is `/session/:sessionId`, `AuthSession.teamMemberships` is an array, and `content.ts`'s `GET /teams/:teamId/sessions/:sessionId` does gate via `evaluateTeamAccess`. **Resolved differently than Marcus's literal suggestion, on purpose — see Pushback below.** Instead of a second dedicated session-scoped status endpoint, the existing review endpoint's `409` body now carries `currentSessionStatus` and `isFacilitator` (the latter proven cheap: `evaluateSessionSubscriberAccess`'s facilitator path already covers `lobby`, so the grant is resolved before the status gate fires regardless of outcome). `SessionLobbyPage` branches entirely off one endpoint's response. Same root cause fixed, smaller surface.
+
+**#3 (clarifying) — Decision 4 (isFacilitator from the GET) vs. Decision 5/spec (control disablement tied to `POST /start`'s response) point at two data sources.** Confirmed real: under Decision 3's re-fetch-for-everyone architecture, `POST /start`'s `actionItems` payload never reaches the rendered screen. Resolved by making the review GET the single source for both "Begin First Topic" visibility and its enabled state — Decision 4 now states this explicitly, Decision 5's second bullet is corrected, and spec.md's "Facilitator's action item data fails to load" scenario is replaced with one scoped to the review GET, matching the participant scenario it was previously separate from.
+
+**#4 (clarifying) — Fetch-then-subscribe race is broader than Risks scoped it; the exit-transition race is in scope now, not deferred.** Confirmed: `begin-voting` is wired in this change, and with #1's addition so is `start`. Added as its own named risk in design.md (distinct from the deferred item-status race), with a concrete mitigation: the WebSocket subscription is established before or concurrently with the initial fetch, not after — this ordering requirement is now also a design.md Decision 3 bullet and a tasks.md item (4.1), not left implicit.
+
+**#5 (non-blocking, no action requested) — WS message-type routing is new frontend infrastructure, not an existing pattern.** Correct observation, no design change needed; noted for whoever implements task 4.1 to not underestimate it. Left as-is; this is an implementation-effort note, not a design gap.
+
+## Security findings — dispositions
+
+**F1 (timing floor) / F2 (`Cache-Control: no-store`) — adopted as literally suggested.** Both are now explicit steps in design.md Decision 1's handler flow and tasks.md task 3.6, matching `content.ts`'s existing pattern exactly. Also formalized as spec.md requirements/scenarios, matching the precedent `team-content-access/spec.md` already sets for this exact control pair.
+
+**F4 (audit logging) — adopted as suggested.** Added an explicit "deliberate, not an oversight" statement to design.md's Risks section, reasoned from `content.ts`'s admin-denial-only precedent and `em.action_item*_accessed`'s inapplicability (EMs get `404` here, never a read).
+
+**F3 (TOCTOU reopened by the second status read) — adopted the low-impact-tradeoff framing (option b), explicitly declined option (a). See Pushback.**
+
+## Pushback
+
+**On F3's option (a) — do not give `SessionSubscriberGrant`'s `participant` branch a `sessionStatus` field.** Tomás's option (a) ("cheap, restores single-query consistency") is accurate in isolation but I checked the type's other consumer before accepting it: `ws-event-dispatcher.ts`'s `dispatchActionItemStatusUpdated` (Decision D14, `actionitem-updated-live-broadcast`, already shipped) documents — as load-bearing rationale, not incidental color — that "`SessionSubscriberGrant`'s `participant` branch carries no `sessionStatus`," and builds a specific workaround around that absence (an envelope-stamped status plus a once-per-dispatch reconciliation read, deliberately not a per-candidate grant read). Adding the field wouldn't break that code, but it would make D14's own comment false the moment it shipped, and it reaches into a sibling capability's documented design decision that this proposal's own Impact section commits to leaving untouched. That's a wider blast radius than the finding's "cheap" framing suggested for a low-severity (milliseconds, read-only, already-authorized-caller) gap. Took option (b) instead: the trade-off is now named explicitly in design.md's Risks section, with the D14 cross-reference so a future reader of either module has the full picture.
+
+**On engineering finding #2's literal suggestion (a second `GET /api/v1/sessions/:sessionId/status` endpoint).** Marcus's diagnosis was correct; his proposed fix would have worked but doubles the surface that needs F1/F2 security hardening for no functional gain, since the review endpoint already resolves session status on every call regardless of outcome. Resolved by extending the existing endpoint's `409` body instead (`currentSessionStatus` + `isFacilitator`), reusing `RevealFailureResponse`'s existing `currentSessionStatus` naming precedent rather than inventing a second one. Same root problem solved, one endpoint instead of two, no duplicated hardening to keep in sync.
+
+Both are judgment calls, not disagreements about the underlying findings — both reviewers correctly identified real problems; the counter-proposals resolve them with less surface area and no encroachment on another capability's documented decisions.

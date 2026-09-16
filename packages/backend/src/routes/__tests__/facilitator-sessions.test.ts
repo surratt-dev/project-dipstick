@@ -27,6 +27,17 @@ vi.mock("../../realtime/ws-pubsub.js", () => ({
   publishTopicHistoryUpdate: (...args: unknown[]) => mockPublishTopicHistoryUpdate(...args),
   publishVoteReadinessUpdate: (...args: unknown[]) => mockPublishVoteReadinessUpdate(...args),
 }));
+const mockEvaluateSessionSubscriberAccess = vi.fn();
+vi.mock("../../auth/session-subscriber-access-helper.js", () => ({
+  evaluateSessionSubscriberAccess: (...args: unknown[]) => mockEvaluateSessionSubscriberAccess(...args),
+}));
+
+const mockApplyTimingFloor = vi.fn().mockResolvedValue(undefined);
+vi.mock("../../content/timing-oracle.js", () => ({
+  applyTimingFloor: (...args: unknown[]) => mockApplyTimingFloor(...args),
+  CONTENT_TIMING_FLOOR_MS: 150,
+}));
+
 vi.mock("../../config.js", () => ({
   config: {
     DATABASE_URL: "postgres://test",
@@ -42,7 +53,11 @@ vi.mock("../../config.js", () => ({
 
 import Fastify from "fastify";
 import type { FastifyBaseLogger } from "fastify";
-import { facilitatorSessionRoutes, recordRevealTriggeredAudit } from "../facilitator-sessions.js";
+import {
+  facilitatorSessionRoutes,
+  recordRevealTriggeredAudit,
+  computeStalenessLevel,
+} from "../facilitator-sessions.js";
 import { sessionRoutes } from "../sessions.js";
 
 /** Returns a mock transaction client that records calls, matching teams.test.ts's pattern. */
@@ -78,6 +93,44 @@ function buildSessionsApp(userId = "participant-1") {
   app.register(sessionRoutes);
   return app.ready().then(() => app);
 }
+
+// ---------------------------------------------------------------------------
+// computeStalenessLevel (tasks.md task 2.0a/2.0b, design.md Decision 7)
+//
+// Regression guard for the drift that went unnoticed the first time: the
+// legend this change ships states 1/2/3-session thresholds, and this test
+// asserts computeStalenessLevel's actual output agrees with those thresholds
+// — including at the current application_settings.staleness_threshold_sessions
+// seed-data default (2), which this function no longer reads at all.
+// ---------------------------------------------------------------------------
+describe("computeStalenessLevel (design.md Decision 7 — fixed 1/2/3-session mapping)", () => {
+  it("0 sessions elapsed computes 'none'", () => {
+    expect(computeStalenessLevel(0)).toBe("none");
+  });
+
+  it("1 session elapsed computes 'yellow', matching the legend, regardless of the configured threshold default", () => {
+    expect(computeStalenessLevel(1)).toBe("yellow");
+  });
+
+  it("2 sessions elapsed computes 'orange', matching the legend, regardless of the configured threshold default", () => {
+    expect(computeStalenessLevel(2)).toBe("orange");
+  });
+
+  it("3 sessions elapsed computes 'red', matching the legend — the concrete case the fix corrects", () => {
+    expect(computeStalenessLevel(3)).toBe("red");
+  });
+
+  it("more than 3 sessions elapsed also computes 'red'", () => {
+    expect(computeStalenessLevel(7)).toBe("red");
+  });
+
+  it("does not accept a threshold parameter — the function's only argument is sessionsSinceUpdate", () => {
+    // Type-level guard: computeStalenessLevel is unary. If this file fails to
+    // compile because a second argument became required again, that's this
+    // test doing its job.
+    expect(computeStalenessLevel.length).toBe(1);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/teams/:teamId/sessions/draft (Task 8.1, 8.2)
@@ -232,7 +285,6 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
         rows: [{ id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "lobby" }],
       }) // session lookup
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }) // actor global_role
-      .mockResolvedValueOnce({ rows: [{ value: "2" }] }) // staleness threshold
       .mockResolvedValueOnce({
         rows: [
           {
@@ -270,7 +322,7 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
     expect(body.sessionId).toBe("session-1");
     expect(body.hasOpenItems).toBe(true);
     expect(body.actionItems).toHaveLength(1);
-    expect(body.actionItems[0].stalenessLevel).toBe("orange"); // 5 sessions since update, threshold 2 -> >= 2x, < 3x
+    expect(body.actionItems[0].stalenessLevel).toBe("red"); // 5 sessions since update -> fixed mapping, >= 3 is red
 
     const auditInsertCall = client.query.mock.calls.find((call) =>
       (call[0] as string).includes("INSERT INTO audit_log"),
@@ -289,7 +341,6 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
         rows: [{ id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "lobby" }],
       })
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] })
-      .mockResolvedValueOnce({ rows: [{ value: "2" }] })
       .mockResolvedValueOnce({ rows: [] }); // no open action items
 
     const client = makeMockClient([
@@ -503,6 +554,250 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     expect(commitCall).toBeUndefined();
     // Neither the reveal-write style publish nor a partial response ever ran.
     expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/sessions/:sessionId/action-items-review
+// (pre-session-action-item-review, tasks.md 3.5/3.6)
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("authorized participant success: 200 with the team's action items and isFacilitator: false", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "participant",
+      sessionId: "session-1",
+      teamId: "team-1",
+      actorGlobalRole: "engineer",
+    });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ status: "pre_session" }] }) // session-status gate
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            action_item_id: "ai-1",
+            description: "Fix flaky test",
+            owner_user_id: "user-1",
+            owner_display_name: "Alice",
+            status: "open",
+            originating_session_id: "session-old-1",
+            originating_session_number: 3,
+            created_at: new Date("2026-01-01T00:00:00Z"),
+            updated_at: new Date("2026-01-01T00:00:00Z"),
+            sessions_since_update: "1",
+          },
+        ],
+      }); // action items query
+
+    const app = await buildApp("participant-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/sessions/session-1/action-items-review",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.isFacilitator).toBe(false);
+    expect(body.actionItems).toHaveLength(1);
+    expect(body.actionItems[0].stalenessLevel).toBe("yellow");
+    expect(mockEvaluateSessionSubscriberAccess).toHaveBeenCalledWith("participant-1", "session-1");
+  });
+
+  it("authorized facilitator success: 200 with the same action items and isFacilitator: true", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "facilitator",
+      sessionId: "session-1",
+      teamId: "team-1",
+      sessionStatus: "pre_session",
+      actorGlobalRole: "facilitator",
+    });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ status: "pre_session" }] })
+      .mockResolvedValueOnce({ rows: [] }); // no open items
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/sessions/session-1/action-items-review",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.isFacilitator).toBe(true);
+    expect(body.actionItems).toEqual([]);
+  });
+
+  it("no-grant: returns 404, identical shape whether the session is missing or the caller has no standing", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce(null);
+
+    const app = await buildApp("stranger-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/sessions/session-1/action-items-review",
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.category).toBe("not_found");
+    // No session-status query or action-items query is reached past a null grant.
+    expect(mockDbQuery).not.toHaveBeenCalled();
+  });
+
+  it("Engineering Manager: 404, inherited from evaluateSessionSubscriberAccess's own no-EM-grant behavior", async () => {
+    // evaluateSessionSubscriberAccess is mocked directly here, so this test
+    // asserts the route's own behavior on a null grant — the EM exclusion
+    // itself is verified in session-subscriber-access-helper's own test suite.
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce(null);
+
+    const app = await buildApp("em-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/sessions/session-1/action-items-review",
+    });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("wrong session status (lobby): 409 with currentSessionStatus and isFacilitator", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "facilitator",
+      sessionId: "session-1",
+      teamId: "team-1",
+      sessionStatus: "lobby",
+      actorGlobalRole: "facilitator",
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "lobby" }] });
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/sessions/session-1/action-items-review",
+    });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.currentSessionStatus).toBe("lobby");
+    expect(body.isFacilitator).toBe(true);
+  });
+
+  it("wrong session status (active): 409 with currentSessionStatus and isFacilitator: false for a participant", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "participant",
+      sessionId: "session-1",
+      teamId: "team-1",
+      actorGlobalRole: "engineer",
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "active" }] });
+
+    const app = await buildApp("participant-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/sessions/session-1/action-items-review",
+    });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.currentSessionStatus).toBe("active");
+    expect(body.isFacilitator).toBe(false);
+  });
+
+  it("response shape: 200 body carries only actionItems and isFacilitator for both grant paths", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "participant",
+      sessionId: "session-1",
+      teamId: "team-1",
+      actorGlobalRole: "engineer",
+    });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ status: "pre_session" }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp("participant-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/sessions/session-1/action-items-review",
+    });
+
+    expect(Object.keys(res.json()).sort()).toEqual(["actionItems", "isFacilitator"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET .../action-items-review — F1/F2 cross-cutting regression coverage
+// (tasks.md 3.6, narrowed per task-review architect finding #4): with
+// applyTimingFloor()/Cache-Control already applied inline in each response
+// path, this covers only what needs all three response paths to exist —
+// that the floor is invoked, unconditionally, on every path (the timing
+// floor's own padding behavior is covered generically by
+// content/timing-oracle.test.ts), and that no-store is set on every path.
+// ---------------------------------------------------------------------------
+describe("GET .../action-items-review — F1/F2 regression coverage (tasks.md 3.6)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("applies the timing floor on the 404 path", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce(null);
+    const app = await buildApp("stranger-1");
+    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+    expect(mockApplyTimingFloor).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it("applies the timing floor on the 409 path", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "active" }] });
+    const app = await buildApp("participant-1");
+    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+
+    expect(res.statusCode).toBe(409);
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+    expect(mockApplyTimingFloor).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it("applies the timing floor on the 200 path", async () => {
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+    });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ status: "pre_session" }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const app = await buildApp("participant-1");
+    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+    expect(mockApplyTimingFloor).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it("sets Cache-Control: no-store on the 404, 409, and 200 response codes", async () => {
+    // 404
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce(null);
+    const app1 = await buildApp("stranger-1");
+    const res404 = await app1.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    expect(res404.headers["cache-control"]).toBe("no-store");
+
+    // 409
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "lobby" }] });
+    const app2 = await buildApp("participant-1");
+    const res409 = await app2.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    expect(res409.headers["cache-control"]).toBe("no-store");
+
+    // 200
+    mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
+      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+    });
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ status: "pre_session" }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const app3 = await buildApp("participant-1");
+    const res200 = await app3.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    expect(res200.headers["cache-control"]).toBe("no-store");
   });
 });
 
