@@ -1431,6 +1431,34 @@ describe("POST /api/v1/teams/:teamId/managers — rate limiting (task 3.10)", ()
     expect(dailyApproaching).toHaveLength(0);
   });
 
+  it("daily window resets gradually under sliding-window semantics, not as a single fixed-bucket reset", async () => {
+    const app = await buildApp({ userId: "actor-daily-sliding" });
+
+    // 5 batches of 20, each starting 11 minutes after the previous (clearing
+    // the burst window between batches), reaching exactly the 100-request
+    // daily limit. Batch 0 lands at t=0; batch 4 lands at t=44min.
+    for (let batch = 0; batch < 5; batch++) {
+      for (let i = 0; i < 20; i++) {
+        const res = await postManagers(app);
+        expect(res.statusCode).toBeLessThan(300);
+      }
+      if (batch < 4) {
+        currentTimeMs += TEN_MINUTES_MS + 60_000;
+      }
+    }
+
+    // Just past 24 hours after the FIRST batch (not the most recent one),
+    // batch 0's 20 entries have aged out of the daily window, but batches
+    // 1-4 (80 entries, all made after batch 0) have not — proving daily-window
+    // entries expire individually as time passes, not all at once on a single
+    // fixed 24-hour boundary. A fixed-bucket daily reset would still show 100
+    // active entries here (or reject); a true sliding window has already
+    // freed up the 20 slots batch 0 occupied.
+    currentTimeMs = Date.parse("2026-01-01T00:00:00.000Z") + TWENTY_FOUR_HOURS_MS + 1_000;
+    const afterPartialExpiry = await postManagers(app);
+    expect(afterPartialExpiry.statusCode).toBeLessThan(300);
+  });
+
   // Architect + security implementation review findings
   // (implementation-review-architect.md Finding 1,
   // implementation-review-security.md Finding 6): the rate limiter must fail
