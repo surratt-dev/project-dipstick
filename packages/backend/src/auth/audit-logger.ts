@@ -23,6 +23,44 @@ export type AuditEventName =
   // The DB row is the authoritative audit record (written in the same transaction
   // as the team_memberships row); this event is the operational alert path.
   | "team.manager_established"
+  // team.manager_association_rate_approaching / rate_limit_exceeded: TEAM-006
+  // rate limiting (task 3.10 / GitHub issue #13), per the Q6 decision
+  // (openspec/changes/archive/2026-07-07-establish-manager-team-relationship/
+  // q6-rate-limit-decision.md), jointly signed off by the BA and the Senior
+  // Application Security Analyst.
+  //
+  // team.manager_association_rate_approaching: non-blocking early-warning
+  // signal fired the first time a per-actor sliding-window count reaches 80%
+  // of its threshold (16/20 burst, 80/100 daily). The request still succeeds
+  // normally — no audit_log DB row is written for this event, only the
+  // structured log entry. metadata: { actorUserId, window: "burst" |
+  // "daily", observedCount, threshold }.
+  //
+  // team.manager_association_rate_limit_exceeded: fired on every 429 breach
+  // (burst, daily, or global limit). Deliberately a DIFFERENT string from the
+  // audit_log DB row's operation column value
+  // ('team.manager_association_rate_limited', written synchronously before
+  // the 429 response) — the Q6 decision calls this out explicitly as "a
+  // distinct structured event... separate from routine per-request audit
+  // entries," tagged security-relevant so it is ready for Finding 2.3's
+  // eventual monitoring/alerting work without a second pass through this
+  // endpoint. metadata: { actorUserId, actorGlobalRole, actorIp, teamId,
+  // limitType: "burst" | "daily" | "global", observedCount, threshold }.
+  | "team.manager_association_rate_approaching"
+  | "team.manager_association_rate_limit_exceeded"
+  // team.manager_association_rate_limit_check_failed: architect + security
+  // implementation review of task 3.10 (implementation-review-architect.md
+  // Finding 1, implementation-review-security.md Finding 6). Fired when the
+  // rate limiter's own Redis calls fail (outage, network partition, timeout)
+  // — distinct from rate_limit_exceeded, which means the limiter ran
+  // successfully and found too many requests. TEAM-006 fails closed (denies
+  // the request with a 503) when this happens, by design: this is a security
+  // control, and an unreachable backing store must not silently disable it.
+  // This event exists so an operator (or Finding 2.3's future monitoring)
+  // can distinguish "the control itself is down, denying admin traffic as a
+  // precaution" from an unrelated 500 on this route. metadata: {
+  // actorUserId, error }.
+  | "team.manager_association_rate_limit_check_failed"
   // auth.role_claim_mapped is emitted when a returning user's global_role changes
   // due to an updated IdP role claim (Decision 2, establish-manager-team-relationship).
   // Not emitted for new users (auth.first_access_created covers those).

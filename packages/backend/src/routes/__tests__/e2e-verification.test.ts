@@ -6,6 +6,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDbQuery = vi.fn();
 const mockDbConnect = vi.fn();
 const mockEmitAuditEvent = vi.fn();
+// Task 3.10 / Q6 decision: TEAM-006 (POST /api/v1/teams/:teamId/managers) now
+// calls the shared ioredis client for its sliding-window rate limiter. Without
+// this mock, redis.js would construct a real Redis connection against the
+// "redis://test" placeholder host below and every TEAM-006 call in this file
+// would hang/time out waiting on a connection that can never succeed. Every
+// describe block below calls vi.resetAllMocks() in its own beforeEach and
+// then re-establishes this default (see those blocks) — a fresh count of 1,
+// well under every threshold, so these end-to-end tests are unaffected by
+// rate limiting.
+const mockRedisEval = vi.fn();
 
 vi.mock("../../db.js", () => ({
   db: {
@@ -15,6 +25,9 @@ vi.mock("../../db.js", () => ({
 }));
 vi.mock("../../auth/audit-logger.js", () => ({
   emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
+}));
+vi.mock("../../redis.js", () => ({
+  redis: { eval: (...args: unknown[]) => mockRedisEval(...args) },
 }));
 vi.mock("../../config.js", () => ({
   config: {
@@ -90,7 +103,14 @@ function makeMockClient(queryResponses: Array<{ rows: unknown[] }> = []) {
 // global_role is set and verifies that the complete downstream chain works.
 // ---------------------------------------------------------------------------
 describe("9.1: End-to-end — global_role → TEAM-006 → session history accessible", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // vi.resetAllMocks() clears the default implementation baked into
+    // mockRedisEval at module scope (task 3.10's TEAM-006 rate limiter) —
+    // re-establish it so every test's TEAM-006 calls see a fresh, low count
+    // rather than an undefined eval() result.
+    mockRedisEval.mockResolvedValue([1, Date.now()]);
+  });
 
   it("EM can access session history after TEAM-006 establishes their association", async () => {
     // ------------------------------------------------------------------
@@ -230,7 +250,14 @@ describe("9.1: End-to-end — global_role → TEAM-006 → session history acces
 //   AND access to A does not grant access to B, and vice versa
 // ---------------------------------------------------------------------------
 describe("9.3: Multi-team EM — independent access, no cross-team access", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // vi.resetAllMocks() clears the default implementation baked into
+    // mockRedisEval at module scope (task 3.10's TEAM-006 rate limiter) —
+    // re-establish it so every test's TEAM-006 calls see a fresh, low count
+    // rather than an undefined eval() result.
+    mockRedisEval.mockResolvedValue([1, Date.now()]);
+  });
 
   it("EM associated with team-A can access team-A history", async () => {
     // Auth check: EM associated with team-A → both checks pass
@@ -323,7 +350,14 @@ describe("9.3: Multi-team EM — independent access, no cross-team access", () =
 // any session history records.
 // ---------------------------------------------------------------------------
 describe("9.4: Historical participant designated as EM retains prior participation records", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // vi.resetAllMocks() clears the default implementation baked into
+    // mockRedisEval at module scope (task 3.10's TEAM-006 rate limiter) —
+    // re-establish it so every test's TEAM-006 calls see a fresh, low count
+    // rather than an undefined eval() result.
+    mockRedisEval.mockResolvedValue([1, Date.now()]);
+  });
 
   it("TEAM-006 upsert for an existing participant updates role in place (xmax = 0 is false)", async () => {
     // Admin calls TEAM-006 for a user who already has a participant row.
@@ -477,7 +511,14 @@ describe("9.4: Historical participant designated as EM retains prior participati
 // This test verifies the backend data contract that those frontend tests depend on.
 // ---------------------------------------------------------------------------
 describe("9.5: Backend contract — participants and managers in separate labeled arrays", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // vi.resetAllMocks() clears the default implementation baked into
+    // mockRedisEval at module scope (task 3.10's TEAM-006 rate limiter) —
+    // re-establish it so every test's TEAM-006 calls see a fresh, low count
+    // rather than an undefined eval() result.
+    mockRedisEval.mockResolvedValue([1, Date.now()]);
+  });
 
   it("TEAM-003 returns participants and engineeringManagers as separate arrays (not a flat members array)", async () => {
     // TEAM-003 handler query sequence:

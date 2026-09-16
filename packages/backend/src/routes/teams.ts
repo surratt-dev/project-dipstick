@@ -1,5 +1,6 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { db } from "../db.js";
+import { redis } from "../redis.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
 import type {
@@ -11,6 +12,300 @@ import type {
   EstablishManagerRequest,
   EstablishManagerResponse,
 } from "@dipstick/shared";
+
+// ---------------------------------------------------------------------------
+// TEAM-006 rate limiting (task 3.10 / GitHub issue #13)
+//
+// Full spec: openspec/changes/archive/2026-07-07-establish-manager-team-relationship/
+// q6-rate-limit-decision.md ("Q6 decision"). Co-signed by the Business Analyst
+// and the Senior Application Security Analyst. This block implements that
+// decision exactly; do not change the thresholds here without a new decision
+// document superseding Q6.
+//
+// Three independent sliding-window limits, all keyed on the caller's
+// AUTHENTICATED IDENTITY (session.userId / actor_user_id) rather than source
+// IP — this is an internal admin-only endpoint behind shared corporate NAT
+// egress, so IP is not a meaningful trust boundary, and the threat model's
+// attacker is a compromised credential, which IP-based limiting would not
+// constrain (Q6 decision, Section 1):
+//
+//   1. Per-actor burst:     20 requests / rolling 10 minutes
+//   2. Per-actor sustained: 100 requests / rolling 24 hours
+//   3. Global secondary:    100 requests / rolling 10 minutes, across every
+//                           Application Admin actor combined
+//
+// All three use a TRUE sliding window (Redis sorted set of request
+// timestamps), not a fixed calendar bucket — a fixed window lets an attacker
+// double their effective rate by straddling a bucket boundary, which matters
+// when these thresholds are deliberately tight.
+//
+// Redis-backed (the shared ioredis client), not in-process memory, so the
+// limit is enforced correctly across multiple backend instances. The
+// increment-trim-count sequence for a single key runs as one Lua script so
+// it is atomic against concurrent requests for the same key (Q6 decision,
+// Section 1: "atomically via a Lua script or MULTI").
+//
+// This is a small, purpose-built limiter for this one high-value route —
+// the Q6 decision explicitly rejects adding @fastify/rate-limit as a new
+// dependency for what is a single reviewed threshold, not a general
+// cross-cutting policy.
+// ---------------------------------------------------------------------------
+
+const TEAM006_BURST_LIMIT = 20;
+const TEAM006_BURST_WINDOW_MS = 10 * 60 * 1000;
+const TEAM006_BURST_WARN_THRESHOLD = 16; // 80% of TEAM006_BURST_LIMIT
+
+const TEAM006_DAILY_LIMIT = 100;
+const TEAM006_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const TEAM006_DAILY_WARN_THRESHOLD = 80; // 80% of TEAM006_DAILY_LIMIT
+
+const TEAM006_GLOBAL_LIMIT = 100;
+const TEAM006_GLOBAL_WINDOW_MS = 10 * 60 * 1000;
+
+const TEAM006_GLOBAL_RATE_LIMIT_KEY = "dipstick:ratelimit:team-manager:global";
+
+function team006BurstKey(actorUserId: string): string {
+  return `dipstick:ratelimit:team-manager:burst:${actorUserId}`;
+}
+
+function team006DailyKey(actorUserId: string): string {
+  return `dipstick:ratelimit:team-manager:daily:${actorUserId}`;
+}
+
+// Atomically: drop entries older than the window, record this request, and
+// return the resulting count plus the oldest surviving entry's timestamp
+// (used to compute a precise Retry-After). PEXPIRE bounds how long an idle
+// key lingers in Redis once an actor stops making requests.
+const SLIDING_WINDOW_LUA = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local member = ARGV[3]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+redis.call('ZADD', key, now, member)
+redis.call('PEXPIRE', key, window)
+local count = redis.call('ZCARD', key)
+local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+local oldestScore = now
+if oldest[2] then
+  oldestScore = oldest[2]
+end
+return {count, oldestScore}
+`;
+
+interface SlidingWindowResult {
+  count: number;
+  oldestEntryMs: number;
+}
+
+async function recordAndCountSlidingWindow(
+  key: string,
+  nowMs: number,
+  windowMs: number,
+): Promise<SlidingWindowResult> {
+  const member = `${nowMs}-${crypto.randomUUID()}`;
+  const result = (await redis.eval(
+    SLIDING_WINDOW_LUA,
+    1,
+    key,
+    nowMs,
+    windowMs,
+    member,
+  )) as [number | string, number | string];
+
+  return {
+    count: Number(result[0]),
+    oldestEntryMs: Number(result[1]),
+  };
+}
+
+function retryAfterSeconds(
+  window: SlidingWindowResult,
+  nowMs: number,
+  windowMs: number,
+): number {
+  return Math.max(1, Math.ceil((window.oldestEntryMs + windowMs - nowMs) / 1000));
+}
+
+type Team006RateLimitCode =
+  | "TEAM006_BURST_LIMIT_EXCEEDED"
+  | "TEAM006_DAILY_LIMIT_EXCEEDED"
+  | "TEAM006_GLOBAL_LIMIT_EXCEEDED";
+
+interface Team006RateLimitBreach {
+  limited: true;
+  code: Team006RateLimitCode;
+  limitType: "burst" | "daily" | "global";
+  threshold: number;
+  observedCount: number;
+  retryAfterSeconds: number;
+}
+
+interface Team006RateLimitOk {
+  limited: false;
+}
+
+type Team006RateLimitResult = Team006RateLimitBreach | Team006RateLimitOk;
+
+// Architect + security review findings (implementation-review-architect.md
+// Finding 1, implementation-review-security.md Finding 6): thrown by
+// enforceTeam006RateLimit when the Redis calls backing the rate limiter
+// itself fail (outage, network partition, timeout) — distinct from a
+// Team006RateLimitBreach, which means the limiter ran successfully and found
+// too many requests. Callers must catch this specifically and deny the
+// request (see the route handler below) rather than letting it silently
+// resolve to "not limited."
+class Team006RateLimiterUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("TEAM-006 rate limiter backend (Redis) unavailable", { cause });
+    this.name = "Team006RateLimiterUnavailableError";
+  }
+}
+
+// Evaluates all three limits for this request. Every call to this endpoint —
+// including ones this function is about to reject — counts against every
+// applicable window: the request genuinely reached the server and consumed
+// its resources, and the per-actor windows must reflect that so pacing just
+// under a threshold cannot be used to dodge the daily cap. Early-warning log
+// events (Q6 decision, Section 2) are emitted here too, independent of
+// whether the request also breaches a hard limit.
+//
+// Fail-closed by design when Redis is unavailable (architect + security
+// review, both sign-offs conditioned on this being documented explicitly
+// rather than left as an accident of "nobody added a try/catch"): this is a
+// security control on a sensitive admin-only endpoint, not a UX nicety — an
+// unreachable rate-limiter backend must deny the request, not silently let
+// it through as if no limit applied. This mirrors how the rest of the
+// codebase already treats this same Redis dependency as hard-required, not
+// optional: session-store.ts propagates Redis errors to @fastify/session
+// rather than treating a session-store failure as "let the request through,"
+// and health.ts marks the whole service unhealthy when Redis doesn't
+// respond. Every authenticated route already depends on Redis being
+// reachable to deserialize the session before it ever reaches this check, so
+// this does not introduce a new class of fragility — it makes an existing
+// one an explicit, tested decision for this specific control instead of an
+// emergent property of the absence of error handling.
+async function enforceTeam006RateLimit(
+  actorUserId: string,
+  logger: FastifyBaseLogger,
+): Promise<Team006RateLimitResult> {
+  const now = Date.now();
+
+  let burst: SlidingWindowResult;
+  let daily: SlidingWindowResult;
+  let global: SlidingWindowResult;
+  try {
+    burst = await recordAndCountSlidingWindow(
+      team006BurstKey(actorUserId),
+      now,
+      TEAM006_BURST_WINDOW_MS,
+    );
+    daily = await recordAndCountSlidingWindow(
+      team006DailyKey(actorUserId),
+      now,
+      TEAM006_DAILY_WINDOW_MS,
+    );
+    global = await recordAndCountSlidingWindow(
+      TEAM006_GLOBAL_RATE_LIMIT_KEY,
+      now,
+      TEAM006_GLOBAL_WINDOW_MS,
+    );
+  } catch (err) {
+    // Distinct, greppable signal so an operator (or Finding 2.3's future
+    // monitoring pipeline) can tell "the rate limiter's backing store is
+    // down, denying admin traffic as a precaution" apart from an unrelated
+    // 500 on this route — a generic 500 alone would give no way to
+    // distinguish an outage of the control itself from an ordinary bug.
+    logger.error(
+      { err, actorUserId },
+      "TEAM-006 rate limiter backend (Redis) unavailable — denying request (fail-closed by design)",
+    );
+    emitAuditEvent(logger, "team.manager_association_rate_limit_check_failed", {
+      actorUserId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw new Team006RateLimiterUnavailableError(err);
+  }
+
+  // Early-warning signals (non-blocking, request proceeds normally). Fires
+  // the request where the sliding count first reaches the 80% threshold.
+  if (burst.count === TEAM006_BURST_WARN_THRESHOLD) {
+    emitAuditEvent(logger, "team.manager_association_rate_approaching", {
+      actorUserId,
+      window: "burst",
+      observedCount: burst.count,
+      threshold: TEAM006_BURST_LIMIT,
+    });
+  }
+  if (daily.count === TEAM006_DAILY_WARN_THRESHOLD) {
+    emitAuditEvent(logger, "team.manager_association_rate_approaching", {
+      actorUserId,
+      window: "daily",
+      observedCount: daily.count,
+      threshold: TEAM006_DAILY_LIMIT,
+    });
+  }
+
+  if (burst.count > TEAM006_BURST_LIMIT) {
+    return {
+      limited: true,
+      code: "TEAM006_BURST_LIMIT_EXCEEDED",
+      limitType: "burst",
+      threshold: TEAM006_BURST_LIMIT,
+      observedCount: burst.count,
+      retryAfterSeconds: retryAfterSeconds(burst, now, TEAM006_BURST_WINDOW_MS),
+    };
+  }
+  if (daily.count > TEAM006_DAILY_LIMIT) {
+    return {
+      limited: true,
+      code: "TEAM006_DAILY_LIMIT_EXCEEDED",
+      limitType: "daily",
+      threshold: TEAM006_DAILY_LIMIT,
+      observedCount: daily.count,
+      retryAfterSeconds: retryAfterSeconds(daily, now, TEAM006_DAILY_WINDOW_MS),
+    };
+  }
+  if (global.count > TEAM006_GLOBAL_LIMIT) {
+    return {
+      limited: true,
+      code: "TEAM006_GLOBAL_LIMIT_EXCEEDED",
+      limitType: "global",
+      threshold: TEAM006_GLOBAL_LIMIT,
+      observedCount: global.count,
+      retryAfterSeconds: retryAfterSeconds(global, now, TEAM006_GLOBAL_WINDOW_MS),
+    };
+  }
+
+  return { limited: false };
+}
+
+// Security review finding (implementation-review-security.md, Finding 7): the
+// decision doc's Section 3 JSON example used "[security/support channel]" as
+// a bracketed PLACEHOLDER illustrating where a real escalation channel goes —
+// it was copied verbatim into these strings on first implementation, which
+// shipped non-functional bracket text to real admins. This codebase does not
+// yet have a concrete, wired-up "contact your admin/security team" mechanism
+// (that gap is tracked separately as tasks.md task 4.2), so these messages
+// point at the organization's standard security/support process in general
+// terms rather than inventing a specific channel name that doesn't exist yet.
+const TEAM006_RATE_LIMIT_MESSAGES: Record<Team006RateLimitCode, string> = {
+  TEAM006_BURST_LIMIT_EXCEEDED:
+    `You've reached the limit of ${TEAM006_BURST_LIMIT} manager-association requests per 10 minutes. ` +
+    "Wait a few minutes and try again. If you're onboarding a large number of teams at once and " +
+    "genuinely need a higher rate, escalate through your organization's standard security/support " +
+    "process to request a scoped, time-limited increase.",
+  TEAM006_DAILY_LIMIT_EXCEEDED:
+    `You've reached the limit of ${TEAM006_DAILY_LIMIT} manager-association requests per 24 hours. ` +
+    "Wait for the daily window to reset and try again. If you're onboarding a large number of teams " +
+    "and genuinely need a higher daily cap, escalate through your organization's standard " +
+    "security/support process to request a scoped, time-limited increase.",
+  TEAM006_GLOBAL_LIMIT_EXCEEDED:
+    `The combined limit of ${TEAM006_GLOBAL_LIMIT} manager-association requests per 10 minutes across ` +
+    "all Application Admins has been reached. Wait a few minutes and try again. If you're onboarding a " +
+    "large number of teams and genuinely need a higher rate, escalate through your organization's " +
+    "standard security/support process to request a scoped, time-limited increase.",
+};
 
 // ---------------------------------------------------------------------------
 // Authorization helper
@@ -634,10 +929,13 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
   // serve different purposes — global_role is a global role guard;
   // team_memberships.role is a team-scoped association guard.
   //
-  // Rate limiting (task 3.10): the rate limit threshold for this endpoint is
-  // specified in Q6 of design.md and must be implemented and tested before Phase 2
-  // ships. The threshold decision is owned by the BA and security analyst. The
-  // implementation is wired here but the specific limit value comes from Q6.
+  // Rate limiting (task 3.10 / GitHub issue #13): enforced immediately after
+  // the Application Admin authorization check below and before the
+  // team-existence / global-role-precondition queries, per the Q6 decision's
+  // placement requirement — unauthorized callers must not consume rate-limit
+  // budget, and rate-limited callers must not generate unnecessary DB load.
+  // See the enforceTeam006RateLimit block above this handler for the
+  // threshold values and sliding-window implementation.
   // -------------------------------------------------------------------------
   app.post<{
     Params: { teamId: string };
@@ -677,6 +975,90 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
           correlationId: crypto.randomUUID(),
         },
       });
+    }
+
+    // -----------------------------------------------------------------------
+    // Rate limiting (task 3.10 / GitHub issue #13 / Q6 decision).
+    // Three sliding-window limits, keyed on session.userId (the authenticated
+    // actor already confirmed as an Application Admin above): a 20/10-min
+    // per-actor burst limit, a 100/24-hr per-actor daily limit, and a
+    // 100/10-min global limit across every admin actor combined. A breach of
+    // any limit writes a durable audit_log row synchronously (before the 429
+    // is returned) and emits the team.manager_association_rate_limit_exceeded
+    // structured event, distinct from the routine per-request audit trail so
+    // it is ready for Finding 2.3's future monitoring/alerting work. No
+    // account lockout occurs on breach — a rate-limit breach and a
+    // suspected-compromise determination are different signals.
+    // -----------------------------------------------------------------------
+    let rateLimitResult: Team006RateLimitResult;
+    try {
+      rateLimitResult = await enforceTeam006RateLimit(session.userId, request.log);
+    } catch (err) {
+      if (err instanceof Team006RateLimiterUnavailableError) {
+        // Fail-closed by design (see the comment on enforceTeam006RateLimit):
+        // the rate limiter's own backing store is unreachable, so this
+        // security control cannot be evaluated. Deny the request rather than
+        // letting it through as if no limit applied — an explicit, tested
+        // 503, not an accident of an uncaught rejection reaching Fastify's
+        // generic error handler.
+        return reply.code(503).send({
+          error: {
+            category: "service_unavailable" as const,
+            code: "TEAM006_RATE_LIMIT_UNAVAILABLE",
+            message:
+              "The manager-association rate limiter is temporarily unavailable, so this request " +
+              "has been denied as a precaution rather than let through unlimited. This is a " +
+              "rate-limiting safety control, not a data or account issue — retry shortly, or " +
+              "escalate through your organization's standard security/support process if this persists.",
+            correlationId: crypto.randomUUID(),
+          },
+        });
+      }
+      throw err;
+    }
+
+    if (rateLimitResult.limited) {
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation,
+            target_user_id, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          session.userId,
+          actorGlobalRole,
+          request.ip,
+          "team.manager_association_rate_limited",
+          null,
+          teamId,
+          JSON.stringify({
+            limit_type: rateLimitResult.limitType,
+            observed_count: rateLimitResult.observedCount,
+            threshold: rateLimitResult.threshold,
+          }),
+        ],
+      );
+
+      emitAuditEvent(request.log, "team.manager_association_rate_limit_exceeded", {
+        actorUserId: session.userId,
+        actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        limitType: rateLimitResult.limitType,
+        observedCount: rateLimitResult.observedCount,
+        threshold: rateLimitResult.threshold,
+      });
+
+      return reply
+        .code(429)
+        .header("Retry-After", String(rateLimitResult.retryAfterSeconds))
+        .send({
+          error: {
+            category: "rate_limited" as const,
+            code: rateLimitResult.code,
+            message: TEAM006_RATE_LIMIT_MESSAGES[rateLimitResult.code],
+            correlationId: crypto.randomUUID(),
+          },
+        });
     }
 
     // -----------------------------------------------------------------------

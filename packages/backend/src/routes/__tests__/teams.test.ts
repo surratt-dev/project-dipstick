@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { MockInstance } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be defined before importing the module under test
@@ -6,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDbQuery = vi.fn();
 const mockDbConnect = vi.fn();
 const mockEmitAuditEvent = vi.fn();
+const mockRedisEval = vi.fn();
 
 vi.mock("../../db.js", () => ({
   db: {
@@ -15,6 +17,9 @@ vi.mock("../../db.js", () => ({
 }));
 vi.mock("../../auth/audit-logger.js", () => ({
   emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
+}));
+vi.mock("../../redis.js", () => ({
+  redis: { eval: (...args: unknown[]) => mockRedisEval(...args) },
 }));
 vi.mock("../../config.js", () => ({
   config: {
@@ -31,6 +36,51 @@ vi.mock("../../config.js", () => ({
 
 import Fastify from "fastify";
 import { teamRoutes } from "../teams.js";
+
+// ---------------------------------------------------------------------------
+// Fake Redis sorted-set backing store for the TEAM-006 sliding-window rate
+// limiter (task 3.10). Mirrors the SLIDING_WINDOW_LUA script in teams.ts
+// (ZREMRANGEBYSCORE + ZADD + ZCARD + oldest-entry lookup) closely enough to
+// exercise real sliding-window semantics — expiry of individual entries as
+// time passes, not a fixed-bucket reset — without requiring a real Redis
+// instance. Cleared before every test (see the file-level beforeEach below)
+// so no test's rate-limit state leaks into another.
+// ---------------------------------------------------------------------------
+const fakeRedisStore = new Map<string, Array<{ score: number; member: string }>>();
+
+function fakeSlidingWindowEval(
+  _script: unknown,
+  _numkeys: unknown,
+  key: unknown,
+  now: unknown,
+  windowMs: unknown,
+  member: unknown,
+): Promise<[number, number]> {
+  const k = String(key);
+  const nowNum = Number(now);
+  const windowNum = Number(windowMs);
+  const cutoff = nowNum - windowNum;
+
+  let entries = fakeRedisStore.get(k) ?? [];
+  entries = entries.filter((e) => e.score > cutoff);
+  entries.push({ score: nowNum, member: String(member) });
+  entries.sort((a, b) => a.score - b.score);
+  fakeRedisStore.set(k, entries);
+
+  const count = entries.length;
+  const oldestScore = entries[0]?.score ?? nowNum;
+  return Promise.resolve([count, oldestScore]);
+}
+mockRedisEval.mockImplementation(fakeSlidingWindowEval);
+
+// File-level hook: clears the fake Redis store before every test in this
+// file, regardless of which describe block it lives in, so unrelated tests
+// (including the pre-existing TEAM-006 tests below, which issue one POST
+// each against the same default actor) never contribute entries that could
+// push a later test over a rate-limit threshold.
+beforeEach(() => {
+  fakeRedisStore.clear();
+});
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1069,5 +1119,400 @@ describe("POST /api/v1/teams/:teamId/managers", () => {
     expect(upsertSql).toContain("where removed_at is null");
     // Verify xmax is used for new-row detection
     expect(upsertSql).toContain("xmax");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/teams/:teamId/managers — rate limiting (task 3.10 / GitHub
+// issue #13 / Q6 decision)
+//
+// Acceptance criteria under test are Section 6 of
+// openspec/changes/archive/2026-07-07-establish-manager-team-relationship/
+// q6-rate-limit-decision.md. Redis is backed by an in-memory fake sorted set
+// (fakeSlidingWindowEval, above) so these tests exercise real sliding-window
+// counting and expiry rather than a hand-scripted sequence of mock return
+// values — the acceptance criteria are inherently about counts over time,
+// which a real (if in-memory) sliding window verifies far more directly
+// than mocking each of a hundred-plus individual Redis round trips would.
+// ---------------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/managers — rate limiting (task 3.10)", () => {
+  const TEN_MINUTES_MS = 10 * 60 * 1000;
+  const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+  let currentTimeMs: number;
+  let dateNowSpy: MockInstance<() => number>;
+
+  /** Configures db.query / db.connect to happily approve every request that
+   * reaches them (admin actor, existing team, target already an EM, fresh
+   * upsert) so tests can focus on rate-limit behavior instead of re-deriving
+   * this scaffolding for every one of a hundred-plus requests. */
+  function setupHappyPathDb() {
+    mockDbQuery.mockImplementation((sql: unknown) => {
+      const s = String(sql).toLowerCase();
+      if (s.includes("select global_role from users")) {
+        return Promise.resolve({ rows: [{ global_role: "application_admin" }] });
+      }
+      if (s.includes("select id from teams")) {
+        return Promise.resolve({ rows: [{ id: "team-1" }] });
+      }
+      if (s.includes("select global_role, display_name from users")) {
+        return Promise.resolve({
+          rows: [{ global_role: "engineering_manager", display_name: "Some EM" }],
+        });
+      }
+      // audit_log INSERT (both the in-transaction 3.9 path and the
+      // out-of-transaction rate-limit-breach path use db.query/client.query
+      // shapes that don't need a specific return value here).
+      return Promise.resolve({ rows: [] });
+    });
+
+    mockDbConnect.mockImplementation(() =>
+      Promise.resolve(
+        makeMockClient([
+          { rows: [] }, // BEGIN
+          { rows: [{ id: "membership-1", is_new_row: true }] }, // upsert
+          { rows: [] }, // audit INSERT
+          { rows: [] }, // COMMIT
+        ]),
+      ),
+    );
+  }
+
+  async function postManagers(app: Awaited<ReturnType<typeof buildApp>>, teamId = "team-1") {
+    return app.inject({
+      method: "POST",
+      url: `/api/v1/teams/${teamId}/managers`,
+      payload: { engineeringManagerUserId: "em-user-1" },
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupHappyPathDb();
+    currentTimeMs = Date.parse("2026-01-01T00:00:00.000Z");
+    dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => currentTimeMs);
+  });
+
+  afterEach(() => {
+    dateNowSpy.mockRestore();
+  });
+
+  it("allows the first 20 requests from one actor within a rolling 10-minute window, then rejects the 21st with TEAM006_BURST_LIMIT_EXCEEDED and a Retry-After header", async () => {
+    const app = await buildApp({ userId: "actor-burst-1" });
+
+    for (let i = 0; i < 20; i++) {
+      const res = await postManagers(app);
+      expect(res.statusCode).toBeLessThan(300);
+    }
+
+    const connectCallsBeforeBreach = mockDbConnect.mock.calls.length;
+    const res21 = await postManagers(app);
+
+    expect(res21.statusCode).toBe(429);
+    const body = res21.json() as { error: { category: string; code: string; correlationId: string } };
+    expect(body.error.category).toBe("rate_limited");
+    expect(body.error.code).toBe("TEAM006_BURST_LIMIT_EXCEEDED");
+    expect(body.error.correlationId).toBeTruthy();
+    expect(res21.headers["retry-after"]).toBeDefined();
+    expect(Number(res21.headers["retry-after"])).toBeGreaterThan(0);
+
+    // No team_memberships write occurred for the rejected request.
+    expect(mockDbConnect.mock.calls.length).toBe(connectCallsBeforeBreach);
+
+    // The durable audit_log row was written before the 429 was returned.
+    const auditCall = mockDbQuery.mock.calls.find(
+      (call) =>
+        String(call[0]).toLowerCase().includes("audit_log") &&
+        (call[1] as unknown[])?.[3] === "team.manager_association_rate_limited",
+    );
+    expect(auditCall).toBeDefined();
+    const auditParams = auditCall![1] as unknown[];
+    expect(auditParams[0]).toBe("actor-burst-1"); // actor_user_id
+    expect(auditParams[4]).toBeNull(); // target_user_id — no target established at rejection
+    expect(auditParams[5]).toBe("team-1"); // team_id
+    const metadata = JSON.parse(auditParams[6] as string) as Record<string, unknown>;
+    expect(metadata["limit_type"]).toBe("burst");
+    expect(metadata["observed_count"]).toBe(21);
+
+    // The structured rate_limit_exceeded event was emitted.
+    const structuredEventCall = mockEmitAuditEvent.mock.calls.find(
+      (call) => call[1] === "team.manager_association_rate_limit_exceeded",
+    );
+    expect(structuredEventCall).toBeDefined();
+    expect((structuredEventCall![2] as Record<string, unknown>)["limitType"]).toBe("burst");
+  });
+
+  it("allows the first 100 requests from one actor within a rolling 24-hour window (spaced beyond the burst window), then rejects the 101st with TEAM006_DAILY_LIMIT_EXCEEDED", async () => {
+    const app = await buildApp({ userId: "actor-daily-1" });
+
+    // 5 batches of 20, each batch more than 10 minutes after the previous
+    // one so the burst window resets between batches but the 24-hour daily
+    // window keeps accumulating. 5 * 20 = 100, all within the daily limit.
+    for (let batch = 0; batch < 5; batch++) {
+      for (let i = 0; i < 20; i++) {
+        const res = await postManagers(app);
+        expect(res.statusCode).toBeLessThan(300);
+      }
+      currentTimeMs += TEN_MINUTES_MS + 60_000; // advance 11 minutes
+    }
+
+    // 101st request, still well within 24 hours of the first.
+    const res101 = await postManagers(app);
+    expect(res101.statusCode).toBe(429);
+    const body = res101.json() as { error: { code: string } };
+    expect(body.error.code).toBe("TEAM006_DAILY_LIMIT_EXCEEDED");
+    expect(res101.headers["retry-after"]).toBeDefined();
+
+    const auditCall = mockDbQuery.mock.calls.find(
+      (call) =>
+        String(call[0]).toLowerCase().includes("audit_log") &&
+        (call[1] as unknown[])?.[3] === "team.manager_association_rate_limited",
+    );
+    const metadata = JSON.parse((auditCall![1] as unknown[])[6] as string) as Record<string, unknown>;
+    expect(metadata["limit_type"]).toBe("daily");
+    expect(metadata["observed_count"]).toBe(101);
+  });
+
+  it("rejects the 101st request across all actors combined within a rolling 10-minute window with TEAM006_GLOBAL_LIMIT_EXCEEDED, distinct from the per-actor codes", async () => {
+    // 5 distinct actors each make 20 requests (their own burst limit exactly,
+    // never exceeded) within the same 10-minute window: 5 * 20 = 100 global.
+    for (let actorIndex = 0; actorIndex < 5; actorIndex++) {
+      const app = await buildApp({ userId: `actor-global-${actorIndex}` });
+      for (let i = 0; i < 20; i++) {
+        const res = await postManagers(app);
+        expect(res.statusCode).toBeLessThan(300);
+      }
+    }
+
+    // A 6th, previously-unseen actor's very first request is the 101st
+    // request overall in this window — its own burst/daily state is nowhere
+    // near its limits, so only the global limit can explain a rejection.
+    const sixthActorApp = await buildApp({ userId: "actor-global-sixth" });
+    const res = await postManagers(sixthActorApp);
+
+    expect(res.statusCode).toBe(429);
+    const body = res.json() as { error: { code: string } };
+    expect(body.error.code).toBe("TEAM006_GLOBAL_LIMIT_EXCEEDED");
+    expect(body.error.code).not.toBe("TEAM006_BURST_LIMIT_EXCEEDED");
+    expect(body.error.code).not.toBe("TEAM006_DAILY_LIMIT_EXCEEDED");
+
+    const auditCall = mockDbQuery.mock.calls.find(
+      (call) =>
+        String(call[0]).toLowerCase().includes("audit_log") &&
+        (call[1] as unknown[])?.[3] === "team.manager_association_rate_limited",
+    );
+    const metadata = JSON.parse((auditCall![1] as unknown[])[6] as string) as Record<string, unknown>;
+    expect(metadata["limit_type"]).toBe("global");
+  });
+
+  it("emits team.manager_association_rate_approaching (window: burst) on the 16th request without rejecting it", async () => {
+    const app = await buildApp({ userId: "actor-warn-burst" });
+
+    let res;
+    for (let i = 0; i < 16; i++) {
+      res = await postManagers(app);
+    }
+
+    expect(res!.statusCode).toBeLessThan(300);
+
+    const approachingCalls = mockEmitAuditEvent.mock.calls.filter(
+      (call) => call[1] === "team.manager_association_rate_approaching",
+    );
+    const burstApproaching = approachingCalls.filter(
+      (call) => (call[2] as Record<string, unknown>)["window"] === "burst",
+    );
+    expect(burstApproaching).toHaveLength(1);
+    expect((burstApproaching[0]![2] as Record<string, unknown>)["observedCount"]).toBe(16);
+  });
+
+  it("emits team.manager_association_rate_approaching (window: daily) on the 80th request without rejecting it", async () => {
+    const app = await buildApp({ userId: "actor-warn-daily" });
+
+    // 4 batches of 20 (spaced beyond the burst window), 4 * 20 = 80.
+    let res;
+    for (let batch = 0; batch < 4; batch++) {
+      for (let i = 0; i < 20; i++) {
+        res = await postManagers(app);
+      }
+      if (batch < 3) currentTimeMs += TEN_MINUTES_MS + 60_000;
+    }
+
+    expect(res!.statusCode).toBeLessThan(300);
+
+    const dailyApproaching = mockEmitAuditEvent.mock.calls.filter(
+      (call) =>
+        call[1] === "team.manager_association_rate_approaching" &&
+        (call[2] as Record<string, unknown>)["window"] === "daily",
+    );
+    expect(dailyApproaching).toHaveLength(1);
+    expect((dailyApproaching[0]![2] as Record<string, unknown>)["observedCount"]).toBe(80);
+  });
+
+  it("does not let one actor's burst/daily state affect a different actor, but does count both toward the shared global limit", async () => {
+    const actorAApp = await buildApp({ userId: "actor-isolated-a" });
+    const actorBApp = await buildApp({ userId: "actor-isolated-b" });
+
+    // Actor A exhausts their own burst limit.
+    for (let i = 0; i < 20; i++) {
+      const res = await postManagers(actorAApp);
+      expect(res.statusCode).toBeLessThan(300);
+    }
+    const actorABreach = await postManagers(actorAApp);
+    expect(actorABreach.statusCode).toBe(429);
+    expect((actorABreach.json() as { error: { code: string } }).error.code).toBe(
+      "TEAM006_BURST_LIMIT_EXCEEDED",
+    );
+
+    // Actor B, entirely unaffected by A's per-actor state, still succeeds —
+    // this is their first request.
+    const actorBRes = await postManagers(actorBApp);
+    expect(actorBRes.statusCode).toBeLessThan(300);
+
+    // But the global counter is shared: A contributed 21 requests (20
+    // allowed + 1 rejected — the rejected request itself still counts, see
+    // "every call counts against every window" in enforceTeam006RateLimit),
+    // B contributed 1, so 79 more requests are needed to push the combined
+    // count over the global limit of 100. Those 79 are spread across four
+    // more actors (20 + 20 + 20 + 19), each staying under its OWN 20-request
+    // burst limit, so the eventual rejection can only be explained by the
+    // shared global counter, not by any single actor's per-actor state.
+    const perActorRequestCounts = [20, 20, 20, 19];
+    let lastRes;
+    for (let a = 0; a < perActorRequestCounts.length; a++) {
+      const extraApp = await buildApp({ userId: `actor-isolated-extra-${a}` });
+      for (let i = 0; i < perActorRequestCounts[a]!; i++) {
+        lastRes = await postManagers(extraApp);
+      }
+    }
+    expect(lastRes!.statusCode).toBe(429);
+    expect((lastRes!.json() as { error: { code: string } }).error.code).toBe(
+      "TEAM006_GLOBAL_LIMIT_EXCEEDED",
+    );
+  });
+
+  it("resets gradually under sliding-window semantics, not as a single fixed-bucket reset", async () => {
+    const app = await buildApp({ userId: "actor-sliding" });
+
+    // 20 requests at t=0 exhaust the burst limit.
+    for (let i = 0; i < 20; i++) {
+      const res = await postManagers(app);
+      expect(res.statusCode).toBeLessThan(300);
+    }
+
+    // A request 5 minutes later is still rejected — all 20 initial entries
+    // are still within the 10-minute window.
+    currentTimeMs += 5 * 60 * 1000;
+    const rejectedAtFiveMin = await postManagers(app);
+    expect(rejectedAtFiveMin.statusCode).toBe(429);
+
+    // Just past 10 minutes after the FIRST batch (not the rejected request),
+    // those first 20 entries have aged out of the window, but the request
+    // rejected at t=5min is still within it — proving entries expire
+    // individually as time passes, not all at once on a fixed boundary.
+    currentTimeMs = Date.parse("2026-01-01T00:00:00.000Z") + TEN_MINUTES_MS + 1_000;
+    const afterPartialExpiry = await postManagers(app);
+    expect(afterPartialExpiry.statusCode).toBeLessThan(300);
+  });
+
+  it("allows the first 20 requests from one actor within a rolling 24-hour daily window and does not touch the daily limit prematurely", async () => {
+    // Sanity check distinguishing the burst and daily limiters: 20 requests
+    // in immediate succession never approach the daily limit's own 80%
+    // early-warning threshold.
+    const app = await buildApp({ userId: "actor-daily-sanity" });
+    for (let i = 0; i < 20; i++) {
+      const res = await postManagers(app);
+      expect(res.statusCode).toBeLessThan(300);
+    }
+    const dailyApproaching = mockEmitAuditEvent.mock.calls.filter(
+      (call) =>
+        call[1] === "team.manager_association_rate_approaching" &&
+        (call[2] as Record<string, unknown>)["window"] === "daily",
+    );
+    expect(dailyApproaching).toHaveLength(0);
+  });
+
+  it("daily window resets gradually under sliding-window semantics, not as a single fixed-bucket reset", async () => {
+    const app = await buildApp({ userId: "actor-daily-sliding" });
+
+    // 5 batches of 20, each starting 11 minutes after the previous (clearing
+    // the burst window between batches), reaching exactly the 100-request
+    // daily limit. Batch 0 lands at t=0; batch 4 lands at t=44min.
+    for (let batch = 0; batch < 5; batch++) {
+      for (let i = 0; i < 20; i++) {
+        const res = await postManagers(app);
+        expect(res.statusCode).toBeLessThan(300);
+      }
+      if (batch < 4) {
+        currentTimeMs += TEN_MINUTES_MS + 60_000;
+      }
+    }
+
+    // Just past 24 hours after the FIRST batch (not the most recent one),
+    // batch 0's 20 entries have aged out of the daily window, but batches
+    // 1-4 (80 entries, all made after batch 0) have not — proving daily-window
+    // entries expire individually as time passes, not all at once on a single
+    // fixed 24-hour boundary. A fixed-bucket daily reset would still show 100
+    // active entries here (or reject); a true sliding window has already
+    // freed up the 20 slots batch 0 occupied.
+    currentTimeMs = Date.parse("2026-01-01T00:00:00.000Z") + TWENTY_FOUR_HOURS_MS + 1_000;
+    const afterPartialExpiry = await postManagers(app);
+    expect(afterPartialExpiry.statusCode).toBeLessThan(300);
+  });
+
+  // Architect + security implementation review findings
+  // (implementation-review-architect.md Finding 1,
+  // implementation-review-security.md Finding 6): the rate limiter must fail
+  // closed — as a deliberate, tested decision, not an accident of missing
+  // error handling — when its own Redis backend is unavailable.
+  it("fails closed with 503 TEAM006_RATE_LIMIT_UNAVAILABLE when the rate limiter's Redis backend errors, without writing a team_memberships row or a rate-limit-breach audit row", async () => {
+    const app = await buildApp({ userId: "actor-redis-down" });
+
+    // Only the first redis.eval call in this request rejects — the
+    // mockRejectedValueOnce overrides the persistent fakeSlidingWindowEval
+    // default for exactly one call, so enforceTeam006RateLimit's burst check
+    // throws before ever reaching the daily/global checks.
+    mockRedisEval.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    const connectCallsBefore = mockDbConnect.mock.calls.length;
+    const res = await postManagers(app);
+
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as {
+      error: { category: string; code: string; correlationId: string };
+    };
+    expect(body.error.category).toBe("service_unavailable");
+    expect(body.error.code).toBe("TEAM006_RATE_LIMIT_UNAVAILABLE");
+    expect(body.error.correlationId).toBeTruthy();
+
+    // No team_memberships write — the request was denied, not processed.
+    expect(mockDbConnect.mock.calls.length).toBe(connectCallsBefore);
+
+    // This is a limiter-AVAILABILITY failure, not a rate-limit BREACH — the
+    // breach-specific audit_log row and structured event must not fire.
+    const breachAuditRow = mockDbQuery.mock.calls.find(
+      (call) =>
+        String(call[0]).toLowerCase().includes("audit_log") &&
+        (call[1] as unknown[])?.[3] === "team.manager_association_rate_limited",
+    );
+    expect(breachAuditRow).toBeUndefined();
+    const breachEvent = mockEmitAuditEvent.mock.calls.find(
+      (call) => call[1] === "team.manager_association_rate_limit_exceeded",
+    );
+    expect(breachEvent).toBeUndefined();
+
+    // The distinct check-failed signal fires instead, so this condition is
+    // greppable/alertable separately from an ordinary breach or bug.
+    const checkFailedEvent = mockEmitAuditEvent.mock.calls.find(
+      (call) => call[1] === "team.manager_association_rate_limit_check_failed",
+    );
+    expect(checkFailedEvent).toBeDefined();
+    expect((checkFailedEvent![2] as Record<string, unknown>)["actorUserId"]).toBe(
+      "actor-redis-down",
+    );
+
+    // Once Redis recovers, the very next request is evaluated normally again
+    // — the rejection above only overrode a single call.
+    const recoveredRes = await postManagers(app);
+    expect(recoveredRes.statusCode).toBeLessThan(300);
   });
 });
