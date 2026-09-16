@@ -8,6 +8,8 @@ import {
   publishVoteRevealed,
   publishTopicHistoryUpdate,
 } from "../realtime/ws-pubsub.js";
+import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
+import { applyTimingFloor } from "../content/timing-oracle.js";
 import type {
   RevealFailureResponse,
   RevealAlreadyRevealedResponse,
@@ -18,6 +20,8 @@ import type {
   StartSessionResponse,
   BeginVotingResponse,
   TopicAdvanceResponse,
+  ActionItemsReviewResponse,
+  ActionItemsReviewWrongStatusResponse,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -71,33 +75,27 @@ export async function recordRevealTriggeredAudit(
 // excluded), oldest first. Staleness is computed at query time as the count
 // of the team's completed sessions since each item's updated_at.
 //
-// Staleness level mapping: the REST API Contract and design.md specify a
-// single application_settings.staleness_threshold_sessions value (default
-// 2), not four separate per-level thresholds — no code or contract text
-// anywhere in this codebase specifies how the four levels
-// (none/yellow/orange/red) map onto that one number. This implementation
-// steps levels at multiples of the configured threshold (1x/2x/3x); if a
-// different mapping is intended, this is the function to revisit.
+// Staleness level mapping (pre-session-action-item-review design.md
+// Decision 7): fixed at the literal 1/2/3-session boundaries UC: Flag Stale
+// Action Items decided — none at 0, yellow at 1, orange at 2, red at 3+.
+// This does NOT read application_settings.staleness_threshold_sessions; an
+// earlier version of this function stepped levels at multiples of that
+// configurable value (1x/2x/3x), which never actually matched the decided
+// requirement (at the shipped default of 2, 3 sessions elapsed computed
+// "yellow", not "red"). That setting's row is left in place, unmodified,
+// but is no longer read here — see design.md Decision 7 for the full
+// rationale and the alternatives that were considered and rejected.
 // ---------------------------------------------------------------------------
-function computeStalenessLevel(
+export function computeStalenessLevel(
   sessionsSinceUpdate: number,
-  threshold: number,
 ): "none" | "yellow" | "orange" | "red" {
-  if (sessionsSinceUpdate >= threshold * 3) return "red";
-  if (sessionsSinceUpdate >= threshold * 2) return "orange";
-  if (sessionsSinceUpdate >= threshold) return "yellow";
+  if (sessionsSinceUpdate >= 3) return "red";
+  if (sessionsSinceUpdate >= 2) return "orange";
+  if (sessionsSinceUpdate >= 1) return "yellow";
   return "none";
 }
 
-async function fetchPreSessionActionItems(teamId: string): Promise<StartSessionResponse["actionItems"]> {
-  const thresholdResult = await db.query<{ value: string }>(
-    `SELECT value FROM application_settings WHERE key = 'staleness_threshold_sessions'`,
-  );
-  const threshold = parseInt(
-    (thresholdResult.rows[0] as { value: string } | undefined)?.value ?? "2",
-    10,
-  );
-
+export async function fetchPreSessionActionItems(teamId: string): Promise<StartSessionResponse["actionItems"]> {
   const itemsResult = await db.query<{
     action_item_id: string;
     description: string;
@@ -139,7 +137,7 @@ async function fetchPreSessionActionItems(teamId: string): Promise<StartSessionR
     status: row.status as "open" | "in_progress",
     originatingSessionId: row.originating_session_id,
     originatingSessionNumber: row.originating_session_number,
-    stalenessLevel: computeStalenessLevel(parseInt(row.sessions_since_update, 10), threshold),
+    stalenessLevel: computeStalenessLevel(parseInt(row.sessions_since_update, 10)),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   }));
@@ -528,6 +526,72 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       hasOpenItems: actionItems.length > 0,
     };
     return reply.send(response);
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/sessions/:sessionId/action-items-review
+  // (pre-session-action-item-review, design.md Decision 1)
+  //
+  // Participant-facing counterpart to POST /start's action-items payload:
+  // any authorized session subscriber (not only the facilitator) can fetch
+  // the same pre-session review data, while the session is in pre_session
+  // status. Reuses evaluateSessionSubscriberAccess and
+  // fetchPreSessionActionItems without modifying either.
+  //
+  // Every response path (404, 409, 200) applies applyTimingFloor() and sets
+  // Cache-Control: no-store inline, as it is built — design review security
+  // findings F1/F2, treated as design requirements from the start, not
+  // hardening bolted on afterward.
+  // -------------------------------------------------------------------------
+  app.get<{
+    Params: { sessionId: string };
+  }>("/api/v1/sessions/:sessionId/action-items-review", async (request, reply) => {
+    const startTime = Date.now();
+    const userSession = request.session as unknown as SessionData;
+    const { sessionId } = request.params;
+
+    const grant = await evaluateSessionSubscriberAccess(userSession.userId, sessionId);
+
+    if (grant === null) {
+      await applyTimingFloor(startTime);
+      reply.header("Cache-Control", "no-store");
+      return reply.code(404).send({
+        error: {
+          category: "not_found" as const,
+          message: "Session not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const isFacilitator = grant.path === "facilitator";
+
+    // Decision 1 step 3: a single explicit read, applied uniformly to both
+    // grant variants, rather than branching on whether the grant happens to
+    // carry sessionStatus (only the facilitator variant does).
+    const sessionStatusResult = await db.query<{ status: string }>(
+      `SELECT status FROM sessions WHERE id = $1`,
+      [sessionId],
+    );
+    const currentSessionStatus = (sessionStatusResult.rows[0] as { status: string } | undefined)
+      ?.status as SessionStatus | undefined;
+
+    if (currentSessionStatus !== "pre_session") {
+      await applyTimingFloor(startTime);
+      reply.header("Cache-Control", "no-store");
+      const body: ActionItemsReviewWrongStatusResponse = {
+        currentSessionStatus: currentSessionStatus as SessionStatus,
+        isFacilitator,
+      };
+      return reply.code(409).send(body);
+    }
+
+    const actionItems = await fetchPreSessionActionItems(grant.teamId);
+
+    await applyTimingFloor(startTime);
+    reply.header("Cache-Control", "no-store");
+    const body: ActionItemsReviewResponse = { actionItems, isFacilitator };
+    return reply.code(200).send(body);
   });
 
   // -------------------------------------------------------------------------

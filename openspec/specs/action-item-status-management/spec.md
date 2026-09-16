@@ -4,7 +4,7 @@
 
 Server-side authorization and state-transition rules for changing an `action_items.status` value: who may change a given item's status (owner or an actively-facilitating facilitator), which transitions are valid (FR-7.3's directed, non-reversible model), how a same-status no-op is handled, how a resolution note and its resolving session are captured, and the `action_item_history`/`audit_log` records every real transition produces. Implemented by `PATCH /api/v1/action-items/:actionItemId/status` (issues #64 + #65 + #95, combined; per the pre-existing `VOTE-002` contract in `requirements/design/REST API Contract.md`).
 
-This spec does NOT cover the live WebSocket broadcast of these status changes during pre-session review — that's `websocket-specification`'s `action_item_status_updated` event — or any frontend rendering of the pre-session review screen (issue #69, separate and unscheduled).
+This spec does NOT cover the live WebSocket broadcast of these status changes during pre-session review — that's `websocket-specification`'s `action_item_status_updated` event — or the pre-session review screen itself, which now ships read-only under `pre-session-action-item-review` (GitHub issue #103 tracks wiring this capability's write path into that screen as inline status controls).
 
 ---
 
