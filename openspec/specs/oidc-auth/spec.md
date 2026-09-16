@@ -26,7 +26,7 @@ The sole exception is the local-development persona login landing page defined b
 ---
 
 ### Requirement: OIDC callback and token validation
-The application SHALL accept the authorization code at the registered callback endpoint (`GET /auth/callback`), exchange it for ID and access tokens, and validate the ID token. Validation SHALL include signature verification via the IdP's JWKS endpoint, expiry (`exp`), audience (`aud`), issuer (`iss`), and nonce claims. The application SHALL reject tokens that fail any validation check. The OIDC state parameter SHALL be single-use: retrieved from Redis and immediately deleted on callback.
+The application SHALL accept the authorization code at the registered callback endpoint (`GET /auth/callback`), exchange it for ID and access tokens, and validate the ID token. Validation SHALL include signature verification via the IdP's JWKS endpoint, expiry (`exp`), audience (`aud`), issuer (`iss`), and nonce claims. The application SHALL reject tokens that fail any validation check. The OIDC state parameter SHALL be single-use: retrieved from Redis and immediately deleted on callback. The callback URL reconstructed for the token exchange SHALL preserve a non-default port present on the incoming request, so that the token exchange's `redirect_uri` matches the `redirect_uri` registered at the authorization step.
 
 #### Scenario: Valid authorization code exchange
 - **WHEN** the IdP redirects to the callback endpoint with a valid authorization code
@@ -47,6 +47,10 @@ The application SHALL accept the authorization code at the registered callback e
 #### Scenario: State parameter is single-use
 - **WHEN** the callback endpoint processes a state parameter
 - **THEN** the state is retrieved from Redis and immediately deleted; a replayed callback with the same state is rejected
+
+#### Scenario: Callback URL reconstruction preserves a non-default port
+- **WHEN** the callback endpoint reconstructs the callback URL for the token exchange and the incoming request's host carries a non-default port
+- **THEN** the reconstructed URL's authority includes that port, so the token exchange's `redirect_uri` matches the `redirect_uri` registered at the authorization step and the IdP accepts the grant
 
 ---
 
