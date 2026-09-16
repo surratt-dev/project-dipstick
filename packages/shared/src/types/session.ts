@@ -91,6 +91,30 @@ export interface BeginVotingResponse {
   };
 }
 
+// ---------------------------------------------------------------------------
+// pre-session-action-item-review: GET /api/v1/sessions/:sessionId/action-items-review
+// design.md Decision 1/3.
+// ---------------------------------------------------------------------------
+
+/** Success (200) shape — same action item item-shape StartSessionResponse already carries. */
+export interface ActionItemsReviewResponse {
+  actionItems: StartSessionResponse["actionItems"];
+  isFacilitator: boolean;
+}
+
+/**
+ * Non-pre_session (409) shape — design.md Decision 1/2/3. currentSessionStatus
+ * lets the frontend distinguish "still in lobby" from "already active" (or any
+ * other non-pre_session status) without a second, team-scoped status call.
+ * isFacilitator is resolved from the same grant as the 200 path, before this
+ * gate runs, so it is present here too — this is what lets SessionLobbyPage's
+ * lobby branch know whether to render the "Start Session" control.
+ */
+export interface ActionItemsReviewWrongStatusResponse {
+  currentSessionStatus: SessionStatus;
+  isFacilitator: boolean;
+}
+
 export interface TopicAdvanceResponse {
   sessionId: string;
   teamId: string;
