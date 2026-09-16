@@ -1,0 +1,50 @@
+# Architecture Review: Task 3.10 — TEAM-006 Rate Limiting
+
+**Reviewer:** Ingrid Sollenberger, Principal Solution Architect
+**Scope:** Architectural fit of the task 3.10 implementation (branch `agent-team/team-006-rate-limit-threshold`) against `q6-rate-limit-decision.md`, and against this codebase's established patterns for Redis dependency treatment, audit-trail boundaries, and error-response conventions. This is not a correctness/line-level code review — that is a different reviewer's lane.
+
+**Reviewed:** `git diff main` for `packages/backend/src/routes/teams.ts`, `packages/backend/src/auth/audit-logger.ts`, `packages/backend/src/routes/__tests__/teams.test.ts`, `packages/backend/src/routes/__tests__/e2e-verification.test.ts`; `packages/backend/src/redis.ts`; `packages/backend/src/auth/session-store.ts`; `packages/backend/src/realtime/ws-pubsub.ts`; `packages/backend/src/routes/health.ts`; `design.md` (Decisions 3, 4, 9, 14, and the Q6 risk entry); `threat-model.md` (Findings 1.3, 2.3); `q6-rate-limit-decision.md`.
+
+---
+
+## Findings
+
+### 1. Redis-unavailable failure mode is correct in effect but implicit, not a documented decision (non-blocking)
+
+Neither `recordAndCountSlidingWindow` nor `enforceTeam006RateLimit` (`teams.ts`) wraps the `redis.eval(...)` calls in a try/catch. There is no `setErrorHandler` registered anywhere in the backend (confirmed by grep across `packages/backend/src`). So an ioredis error here propagates as an unhandled rejection out of the route handler and falls through to Fastify's default error response — a generic 500, not this endpoint's own `{ error: { category, code, correlationId } }` envelope.
+
+Net effect: **the endpoint fails closed** (denies the request) when Redis is unavailable, rather than silently bypassing rate limiting. I consider this the right choice for a compensating security control on a sensitive, low-volume admin endpoint — failing open here would mean the control silently disappears at exactly the moment (a Redis incident) when abuse is also more likely to be missed or induced. It is also consistent with how the rest of this codebase already treats Redis:
+
+- `session-store.ts`'s `createRedisStore` propagates Redis errors to `@fastify/session` via `callback(err, ...)` rather than swallowing them — a session read failure is not treated as "let the request through."
+- `health.ts` already `redis.ping()`s and marks the whole service `unhealthy` if Redis doesn't respond — Redis is platform-level required infrastructure, not an optional cache, and its unavailability is already observable independent of this endpoint.
+- Every authenticated route already has a hard dependency on Redis being reachable to deserialize the session in the first place. TEAM-006's three additional `eval` calls introduce no new *class* of fragility — they inherit a dependency that already gates this endpoint (and every other authenticated endpoint) before the rate limiter even runs.
+
+So the emergent behavior matches what I would have required if asked. The gap is that it's emergent rather than decided: nothing in `q6-rate-limit-decision.md` or in the `teams.ts` code comments states "Redis errors are intentionally allowed to propagate here, fail-closed, on purpose." This is exactly the kind of decision I want surfaced explicitly rather than left as "whoever writes the first line of code didn't add a catch block." A future engineer who "helpfully" wraps this in a try/catch and returns `{ limited: false }` on error would silently invert the control's failure mode, and nothing in the code would flag that as a regression.
+
+**Recommendation (non-blocking, fast follow):** add a short comment at `enforceTeam006RateLimit` stating the fail-closed behavior and rationale explicitly, so it reads as a decision rather than an absence. I would not hold task 3.10 open for this.
+
+### 2. Everything else in my lane matches the decision doc's architectural intent
+
+- **Enforcement placement:** Confirmed at the code location — `enforceTeam006RateLimit` runs immediately after the Application Admin `global_role` check and before the team-existence query and the global-role precondition check. Matches Q6 Section 1's placement requirement exactly (unauthorized callers don't consume budget; rate-limited callers don't reach the DB).
+- **Three-tier structure and sliding-window semantics:** Thresholds (20/10-min burst, 100/24-hr daily, 100/10-min global), no `teamId`/target dimension, and true sliding-window accounting (Lua `ZREMRANGEBYSCORE` + `ZADD` + `ZCARD`, not a fixed calendar bucket) all match Q6 Section 1 verbatim. The `PEXPIRE` on each write is good hygiene beyond what the doc requires — it keeps idle actors' keys from lingering in Redis indefinitely, without weakening the sliding-window guarantee.
+- **Redis as shared cross-instance state, no new dependency:** The implementation correctly reuses the existing shared `ioredis` client from `redis.ts` for ordinary `eval` commands. It does not call `.duplicate()` — correctly, since `.duplicate()` is reserved in this codebase for connections entering subscriber mode (see `ws-pubsub.ts`'s own documented rationale), and plain commands are meant to share the singleton client. No `@fastify/rate-limit` or other new dependency was introduced, consistent with Q6's explicit rejection of a general cross-cutting policy for what is a single reviewed threshold.
+- **Scoping discipline — purpose-built, not accidental reusable infrastructure:** `team006BurstKey`, `team006DailyKey`, `recordAndCountSlidingWindow`, `retryAfterSeconds`, and `enforceTeam006RateLimit` are all module-private (unexported) to `teams.ts`. Despite being generic-looking sliding-window primitives that a future engineer might be tempted to lift into a shared module, the implementation resists that temptation and keeps them scoped to this one endpoint, matching Q6's explicit framing ("a small, purpose-built limiter for this one endpoint"). If a second endpoint later needs the same pattern, this is the natural extraction point — not a concern now.
+- **Audit-trail boundary vs. Decision 9:** The breach-path audit write is a plain `await db.query(...)` — not wrapped in a `client.connect()`/`BEGIN`/`COMMIT` transaction, and not fire-and-forget. This is exactly what Q6 Section 3 calls for ("does not need Decision 9's in-transaction atomicity... but must not be fire-and-forget"), correctly distinguished from the in-transaction audit write on the success path (Decision 9), which remains untouched by this change. The raw-SQL `INSERT INTO audit_log` shape used here is identical to four other call sites already in `teams.ts` (lines 406, 571, 787, 1086) — this change follows the file's existing (repeated-inline, not helper-extracted) idiom rather than inventing a new one, so it introduces no new inconsistency even though a shared audit-write helper might be a reasonable future refactor across the whole file.
+- **Structured event naming:** The deliberate distinctness between the `audit_log.operation` string (`team.manager_association_rate_limited`) and the `AuditEventName` structured event (`team.manager_association_rate_limit_exceeded`) matches Q6 Section 3's explicit requirement, including being tagged separately from routine per-request audit entries for Finding 2.3's future consumption.
+- **Error-envelope consistency:** `category: "rate_limited"`, a distinct `code` per limit type, and `correlationId` follow the same envelope shape as the existing 409 `category: "precondition_failed"` / `code: "GLOBAL_ROLE_PRECONDITION_NOT_MET"` pattern elsewhere in this handler. There is no shared discriminated-union type constraining `category` — every branch in this file (including pre-existing ones) uses an inline `as const` literal — so adding a new category value breaks no type contract and matches the file's existing convention rather than diverging from it.
+- **Scope discipline against adjacent work:** The implementation correctly does not attempt the Section 4 escape-hatch mechanism (explicitly owned by the security analyst as a separate operational decision) or the Finding 2.3 monitoring/alerting pipeline (explicitly out of scope per Q6 Section 5). `tasks.md`'s task 3.10 completion note reflects this same scoping.
+
+### 3. Minor, non-architectural observations (not blocking, noting so they aren't lost)
+
+- Three sequential `redis.eval` round trips per request (burst, daily, global) rather than pipelined. Adds serial network latency but is inconsequential for a low-volume admin-only endpoint; not worth the added complexity of pipelining here.
+- The 429 response message text still contains the literal placeholder `contact [security/support channel]`, copied verbatim from the decision doc's own example. This is a content-completion gap for whoever owns the actual support channel name, not an architecture defect — flagging so it isn't shipped to production users as-is, but this is BA/ops territory, not something I'm gating on.
+
+---
+
+## Verdict
+
+**The implementation matches the architectural intent of `q6-rate-limit-decision.md` on every dimension in my lane**, and I found no hidden coupling risk that isn't already an accepted, pre-existing property of this codebase's relationship with Redis. Enforcement placement, the three-tier sliding-window structure, Redis as genuinely shared cross-instance state via the existing client, the non-transactional-but-synchronous audit boundary against Decision 9, and the purpose-built (not accidentally-generalized) scoping of the limiter are all correct.
+
+The one gap I found (Finding 1 — fail-closed Redis behavior is correct but undocumented as a deliberate decision) is a paper cut: the actual runtime behavior is exactly what I'd require if asked, and it's consistent with precedent elsewhere in this codebase (`session-store.ts`, `health.ts`). It does not need to block sign-off.
+
+**Task 3.10 is safe to consider architecturally complete.** I'd like the one-line comment from Finding 1 added as a fast follow, but that is a documentation clarification, not a design change, and does not need to gate anything currently waiting on this task.

@@ -231,7 +231,7 @@ TEAM-005's writes to `role_change_audit` are migrated to `audit_log` in the same
 
 **[Risk] Compromised EM account exposes complete historical session archive** → Mitigation: Accepted organizational risk per Decision 6. Mitigating controls are OIDC token validation, session revocation at the IdP, and EM account monitoring. The threat model must name this scenario explicitly before the first team goes live.
 
-**[Risk] Bulk TEAM-006 calls under compromised admin account** → Mitigation: Rate limiting on TEAM-006 is a required compensating control. The spec must specify the threshold before Phase 2 implementation begins.
+**[Risk] Bulk TEAM-006 calls under compromised admin account** → Mitigation: Rate limiting on TEAM-006 is a required compensating control. Threshold resolved per Q6 (see above) — 20/10-min and 100/24-hr per-actor, 100/10-min global; implementation tracked as task 3.10.
 
 ## Migration Plan
 
@@ -299,8 +299,10 @@ Removal of the EM/team relationship is explicitly out of scope for this change. 
 **Q5 (Design prerequisite): Multi-team EM landing experience**
 If an EM manages multiple teams, what do they see at sign-in? Team selector vs. aggregate view. Decision must be made before Phase 3 design begins. Owner: product owner, in consultation with BA.
 
-**Q6 (Required before Phase 2): Rate limiting threshold for TEAM-006**
-Rate limiting on TEAM-006 is required (see Risks). An Application Admin account is a high-value target; bulk TEAM-006 calls under a compromised account would grant historical data access across many teams before the compromise is detected. The threshold must be specified in the spec before Phase 2 implementation. Owner: BA in consultation with security analyst.
+**Q6 (Required before Phase 2): Rate limiting threshold for TEAM-006 — RESOLVED**
+Rate limiting on TEAM-006 is required (see Risks). An Application Admin account is a high-value target; bulk TEAM-006 calls under a compromised account would grant historical data access across many teams before the compromise is detected. Owner: BA in consultation with security analyst.
+
+**Resolution (2026-09-16, GitHub issue #13):** 20 requests / rolling 10-minute per-actor burst limit, 100 requests / rolling 24-hour per-actor sustained cap, 100 requests / rolling 10-minute global limit across all admins, each with an 80%-threshold early-warning signal and a durable `audit_log` entry plus dedicated `AuditEventName` on breach. Full rationale and joint BA/security sign-off in `q6-rate-limit-decision.md` in this directory. Unblocks tasks.md task 3.10.
 
 ## Feedback Not Incorporated
 
