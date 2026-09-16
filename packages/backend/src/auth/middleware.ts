@@ -11,6 +11,14 @@ const PUBLIC_ROUTES = [
   "/auth/callback",
   "/auth/logout",
   "/auth/dev-login-options",
+  // /auth/error and /auth/dev-login are frontend-only React Router pages
+  // (App.tsx), not backend routes -- this backend has no handler for either.
+  // Listed here anyway as defense-in-depth: if a reverse proxy ever
+  // misroutes one of these paths to the backend (e.g. a production ingress
+  // config gap), the result should be an honest 404, not a misleading
+  // "session_expired" from this hook.
+  "/auth/error",
+  "/auth/dev-login",
   "/api/join/",
 ];
 
