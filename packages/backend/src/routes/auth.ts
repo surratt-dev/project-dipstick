@@ -118,8 +118,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const correlationId = crypto.randomUUID();
 
     try {
+      // Use request.host (not request.hostname) since hostname drops the port, which breaks redirect_uri matching against the value registered at authorization.
       const callbackUrl = new URL(
-        `${request.protocol}://${request.hostname}${request.url}`,
+        `${request.protocol}://${request.host}${request.url}`,
       );
       const stateParam = callbackUrl.searchParams.get("state");
 
