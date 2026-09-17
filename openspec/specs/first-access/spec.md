@@ -206,9 +206,14 @@ During the OIDC authentication flow, the application SHALL read a designated rol
 
 The following GitHub issues were opened as known follow-on items at the close of this change and remain active:
 
-- **#2** — [Security] Audit OIDC library error messages for potential token content leakage in logs
-- **#3** — [Security] Audit logger level fix does not cover transport-level log filtering
 - **#4** — [Audit] auth.success and auth.session_created events missing sourceIp and correlationId
 - **#5** — [Audit] executeJoinFlow hardcodes "callback" as sourceIp in join rejection audit events
 - **#6** — [Test] No assertion that session.destroy is not called after session fixation fix
 - **#7** — [Clarity] MissingClaimError("sub") is misleading when the entire claims object is null
+
+---
+
+## Resolved
+
+- **#2** — closed (oidc-error-log-sanitization) — [Security] Audit OIDC library error messages for potential token content leakage in logs
+- **#3** — closed (audit-logger-transport-filtering) — [Security] Audit logger level fix does not cover transport-level log filtering

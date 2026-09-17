@@ -145,6 +145,25 @@ curl http://localhost:3000/health/ready
 
 A `200` response means PostgreSQL and Redis are both reachable.
 
+### Logging
+
+Audit events are emitted via `emitAuditEvent` (`packages/backend/src/auth/audit-logger.ts`) at the `info` level, with the child logger's level explicitly overridden so application-wide log-level changes (e.g. raising Fastify's logger to `warn`) cannot suppress them. **This override does not protect against transport-level filtering.** If you configure a pino transport (a log shipper, a `pino-*` destination, anything set via `transport` in Fastify's `logger` option) that applies its own level filter below `info`, audit events will be silently dropped downstream of this logger, with no indication in the application that anything was lost.
+
+Many audit events also write an `audit_log` database row in the same transaction as the state change — that row is the authoritative audit record and is unaffected by log transport configuration (role changes, rate-limit breaches, action-item status changes, EM data-access reads, admin reads, and most session/WebSocket-lifecycle events all fall in this category). **Every `auth.*` event and every `join.*` event does not** — this is the entire login, logout, session-creation, session-invalidation, and token-refresh trail, and it is **log-only with no database backing anywhere in this codebase**. Four additional events are also log-only. In total, 18 events are at risk if a filtering transport is introduced:
+
+- Every `auth.*` event: `auth.authorization_initiated`, `auth.callback_received`, `auth.success`, `auth.failure`, `auth.first_access_created`, `auth.session_created`, `auth.session_invalidated`, `auth.token_refresh_success`, `auth.token_refresh_failure`, `auth.idp_logout_failed`, `auth.role_claim_mapped`
+- Every `join.*` event: `join.link_created`, `join.link_redeemed`, `join.link_rejected`
+- `team.access_grant_mismatch`
+- `team.manager_association_rate_approaching`
+- `team.manager_association_rate_limit_check_failed`
+- `session.reveal_latency_observed`
+
+This means a filtering transport puts the application's primary "who logged in, when, and whether their session ended" record at risk, with no database fallback — not only a handful of lower-severity operational/anomaly-detection signals.
+
+**Before adopting any pino transport with a level filter:** revisit `emitAuditEvent` in `audit-logger.ts` — the child-logger level override protects against the application log level only, and the transport will need its own accommodation (e.g. a level floor on the transport config, or routing audit events to an unfiltered destination) to keep the events above from going dark.
+
+**Future consideration (deferred, GitHub issue #3):** a startup check that verifies audit events actually reach their configured sink was requested in issue #3 but is not built in this change, because no transport is configured anywhere in this codebase today — building a reachability check against a failure mode that doesn't yet exist would be premature engineering. This is not a nice-to-have to revisit "if" the `emitAuditEvent` rework above happens to get to it: given the events above, a filtering transport shipped without this check risks silently losing the authentication and session-lifecycle audit trail with zero indication anything was lost. Build this check alongside the `emitAuditEvent` rework, before that transport goes to production.
+
 ## Kubernetes
 
 The README lists Kubernetes as the production deployment target. The image tags above work directly in Kubernetes manifests or Helm values. Key considerations:
