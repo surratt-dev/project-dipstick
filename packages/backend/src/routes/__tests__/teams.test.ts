@@ -21,8 +21,8 @@ vi.mock("../../auth/audit-logger.js", () => ({
 vi.mock("../../redis.js", () => ({
   redis: { eval: (...args: unknown[]) => mockRedisEval(...args) },
 }));
-vi.mock("../../config.js", () => ({
-  config: {
+const { mockConfig } = vi.hoisted(() => ({
+  mockConfig: {
     DATABASE_URL: "postgres://test",
     REDIS_URL: "redis://test",
     SESSION_SECRET: "test",
@@ -31,7 +31,11 @@ vi.mock("../../config.js", () => ({
     OIDC_CLIENT_SECRET: "client-secret",
     OIDC_REDIRECT_URI: "http://localhost:3000/auth/callback",
     NODE_ENV: "test",
+    APPLICATION_ADMIN_CONTACT_EMAIL: undefined as string | undefined,
   },
+}));
+vi.mock("../../config.js", () => ({
+  config: mockConfig,
 }));
 
 import Fastify from "fastify";
@@ -80,6 +84,7 @@ mockRedisEval.mockImplementation(fakeSlidingWindowEval);
 // push a later test over a rate-limit threshold.
 beforeEach(() => {
   fakeRedisStore.clear();
+  mockConfig.APPLICATION_ADMIN_CONTACT_EMAIL = undefined;
 });
 
 // ---------------------------------------------------------------------------
@@ -984,6 +989,56 @@ describe("GET /api/v1/teams/:teamId", () => {
     expect((body.participants as unknown[]).some(
       (m) => (m as { userId: string }).userId === "u-grace",
     )).toBe(false);
+  });
+
+  // Task 2.3 — escalation-contact-mechanism: applicationAdminContactEmail is
+  // populated unconditionally, for admin and non-admin callers alike.
+  it("2.3: returns the configured applicationAdminContactEmail for an admin caller", async () => {
+    mockConfig.APPLICATION_ADMIN_CONTACT_EMAIL = "app-admins@example.com";
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] })
+      .mockResolvedValueOnce({ rows: [{ name: "Team X" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin", membership_role: null }] })
+      // admin audit INSERT (Task 3.4)
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().applicationAdminContactEmail).toBe("app-admins@example.com");
+  });
+
+  it("2.3: returns the configured applicationAdminContactEmail for a non-admin caller", async () => {
+    mockConfig.APPLICATION_ADMIN_CONTACT_EMAIL = "app-admins@example.com";
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", is_member: true }] })
+      .mockResolvedValueOnce({ rows: [{ name: "Team Y" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().applicationAdminContactEmail).toBe("app-admins@example.com");
+  });
+
+  // Task 2.4
+  it("2.4: returns applicationAdminContactEmail: null when APPLICATION_ADMIN_CONTACT_EMAIL is unset", async () => {
+    mockConfig.APPLICATION_ADMIN_CONTACT_EMAIL = undefined;
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", is_member: true }] })
+      .mockResolvedValueOnce({ rows: [{ name: "Team Y" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().applicationAdminContactEmail).toBeNull();
   });
 });
 

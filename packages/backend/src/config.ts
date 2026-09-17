@@ -13,6 +13,7 @@ const optional = [
   "TOKEN_ENCRYPTION_KEY",
   "APP_ORIGIN",
   "OIDC_ROLE_CLAIM",
+  "APPLICATION_ADMIN_CONTACT_EMAIL",
 ] as const;
 
 type ConfigKey = (typeof required)[number];
