@@ -1,53 +1,4 @@
-# auth-error-handling
-
-## Purpose
-
-Defines requirements for authentication error states, plain-language error messages, error categorization, and authentication event logging.
-
-## Requirements
-
-### Requirement: Distinct error messages for authentication failure modes
-The application SHALL display distinct user-facing error messages for each authentication failure mode. Error messages SHALL use plain language and SHALL NOT include protocol names, error codes, or technical identifiers. Error messages SHALL suggest a next action. Error categorization is implemented in `packages/backend/src/auth/error-handler.ts` using the `AuthErrorCategory` union type: `provider_unavailable`, `authentication_failed`, `session_expired`, `invalid_request`.
-
-#### Scenario: Identity provider unreachable
-- **WHEN** the connection to the identity provider fails (ECONNREFUSED, ENOTFOUND, ETIMEDOUT, network errors)
-- **THEN** the error is categorized as `provider_unavailable` and the message directs the user to try again in a few moments, with guidance to contact IT if the problem persists
-
-#### Scenario: Identity provider returned an error
-- **WHEN** the identity provider returns an error response (`invalid_grant`, `invalid_client`, `unauthorized_client`, `invalid_scope`)
-- **THEN** the error is categorized as `authentication_failed` and the message directs the user to try signing in again, with guidance to contact IT if this continues
-
-#### Scenario: User cancelled authentication
-- **WHEN** the user abandons the identity provider flow and the IdP returns `access_denied`, `consent_required`, or `login_required`
-- **THEN** the error is categorized as `authentication_failed` and the message indicates sign-in was cancelled or denied
-
-#### Scenario: State/nonce validation failure
-- **WHEN** the callback state or nonce does not match (potential CSRF or replay)
-- **THEN** the error is categorized as `invalid_request` and the message directs the user to try signing in again from the beginning
-
----
-
-### Requirement: Error messages distinguish user-resolvable from IT-required issues
-Error messages SHALL distinguish between transient errors (retry) and persistent errors (contact IT). All error messages include IT contact guidance as a fallback.
-
-#### Scenario: Retriable error suggests retry
-- **WHEN** a `provider_unavailable` error occurs
-- **THEN** the error message suggests trying again in a few moments as the primary action
-
-#### Scenario: Persistent error suggests IT contact
-- **WHEN** an `authentication_failed` error occurs
-- **THEN** the error message suggests contacting the IT administrator if the problem continues
-
----
-
-### Requirement: Error response format
-Authentication errors SHALL be redirected to `/auth/error` with query parameters `category`, `message`, and `correlationId`. The `correlationId` is a UUID generated per error occurrence, enabling correlation between user-visible errors and server-side logs.
-
-#### Scenario: Error redirect with correlation ID
-- **WHEN** an authentication error occurs during callback processing
-- **THEN** the user is redirected to `/auth/error?category=<category>&message=<encoded message>&correlationId=<uuid>`
-
----
+## MODIFIED Requirements
 
 ### Requirement: Authentication event logging
 All authentication events SHALL be logged as structured audit entries via the `emitAuditEvent` function. Each entry includes `event` name, ISO 8601 `timestamp`, and event-specific fields. The `audit: true` field distinguishes audit log entries. Logs SHALL NOT include user credentials, tokens, or sensitive values. OIDC state nonces are truncated to 8 characters in logs. This prohibition applies to every log entry produced during authentication, not only entries emitted via `emitAuditEvent` — including error objects logged directly (e.g. `request.log.error({ err, ... })`) where `err` originates from the OIDC identity-provider client library. The "OIDC library error sanitization" requirement below defines the specific mechanism that enforces this for those errors.
@@ -76,7 +27,7 @@ All authentication events SHALL be logged as structured audit entries via the `e
 - **WHEN** a silent token refresh fails because the IdP has revoked the refresh token (the token endpoint responds with the OAuth error `invalid_grant`)
 - **THEN** the failure is classified as revoked immediately, with no retry delay, and the resulting `auth.token_refresh_failure` audit entry records `failureType: "revoked"` — not `"transient"`, which a pre-existing classification bug produced for this same case prior to this change
 
----
+## ADDED Requirements
 
 ### Requirement: OIDC library error sanitization
 The application SHALL sanitize any error thrown by the OIDC client library (`openid-client`/`oauth4webapi`), or by this application's own auth error classes reaching the same log call site (e.g. `MissingClaimError`, `packages/backend/src/auth/errors.ts`), before it reaches a logger, via a single shared sanitization function applied uniformly at every call site that can surface such an error to a logger. Sanitization SHALL dispatch on the error's class, not on provider-specific string content. This mechanism SHALL remain correct, with no change to the sanitization logic itself, for identity providers added after the application's initial provider that are integrated through the same OIDC client library (`openid-client`/`oauth4webapi`); a provider integrated through a different client library is outside this guarantee and requires the verification named in the corresponding design record before that provider's auth path is considered production-ready. The IdP-supplied `error_description` field and any raw `cause` content SHALL NOT appear in logs by default; the OAuth `error` code (e.g. `invalid_grant`) SHALL be preserved, since it is a fixed enum defined by the OAuth/OIDC specifications rather than free text. Any field withheld by sanitization SHALL appear in the logged output as an explicit redaction marker rather than being silently omitted, except where the underlying error class does not have that field at all (e.g. `WWWAuthenticateChallengeError` has no `error_description` field to withhold), in which case the field SHALL be absent rather than falsely marked as redacted. An error whose class the sanitization function does not recognize SHALL have its `message` and `stack` redacted and all provider- or library-supplied fields withheld, and SHALL produce a distinct log signal identifying it as unrecognized, rather than being logged unsanitized.
