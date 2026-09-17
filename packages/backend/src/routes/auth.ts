@@ -172,6 +172,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         sourceIp: request.ip,
         stateNonce: stateParam.substring(0, 8) + "...",
         success: true,
+        correlationId,
       });
 
       // Exchange code for tokens with nonce and PKCE verification
@@ -279,6 +280,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       emitAuditEvent(request.log, "auth.session_created", {
         userId: user.id,
         sessionId: request.session.sessionId,
+        sourceIp: request.ip,
+        correlationId,
       });
 
       emitAuditEvent(request.log, "auth.success", {
@@ -286,6 +289,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         oidcSubject: user.oidcSubject,
         oidcIssuer: user.oidcIssuer,
         isFirstAccess: user.isNewUser,
+        sourceIp: request.ip,
+        correlationId,
       });
 
       // Handle pending join token.

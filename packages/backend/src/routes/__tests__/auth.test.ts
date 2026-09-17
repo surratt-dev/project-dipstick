@@ -344,6 +344,30 @@ describe("authRoutes", () => {
         "auth.first_access_created",
         expect.anything(),
       );
+
+      // Issue #4 / AC2: callback_received, session_created, and success each
+      // carry sourceIp and correlationId.
+      const callbackReceivedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.callback_received",
+      );
+      const sessionCreatedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.session_created",
+      );
+      const successCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.success",
+      );
+      expect(callbackReceivedCall![2]).toMatchObject({
+        sourceIp: expect.any(String),
+        correlationId: expect.any(String),
+      });
+      expect(sessionCreatedCall![2]).toMatchObject({
+        sourceIp: expect.any(String),
+        correlationId: expect.any(String),
+      });
+      expect(successCall![2]).toMatchObject({
+        sourceIp: expect.any(String),
+        correlationId: expect.any(String),
+      });
     });
 
     it("should redirect to error on callback failure", async () => {
@@ -462,6 +486,92 @@ describe("authRoutes", () => {
       expect(auditFields).not.toHaveProperty("displayName");
       expect(auditFields).not.toHaveProperty("email");
       expect(auditFields).not.toHaveProperty("name");
+
+      // Issue #4 / AC1: callback_received, session_created, success, and
+      // first_access_created from this single invocation all share the exact
+      // same correlationId value.
+      const callbackReceivedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.callback_received",
+      );
+      const sessionCreatedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.session_created",
+      );
+      const successCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.success",
+      );
+      const correlationId = (callbackReceivedCall![2] as Record<string, unknown>).correlationId;
+      expect(auditFields.correlationId).toBe(correlationId);
+      expect((sessionCreatedCall![2] as Record<string, unknown>).correlationId).toBe(
+        correlationId,
+      );
+      expect((successCall![2] as Record<string, unknown>).correlationId).toBe(correlationId);
+    });
+
+    it("should emit role_claim_mapped with matching correlationId for returning users with a non-default globalRole (Issue #4)", async () => {
+      mockRedisGetdel.mockResolvedValue(
+        JSON.stringify({ nonce: "n", codeVerifier: "cv", createdAt: new Date().toISOString() }),
+      );
+      mockHandleCallback.mockResolvedValue({
+        claims: () => ({ sub: "sub-admin", iss: "https://idp.example.com" }),
+        access_token: "at",
+        expires_in: 3600,
+      });
+      mockResolveOrCreateAccount.mockResolvedValue({
+        id: "user-admin",
+        oidcSubject: "sub-admin",
+        oidcIssuer: "https://idp.example.com",
+        displayName: "Admin User",
+        email: "admin@example.com",
+        isNewUser: false,
+        globalRole: "admin",
+      });
+      mockBuildSessionData.mockReturnValue({
+        userId: "user-admin",
+        sessionCreatedAt: new Date().toISOString(),
+        encryptedAccessToken: "enc(at)",
+        tokenExpiresAt: 9999999999,
+      });
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ team_id: "team-1" }] });
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/auth/callback?state=valid&code=abc",
+      });
+
+      expect(res.statusCode).toBe(302);
+
+      const roleClaimMappedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.role_claim_mapped",
+      );
+      expect(roleClaimMappedCall).toBeDefined();
+      const auditFields = roleClaimMappedCall![2] as Record<string, unknown>;
+      expect(auditFields).toMatchObject({
+        userId: "user-admin",
+        oidcSubject: "sub-admin",
+        globalRole: "admin",
+        sourceIp: expect.any(String),
+        correlationId: expect.any(String),
+      });
+
+      // Issue #4 / AC1: callback_received, session_created, success, and
+      // role_claim_mapped from this single invocation all share the exact
+      // same correlationId value.
+      const callbackReceivedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.callback_received",
+      );
+      const sessionCreatedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.session_created",
+      );
+      const successCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.success",
+      );
+      const correlationId = (callbackReceivedCall![2] as Record<string, unknown>).correlationId;
+      expect(auditFields.correlationId).toBe(correlationId);
+      expect((sessionCreatedCall![2] as Record<string, unknown>).correlationId).toBe(
+        correlationId,
+      );
+      expect((successCall![2] as Record<string, unknown>).correlationId).toBe(correlationId);
     });
 
     // Task 12: Missing claims rejection
@@ -509,6 +619,15 @@ describe("authRoutes", () => {
         // Must not include claim values (no email, no iss value, no token)
         expect(auditFields).not.toHaveProperty("email");
         expect(auditFields).not.toHaveProperty("subValue");
+
+        // Issue #4 / AC1: the failure path's correlationId matches the one
+        // already emitted on auth.callback_received for this same invocation.
+        const callbackReceivedCall = mockEmitAuditEvent.mock.calls.find(
+          (c: unknown[]) => c[1] === "auth.callback_received",
+        );
+        expect(callbackReceivedCall).toBeDefined();
+        const callbackReceivedFields = callbackReceivedCall![2] as Record<string, unknown>;
+        expect(auditFields.correlationId).toBe(callbackReceivedFields.correlationId);
       });
 
       it("rejects authentication when iss is an empty string", async () => {
