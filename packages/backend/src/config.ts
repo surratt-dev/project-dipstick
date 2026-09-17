@@ -122,3 +122,20 @@ export function getAllowedOrigins(): string[] {
   }
   return ["http://localhost:5173", "http://localhost:3000"];
 }
+
+// ---------------------------------------------------------------------------
+// getAppOrigin — the frontend's origin, for building absolute redirect URLs
+// out of routes/auth.ts's /callback handler.
+//
+// That handler always runs on the backend's own origin (OIDC_REDIRECT_URI
+// points directly at the backend, bypassing the frontend dev server), so a
+// *relative* reply.redirect() target resolves against the backend, not the
+// frontend -- landing the browser on the bare API instead of the SPA. In
+// local dev the frontend is a separate origin (the Vite dev server on 5173)
+// with no APP_ORIGIN configured, hence the localhost:5173 fallback below;
+// in production APP_ORIGIN is mandatory (enforced in loadConfig) and is the
+// one true origin both frontend and backend share behind the proxy.
+// ---------------------------------------------------------------------------
+export function getAppOrigin(): string {
+  return config.APP_ORIGIN ?? (config.NODE_ENV === "production" ? "" : "http://localhost:5173");
+}

@@ -40,6 +40,8 @@ const { mockConfig, mockIsPrivateAddress } = vi.hoisted(() => ({
 vi.mock("../../config.js", () => ({
   config: mockConfig,
   isPrivateAddress: (...args: unknown[]) => mockIsPrivateAddress(...args),
+  getAppOrigin: () =>
+    mockConfig.APP_ORIGIN ?? (mockConfig.NODE_ENV === "production" ? "" : "http://localhost:5173"),
 }));
 vi.mock("../../auth/oidc-client.js", () => ({
   getAuthorizationUrl: (...args: unknown[]) => mockGetAuthorizationUrl(...args),
@@ -318,7 +320,7 @@ describe("authRoutes", () => {
 
       expect(res.statusCode).toBe(302);
       // Task 5: server-side redirect to /team/:teamId
-      expect(res.headers.location).toBe("/team/team-1");
+      expect(res.headers.location).toBe("http://localhost:5173/team/team-1");
       expect(mockEmitAuditEvent).toHaveBeenCalledWith(
         expect.anything(),
         "auth.success",
@@ -387,7 +389,7 @@ describe("authRoutes", () => {
 
       // Task 5: redirects to /no-team when no memberships
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe("/no-team");
+      expect(res.headers.location).toBe("http://localhost:5173/no-team");
 
       // Task 21: first_access_created emitted with all required fields
       const firstAccessCall = mockEmitAuditEvent.mock.calls.find(
@@ -526,7 +528,7 @@ describe("authRoutes", () => {
         });
 
         expect(res.statusCode).toBe(302);
-        expect(res.headers.location).toBe("/no-team");
+        expect(res.headers.location).toBe("http://localhost:5173/no-team");
       });
 
       it("redirects user with team memberships to /team/:teamId", async () => {
@@ -539,7 +541,7 @@ describe("authRoutes", () => {
         });
 
         expect(res.statusCode).toBe(302);
-        expect(res.headers.location).toBe("/team/team-abc");
+        expect(res.headers.location).toBe("http://localhost:5173/team/team-abc");
       });
 
       it("uses join flow redirect with ?alreadyMember=true when join token is processed for existing member", async () => {
@@ -596,7 +598,7 @@ describe("authRoutes", () => {
 
         expect(res.statusCode).toBe(302);
         // Task 4.2: already-member through-auth path appends ?alreadyMember=true
-        expect(res.headers.location).toBe("/team/team-joined?alreadyMember=true");
+        expect(res.headers.location).toBe("http://localhost:5173/team/team-joined?alreadyMember=true");
         expect(res.headers.location).not.toBe("/no-team");
       });
     });
@@ -615,7 +617,7 @@ describe("authRoutes", () => {
 
       expect(res.statusCode).toBe(302);
       // Live database query reflects no active memberships → /no-team
-      expect(res.headers.location).toBe("/no-team");
+      expect(res.headers.location).toBe("http://localhost:5173/no-team");
       // Not a team URL
       expect(res.headers.location).not.toContain("/team/");
     });
@@ -715,7 +717,7 @@ describe("authRoutes", () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe("/join-error?joinError=expired");
+      expect(res.headers.location).toBe("http://localhost:5173/join-error?joinError=expired");
       // User not routed to /no-team
       expect(res.headers.location).not.toBe("/no-team");
       // join.link_rejected audit emitted; join.link_redeemed must NOT be emitted
@@ -783,7 +785,7 @@ describe("authRoutes", () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe("/join-error?joinError=expired");
+      expect(res.headers.location).toBe("http://localhost:5173/join-error?joinError=expired");
       expect(res.headers.location).not.toBe("/no-team");
       // User not added to any team
       expect(mockDbQuery).toHaveBeenCalledTimes(1);
@@ -837,7 +839,7 @@ describe("authRoutes", () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe("/join-error?joinError=invalid");
+      expect(res.headers.location).toBe("http://localhost:5173/join-error?joinError=invalid");
       expect(res.headers.location).not.toBe("/no-team");
       // User not added to any team — only one db query (link lookup)
       expect(mockDbQuery).toHaveBeenCalledTimes(1);
@@ -903,7 +905,7 @@ describe("authRoutes", () => {
 
       expect(res.statusCode).toBe(302);
       // Task 4.1: new member gets ?newMember=true
-      expect(res.headers.location).toBe("/team/team-new?newMember=true");
+      expect(res.headers.location).toBe("http://localhost:5173/team/team-new?newMember=true");
       // Task 4.0: join.link_redeemed emitted when new row was inserted
       expect(mockEmitAuditEvent).toHaveBeenCalledWith(
         expect.anything(),
@@ -967,7 +969,7 @@ describe("authRoutes", () => {
 
       expect(res.statusCode).toBe(302);
       // Task 4.2: already-member gets ?alreadyMember=true
-      expect(res.headers.location).toBe("/team/team-existing?alreadyMember=true");
+      expect(res.headers.location).toBe("http://localhost:5173/team/team-existing?alreadyMember=true");
       // Task 4.0: join.link_redeemed must NOT be emitted when no new row inserted
       expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
         expect.anything(),
