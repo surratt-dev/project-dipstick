@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type * as OpenidClientModule from "openid-client";
+import type * as ErrorHandlerModule from "../../auth/error-handler.js";
 
 const mockDbQuery = vi.fn();
 const mockRedisSetex = vi.fn();
@@ -11,6 +13,7 @@ const mockResolveOrCreateAccount = vi.fn();
 const mockBuildSessionData = vi.fn();
 const mockGetDecryptedTokens = vi.fn();
 const mockMapAuthError = vi.fn();
+const mockSanitizeOidcError = vi.fn();
 
 vi.mock("../../db.js", () => ({
   db: { query: (...args: unknown[]) => mockDbQuery(...args) },
@@ -61,13 +64,21 @@ vi.mock("../../auth/audit-logger.js", () => ({
 vi.mock("../../auth/error-handler.js", () => ({
   mapAuthError: (...args: unknown[]) => mockMapAuthError(...args),
 }));
-vi.mock("openid-client", () => ({
-  randomNonce: () => "mock-nonce",
-  randomPKCECodeVerifier: () => "mock-verifier",
+vi.mock("../../auth/oidc-error-sanitizer.js", () => ({
+  sanitizeOidcError: (...args: unknown[]) => mockSanitizeOidcError(...args),
 }));
+vi.mock("openid-client", async () => {
+  const actual = await vi.importActual<typeof OpenidClientModule>("openid-client");
+  return {
+    ...actual,
+    randomNonce: () => "mock-nonce",
+    randomPKCECodeVerifier: () => "mock-verifier",
+  };
+});
 
 import Fastify from "fastify";
 import { authRoutes } from "../auth.js";
+import { ResponseBodyError } from "openid-client";
 
 function buildApp(sessionOverrides: Record<string, unknown> = {}) {
   const app = Fastify();
@@ -139,6 +150,7 @@ describe("authRoutes", () => {
     mockConfig.NODE_ENV = "test";
     mockConfig.OIDC_ISSUER = "https://idp.example.com";
     mockIsPrivateAddress.mockReturnValue(false);
+    mockSanitizeOidcError.mockReturnValue({ errorClass: "MockSanitized" });
   });
 
   describe("GET /auth/dev-login-options", () => {
@@ -352,6 +364,45 @@ describe("authRoutes", () => {
 
       expect(res.statusCode).toBe(302);
       expect(res.headers.location).toContain("category=authentication_failed");
+    });
+
+    it("user-facing error page is unaffected by log sanitization (design D6/D7, task 4.1)", async () => {
+      // Uses the REAL mapAuthError (not the file-level mock) so this proves the actual
+      // user-facing categorization path -- not just that mockMapAuthError was configured
+      // a particular way. sanitizeOidcError only ever wraps what goes into request.log.error;
+      // mapAuthError(err) is (and remains) called with the original, unsanitized err. This
+      // test would catch a regression where a future change accidentally passed the
+      // sanitized object to mapAuthError instead of the raw error.
+      const actualErrorHandler = await vi.importActual<typeof ErrorHandlerModule>(
+        "../../auth/error-handler.js",
+      );
+      mockMapAuthError.mockImplementation(actualErrorHandler.mapAuthError);
+
+      const CANARY = `CANARY_TOKEN_${crypto.randomUUID()}`;
+      mockRedisGetdel.mockResolvedValue(
+        JSON.stringify({ nonce: "n", codeVerifier: "cv", createdAt: new Date().toISOString() }),
+      );
+      mockHandleCallback.mockRejectedValue(
+        new ResponseBodyError("server responded with an error in the response body", {
+          cause: { error: "invalid_grant", error_description: CANARY },
+          response: { status: 400 },
+        }),
+      );
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/auth/callback?state=valid&code=abc",
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toContain("category=authentication_failed");
+      expect(res.headers.location).not.toContain(CANARY);
+      expect(decodeURIComponent(res.headers.location as string)).not.toContain(CANARY);
+
+      // The log call is independently sanitized -- confirms the two code paths (log vs.
+      // user-facing redirect) are wired separately, as the design requires.
+      expect(mockSanitizeOidcError).toHaveBeenCalled();
     });
 
     it("should emit first_access_created with all required fields for new users (Task 21)", async () => {
@@ -1218,6 +1269,41 @@ describe("authRoutes", () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json().redirectUrl).toBe("/");
+    });
+
+    it("degrades gracefully when getEndSessionUrl() throws (design D4, task 4.2)", async () => {
+      mockGetDecryptedTokens.mockReturnValue({ idToken: "id-tok" });
+      mockGetEndSessionUrl.mockRejectedValue(new Error("IdP end-session request failed"));
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "POST",
+        url: "/auth/logout?confirmed=true",
+      });
+
+      // (a) falls back to { redirectUrl: "/" } rather than propagating an uncaught error
+      expect(res.statusCode).toBe(200);
+      expect(res.json().redirectUrl).toBe("/");
+
+      // (b) the local session is already destroyed before this fallback response --
+      // request.session.destroy() runs unconditionally, earlier in the handler, before
+      // the IdP-logout attempt is ever made.
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "auth.session_invalidated",
+        expect.objectContaining({ reason: "explicit_logout" }),
+      );
+
+      // (c) the error is routed through sanitizeOidcError before being logged
+      expect(mockSanitizeOidcError).toHaveBeenCalledWith(expect.any(Error), expect.anything());
+
+      // (d) a distinct auth.idp_logout_failed audit event is emitted, with userId/sessionId,
+      // separate from the auth.session_invalidated event asserted above.
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "auth.idp_logout_failed",
+        expect.objectContaining({ userId: "user-1", sessionId: "sess-1" }),
+      );
     });
   });
 

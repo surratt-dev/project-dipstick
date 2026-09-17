@@ -10,6 +10,15 @@ export type AuditEventName =
   | "auth.session_invalidated"
   | "auth.token_refresh_success"
   | "auth.token_refresh_failure"
+  // auth.idp_logout_failed: oidc-error-log-sanitization, design.md Decision D4
+  // addendum. Fired by the /auth/logout handler when getEndSessionUrl() throws
+  // after the local session has already been destroyed. Distinct from
+  // auth.session_invalidated (already emitted earlier in the same handler,
+  // before this call) — this event exists specifically to make a dangling
+  // IdP-side SSO session (the user's local session ended, but the IdP was
+  // never notified) queryable rather than only discoverable by grepping error
+  // logs for shape.
+  | "auth.idp_logout_failed"
   | "join.link_created"
   | "join.link_redeemed"
   | "join.link_rejected"

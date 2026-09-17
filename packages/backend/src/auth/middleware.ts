@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply, FastifyBaseLogger } from "fastify";
+import { ResponseBodyError } from "openid-client";
 import { refreshToken as refreshOidcToken } from "./oidc-client.js";
 import { encryptToken } from "./token-encryption.js";
 import { getDecryptedTokens } from "./session-store.js";
 import type { SessionData } from "./session-store.js";
 import { emitAuditEvent } from "./audit-logger.js";
+import { sanitizeOidcError } from "./oidc-error-sanitizer.js";
 
 const PUBLIC_ROUTES = [
   "/health",
@@ -101,10 +103,12 @@ export async function refreshSessionTokens(
 
       return { status: "refreshed", session: refreshed };
     } catch (err: unknown) {
-      const isRevocation =
-        err instanceof Error &&
-        (err.message.includes("invalid_grant") ||
-          ("code" in err && (err as { code?: string }).code === "invalid_grant"));
+      // D10: dispatch on `err.error`, the spec-defined OAuth enum ResponseBodyError
+      // exposes for a token-endpoint error response -- not `.message` (always the
+      // fixed generic string "server responded with an error in the response body")
+      // or `.code` (always the fixed internal enum "OAUTH_RESPONSE_BODY_ERROR"),
+      // neither of which can ever carry "invalid_grant".
+      const isRevocation = err instanceof ResponseBodyError && err.error === "invalid_grant";
 
       if (isRevocation) {
         emitAuditEvent(log, "auth.token_refresh_failure", {
@@ -120,6 +124,19 @@ export async function refreshSessionTokens(
       retries++;
       if (retries <= REFRESH_MAX_RETRIES) {
         await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_DELAY_MS));
+      } else {
+        // D9: this is the one path where an unrecognized OIDC error during token
+        // refresh previously produced zero log output -- `err` was inspected for
+        // the revocation heuristic above and then discarded. Log it, sanitized,
+        // now that the retry budget is exhausted.
+        log.error({
+          err: sanitizeOidcError(err, log),
+          userId: session.userId,
+          sessionId,
+          source,
+          event: "auth.token_refresh_error",
+          retryCount: retries,
+        });
       }
     }
   }

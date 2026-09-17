@@ -23,6 +23,7 @@
     "fastify": "^5.0.0",
     "ioredis": "^5.0.0",
     "node-pg-migrate": "^7.0.0",
+    "oauth4webapi": "3.8.6",
     "openid-client": "^6.8.4",
     "pg": "^8.0.0"
   },

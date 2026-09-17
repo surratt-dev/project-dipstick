@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { ResponseBodyError } from "openid-client";
 
 const mockRefreshOidcToken = vi.fn();
 const mockEncryptToken = vi.fn((v: string) => `enc(${v})`);
@@ -21,7 +22,7 @@ vi.mock("../../config.js", () => ({
   config: { SESSION_SECRET: "test" },
 }));
 
-import { authMiddleware, refreshSessionTokens } from "../middleware.js";
+import { authMiddleware, refreshSessionTokens, REFRESH_RETRY_DELAY_MS } from "../middleware.js";
 
 function createMockApp() {
   const hooks: Array<(req: unknown, reply: unknown) => Promise<unknown>> = [];
@@ -192,12 +193,79 @@ describe("authMiddleware", () => {
       expiresAt: nowSec + 60,
     });
 
-    mockRefreshOidcToken.mockRejectedValue(new Error("invalid_grant"));
+    // D10: revocation is now detected via `err instanceof ResponseBodyError && err.error
+    // === "invalid_grant"` -- a generic Error carrying that string in its message no
+    // longer qualifies (that was exactly the pre-existing misclassification bug D10 fixes).
+    mockRefreshOidcToken.mockRejectedValue(
+      new ResponseBodyError("server responded with an error in the response body", {
+        cause: { error: "invalid_grant", error_description: "refresh token revoked" },
+        response: { status: 400 },
+      }),
+    );
 
     await hook(req, reply);
 
     expect(reply.code).toHaveBeenCalledWith(401);
     expect(req.session.destroy).toHaveBeenCalled();
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "auth.token_refresh_failure",
+      expect.objectContaining({ failureType: "revoked", retryCount: 0 }),
+    );
+  });
+
+  it("D9/D10: an unrecognized refresh error still exhausts retries, audits transient, and logs exactly one sanitized error line", async () => {
+    const app = createMockApp();
+    await authMiddleware(app as unknown as Parameters<typeof authMiddleware>[0]);
+    const hook = app.getHook()!;
+    const reply = createMockReply();
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const req = createMockRequest({
+      session: {
+        userId: "user-1",
+        sessionCreatedAt: new Date().toISOString(),
+        tokenExpiresAt: nowSec + 60,
+        encryptedAccessToken: "enc(old)",
+        sessionId: "sess-1",
+        destroy: vi.fn(),
+        touch: vi.fn(),
+      },
+    });
+
+    mockGetDecryptedTokens.mockReturnValue({
+      accessToken: "old",
+      refreshToken: "refresh-tok",
+      expiresAt: nowSec + 60,
+    });
+
+    // Not a ResponseBodyError, not any other recognized OIDC error class -- this is
+    // the fail-closed path (design D3 case 4).
+    mockRefreshOidcToken.mockRejectedValue(new Error("network blip"));
+
+    const hookPromise = hook(req, reply);
+    // Two retries at REFRESH_RETRY_DELAY_MS apart before the loop exhausts.
+    await vi.advanceTimersByTimeAsync(REFRESH_RETRY_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(REFRESH_RETRY_DELAY_MS);
+    await hookPromise;
+
+    expect(mockRefreshOidcToken).toHaveBeenCalledTimes(3); // initial attempt + 2 retries
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "auth.token_refresh_failure",
+      expect.objectContaining({ failureType: "transient" }),
+    );
+    expect(reply.code).toHaveBeenCalledWith(401);
+
+    // The new D9 log line: fires exactly once (not once per retry attempt), and its
+    // `err` field is the sanitized wrapper output, not the raw Error.
+    const tokenRefreshErrorCalls = (req.log.error as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([arg]: [Record<string, unknown>]) => arg.event === "auth.token_refresh_error",
+    );
+    expect(tokenRefreshErrorCalls).toHaveLength(1);
+    const [loggedArg] = tokenRefreshErrorCalls[0] as [Record<string, unknown>];
+    expect(loggedArg.err).toMatchObject({ errorClass: "Error", unrecognized: true });
+    expect(loggedArg).toMatchObject({ userId: "user-1", sessionId: "sess-1", source: "http" });
   });
 
   it("copy-back: refreshSessionTokens returns a NEW object, and authMiddleware explicitly copies its fields back onto request.session (design.md Decision D3)", async () => {

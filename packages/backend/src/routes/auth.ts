@@ -15,6 +15,7 @@ import type { SessionData } from "../auth/session-store.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { mapAuthError } from "../auth/error-handler.js";
 import { MissingClaimError } from "../auth/errors.js";
+import { sanitizeOidcError } from "../auth/oidc-error-sanitizer.js";
 import type { AuthSession, DevLoginOption, DevLoginOptionsResponse } from "@dipstick/shared";
 
 const STATE_TTL_SECONDS = 600; // 10 minutes
@@ -332,7 +333,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const authError = mapAuthError(err);
 
       request.log.error({
-        err,
+        err: sanitizeOidcError(err, request.log),
         correlationId,
         sourceIp: request.ip,
         event: "auth.callback_error",
@@ -423,14 +424,28 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     // Attempt IdP logout
     if (idToken) {
-      const endSessionUrl = await getEndSessionUrl(idToken, getAppOrigin());
+      try {
+        const endSessionUrl = await getEndSessionUrl(idToken, getAppOrigin());
 
-      if (endSessionUrl) {
-        return reply.send({ redirectUrl: endSessionUrl.toString() });
-      } else {
-        request.log.warn(
-          "IdP does not support end_session_endpoint; user's IdP session remains active",
-        );
+        if (endSessionUrl) {
+          return reply.send({ redirectUrl: endSessionUrl.toString() });
+        } else {
+          request.log.warn(
+            "IdP does not support end_session_endpoint; user's IdP session remains active",
+          );
+        }
+      } catch (err: unknown) {
+        request.log.error({
+          err: sanitizeOidcError(err, request.log),
+          userId,
+          sessionId,
+          event: "auth.idp_logout_error",
+        });
+        emitAuditEvent(request.log, "auth.idp_logout_failed", {
+          userId,
+          sessionId,
+        });
+        return reply.send({ redirectUrl: "/" });
       }
     }
 
