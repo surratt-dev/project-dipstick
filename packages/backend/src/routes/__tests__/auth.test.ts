@@ -324,7 +324,9 @@ describe("authRoutes", () => {
       // isNewUser: false — returning user with existing team membership
       setupValidCallbackMocks({ isNewUser: false, teamMemberships: [{ team_id: "team-1" }] });
 
-      const app = await buildApp();
+      const mockDestroy = vi.fn((cb?: () => void) => cb?.());
+      const mockRegenerate = vi.fn();
+      const app = await buildApp({ destroy: mockDestroy, regenerate: mockRegenerate });
       const res = await app.inject({
         method: "GET",
         url: "/auth/callback?state=valid&code=abc",
@@ -368,6 +370,10 @@ describe("authRoutes", () => {
         sourceIp: expect.any(String),
         correlationId: expect.any(String),
       });
+
+      // Task 3: session fixation prevention — regenerate() alone, never destroy().
+      expect(mockRegenerate).toHaveBeenCalledTimes(1);
+      expect(mockDestroy).not.toHaveBeenCalled();
     });
 
     it("should redirect to error on callback failure", async () => {
