@@ -226,6 +226,13 @@ export function emitAuditEvent(
   // In pino, each logger instance owns its own level independently of its
   // parent; overriding it on the child ensures audit events are always emitted
   // regardless of the application-wide log level configured at startup.
+  //
+  // This override protects against application-level log-level changes only.
+  // It does NOT protect against a pino transport configured with its own
+  // level filter (e.g., a shipper that drops below 'warn') — transport-level
+  // filtering happens downstream of this logger and is invisible here. See
+  // "Logging" in docs/deployment.md for the events at risk and what to check
+  // before adopting a filtering transport.
   const auditLogger = logger.child({ audit: true });
   auditLogger.level = "info";
   auditLogger.info({
