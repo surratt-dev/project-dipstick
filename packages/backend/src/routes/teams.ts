@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { db } from "../db.js";
 import { redis } from "../redis.js";
+import { config } from "../config.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
 import type {
@@ -664,6 +665,9 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       engineeringManagers,
       canAssignRoles,
       canAssociateManagers,
+      // escalation-contact-mechanism design.md Decision 5: populated unconditionally,
+      // no viewer-state gating — this is a shared configuration alias, not per-caller PII.
+      applicationAdminContactEmail: config.APPLICATION_ADMIN_CONTACT_EMAIL ?? null,
     };
 
     return reply.send(response);

@@ -75,6 +75,13 @@ export interface TeamMembersResponse {
   canAssignRoles: boolean;
   /** True when the actor can call TEAM-006 (associate managers). Application Admins only. */
   canAssociateManagers: boolean;
+  /**
+   * The configured Application Admin contact alias (e.g. `APPLICATION_ADMIN_CONTACT_EMAIL`),
+   * or `null` when unset. Populated unconditionally for every caller — this is a shared
+   * inbox / mailing-list address, not individually-privileged identity data, so it carries
+   * no viewer-state gating (escalation-contact-mechanism design.md Decision 5).
+   */
+  applicationAdminContactEmail: string | null;
 }
 
 /**

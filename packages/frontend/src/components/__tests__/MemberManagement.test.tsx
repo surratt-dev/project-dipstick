@@ -52,6 +52,7 @@ const membersResponseWithAssignRoles: TeamMembersResponse = {
   teamName: "Alpha",
   canAssignRoles: true,
   canAssociateManagers: false,
+  applicationAdminContactEmail: "app-admins@example.com",
   participants: [
     {
       userId: "u1",
@@ -470,15 +471,12 @@ describe("5.7: Escalation message when canAssignRoles is false", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task 4.3 (establish-manager-team-relationship):
+// Task 4.3 / Task 5 (escalation-contact-mechanism):
 // User WITHOUT TEAM-006 permission (canAssociateManagers: false) sees
-// explanation text and a specific contact path — NOT a grayed-out control.
-//
-// Decision 1 / Decision 10 escalation requirement:
-// "A grayed-out control with no explanation does not meet the requirement.
-//  Minimum acceptable text: 'Associating an Engineering Manager requires
-//  Application Admin access. Contact your admin to complete this before
-//  the session.' The contact path must be specific."
+// explanation text and an actual resolvable contact mechanism — a `mailto:`
+// link to the configured Application Admin contact alias, or the named
+// unconfigured-contact fallback. "Contact your admin" with no mechanism does
+// NOT satisfy this requirement (proposal.md, design.md Decision 3/4).
 // ---------------------------------------------------------------------------
 describe("4.3: TEAM-006 escalation path when canAssociateManagers is false", () => {
   const responseWithoutAssociatePermission: TeamMembersResponse = {
@@ -486,6 +484,7 @@ describe("4.3: TEAM-006 escalation path when canAssociateManagers is false", () 
     teamName: "Alpha",
     canAssignRoles: false,
     canAssociateManagers: false,
+    applicationAdminContactEmail: "app-admins@example.com",
     participants: [
       { userId: "u1", displayName: "Alice", email: "alice@test.com", role: "participant" },
     ],
@@ -508,15 +507,18 @@ describe("4.3: TEAM-006 escalation path when canAssociateManagers is false", () 
     });
   });
 
-  it("shows specific contact path in escalation message, not just a grayed-out control", async () => {
+  // Task 5.2 — TEAM-006 baseline: configured contact renders as a mailto: link
+  it("5.2: shows a mailto: link to the configured Application Admin contact, not just a grayed-out control", async () => {
     render(<MemberManagement teamId="team-1" />);
 
     await waitFor(() => {
       const escalation = screen.getByTestId("associate-manager-escalation");
       // Must explain WHY (Application Admin requirement)
       expect(escalation).toHaveTextContent(/Application Admin/i);
-      // Must provide a specific contact path (not just "contact us")
-      expect(escalation).toHaveTextContent(/Contact your admin/i);
+      // Must provide an actual resolvable mechanism, not the bare phrase
+      const link = escalation.querySelector("a[href]");
+      expect(link).not.toBeNull();
+      expect(link).toHaveAttribute("href", "mailto:app-admins@example.com");
     });
   });
 
@@ -555,6 +557,175 @@ describe("4.3: TEAM-006 escalation path when canAssociateManagers is false", () 
         screen.queryByTestId("associate-manager-escalation"),
       ).not.toBeInTheDocument();
     });
+  });
+
+  // Task 5.7 (TEAM-006 half) — unconfigured-contact-alias fallback
+  it("5.7: shows the unconfigured-contact fallback when applicationAdminContactEmail is null", async () => {
+    const unconfiguredResponse: TeamMembersResponse = {
+      ...responseWithoutAssociatePermission,
+      applicationAdminContactEmail: null,
+    };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(unconfiguredResponse),
+    } as unknown as Response);
+
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => {
+      const escalation = screen.getByTestId("associate-manager-escalation");
+      expect(escalation).toHaveTextContent(
+        /No Application Admin contact is currently configured/i,
+      );
+      expect(escalation.querySelector("a[href]")).toBeNull();
+    });
+  });
+
+  // Task 5.8 — TEAM-006 must never resolve to an EM's identity, even when one
+  // is associated with the team elsewhere on the same page (design.md Decision 2).
+  it("5.8: never renders an Engineering Manager's identity as the TEAM-006 contact, even when one is associated", async () => {
+    const responseWithEM: TeamMembersResponse = {
+      ...responseWithoutAssociatePermission,
+      engineeringManagers: [
+        { userId: "em-1", displayName: "Erin EM", email: "erin@test.com", role: "engineering_manager" },
+      ],
+    };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(responseWithEM),
+    } as unknown as Response);
+
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => {
+      const escalation = screen.getByTestId("associate-manager-escalation");
+      expect(escalation).toHaveTextContent(/Application Admin/i);
+      expect(escalation).not.toHaveTextContent("Erin EM");
+      expect(escalation).not.toHaveTextContent("erin@test.com");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5.3–5.6 (escalation-contact-mechanism): TEAM-005 escalation contact
+// resolution — EM identity reused when associated, Application Admin
+// fallback otherwise, unconfigured-contact fallback when neither resolves.
+// ---------------------------------------------------------------------------
+describe("5: TEAM-005 escalation contact resolution when canAssignRoles is false", () => {
+  const baseResponse: TeamMembersResponse = {
+    teamId: "team-1",
+    teamName: "Alpha",
+    canAssignRoles: false,
+    canAssociateManagers: false,
+    applicationAdminContactEmail: "app-admins@example.com",
+    participants: [
+      { userId: "u1", displayName: "Alice", email: "alice@test.com", role: "participant" },
+    ],
+    engineeringManagers: [],
+  };
+
+  function mockResponse(overrides: Partial<TeamMembersResponse>) {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ...baseResponse, ...overrides }),
+    } as unknown as Response);
+  }
+
+  // Task 5.3
+  it("5.3: shows the associated EM's identity as the contact when exactly one EM is associated", async () => {
+    mockResponse({
+      engineeringManagers: [
+        { userId: "em-1", displayName: "Erin EM", email: "erin@test.com", role: "engineering_manager" },
+      ],
+    });
+
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => {
+      const escalation = screen.getByTestId("escalation-message");
+      expect(escalation).toHaveTextContent("Erin EM");
+      expect(escalation).toHaveTextContent("erin@test.com");
+      // Must not fall back to the Application Admin contact when an EM exists
+      expect(escalation.querySelector("a[href]")).toBeNull();
+    });
+  });
+
+  // Task 5.4
+  it("5.4: shows all associated EMs' identities, comma-separated, on a single inline line when more than one is associated", async () => {
+    mockResponse({
+      engineeringManagers: [
+        { userId: "em-1", displayName: "Erin EM", email: "erin@test.com", role: "engineering_manager" },
+        { userId: "em-2", displayName: "Frank EM", email: "frank@test.com", role: "engineering_manager" },
+      ],
+    });
+
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => {
+      const escalation = screen.getByTestId("escalation-message");
+      expect(escalation).toHaveTextContent(
+        "Erin EM (erin@test.com), Frank EM (frank@test.com)",
+      );
+      // Single inline line, not a list
+      expect(escalation.querySelector("ul, ol")).toBeNull();
+    });
+  });
+
+  // Task 5.5
+  it("5.5: falls back to the configured Application Admin contact when no EM is associated", async () => {
+    mockResponse({ engineeringManagers: [] });
+
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => {
+      const escalation = screen.getByTestId("escalation-message");
+      const link = escalation.querySelector("a[href]");
+      expect(link).not.toBeNull();
+      expect(link).toHaveAttribute("href", "mailto:app-admins@example.com");
+    });
+  });
+
+  // Task 5.6 — stacked case: no role-assignment permission AND no associated EM
+  it("5.6: stacked case (no permission, no EM) shows Application Admin contact and references no EM data", async () => {
+    mockResponse({ engineeringManagers: [], canAssociateManagers: false });
+
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => {
+      const escalation = screen.getByTestId("escalation-message");
+      const link = escalation.querySelector("a[href]");
+      expect(link).toHaveAttribute("href", "mailto:app-admins@example.com");
+    });
+    // No EM data referenced anywhere in the escalation message
+    const escalation = screen.getByTestId("escalation-message");
+    expect(escalation).not.toHaveTextContent(/Engineering Manager,/i);
+  });
+
+  // Task 5.7 (TEAM-005 half) — unconfigured-contact-alias fallback, no EM associated
+  it("5.7: shows the unconfigured-contact fallback when no EM is associated and applicationAdminContactEmail is null", async () => {
+    mockResponse({ engineeringManagers: [], applicationAdminContactEmail: null });
+
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => {
+      const escalation = screen.getByTestId("escalation-message");
+      expect(escalation).toHaveTextContent(
+        /No Application Admin contact is currently configured/i,
+      );
+      expect(escalation.querySelector("a[href]")).toBeNull();
+    });
+  });
+
+  it("does not render role selectors when canAssignRoles is false", async () => {
+    mockResponse({ engineeringManagers: [] });
+    render(<MemberManagement teamId="team-1" />);
+    await waitFor(() => {
+      expect(screen.getByTestId("escalation-message")).toBeInTheDocument();
+    });
+    expect(screen.queryAllByRole("combobox")).toHaveLength(0);
   });
 });
 
@@ -635,6 +806,7 @@ describe("6.1–6.4: Labeled sections — participants vs associated managers", 
       teamName: "Alpha",
       canAssignRoles: false,
       canAssociateManagers: false,
+      applicationAdminContactEmail: "app-admins@example.com",
       participants: [{ userId: "u1", displayName: "Alice", email: "alice@test.com", role: "participant" }],
       engineeringManagers: [{ userId: "u-em", displayName: "Eve EM", email: "eve@test.com", role: "engineering_manager" }],
     };
@@ -665,6 +837,7 @@ describe("6.5: Acceptance — facilitator can identify session invitees without 
       teamName: "Alpha",
       canAssignRoles: false,
       canAssociateManagers: false,
+      applicationAdminContactEmail: "app-admins@example.com",
       participants: [
         { userId: "u1", displayName: "Alice", email: "alice@test.com", role: "participant" },
         { userId: "u2", displayName: "Carol", email: "carol@test.com", role: "participant" },
@@ -779,6 +952,7 @@ describe("9.5: End-to-end verification — separate labeled sections for partici
       teamName: "Alpha",
       canAssignRoles: false,
       canAssociateManagers: false,
+      applicationAdminContactEmail: "app-admins@example.com",
       participants: [
         { userId: "p1", displayName: "Alice", email: "alice@test.com", role: "participant" },
         { userId: "p2", displayName: "Bob", email: "bob@test.com", role: "participant" },

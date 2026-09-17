@@ -23,6 +23,41 @@ const ROLE_DESCRIPTIONS: Record<MembershipRole, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// Application Admin contact resolution (escalation-contact-mechanism)
+//
+// Shared rendering markup only (design.md Decision 2 / task 4.4) — the two
+// escalation sites (TEAM-005, TEAM-006) keep separate resolution logic
+// (TEAM-006 has no EM fallback; TEAM-005 does) and each calls this helper
+// once they've decided the Application Admin contact is the right branch.
+//
+// Locked copy (task 1.3):
+// - Configured: "Contact the Application Admin team at <mailto link>."
+// - Unconfigured/misconfigured: names the actual state rather than silently
+//   repeating "Contact your admin" or rendering a broken/empty mailto link.
+// ---------------------------------------------------------------------------
+function ApplicationAdminContactLine({ email }: { email: string | null }) {
+  if (!email) {
+    return (
+      <>
+        No Application Admin contact is currently configured for this
+        application. Contact your engineering leadership directly.
+      </>
+    );
+  }
+  return (
+    <>
+      Contact the Application Admin team at <a href={`mailto:${email}`}>{email}</a>.
+    </>
+  );
+}
+
+// Single inline line, comma-separated when more than one EM is associated
+// (design.md Decision 2/3) — TEAM-005's EM-fallback branch only.
+function formatEmContacts(ems: TeamMember[]): string {
+  return ems.map((em) => `${em.displayName} (${em.email})`).join(", ");
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 interface Props {
@@ -161,7 +196,14 @@ export function MemberManagement({ teamId }: Props) {
     return <p>Loading team members…</p>;
   }
 
-  const { teamName, participants, engineeringManagers, canAssignRoles, canAssociateManagers } = data;
+  const {
+    teamName,
+    participants,
+    engineeringManagers,
+    canAssignRoles,
+    canAssociateManagers,
+    applicationAdminContactEmail,
+  } = data;
 
   return (
     <section aria-labelledby="member-management-heading">
@@ -212,18 +254,13 @@ export function MemberManagement({ teamId }: Props) {
           Shown when canAssignRoles is false. A grayed-out control with
           no explanation is NOT acceptable per the spec.
 
-          TRACKED RISK — escalation UX incomplete (architect finding #3):
-          The current message satisfies the minimum spec (plain-language
-          explanation is present and non-dismissible). It does NOT satisfy
-          the preferred spec: surfacing the admin contact or an in-app
-          request path. Rachel Okonkwo's (VP Engineering) sign-off on
-          Option A was conditioned on the escalation path being built in,
-          not deferred indefinitely. If facilitators hit a dead end with
-          no admin contact surfaced, the adoption risk named in Decision 3
-          will materialize. This is not a stretch goal — it is a required
-          follow-on with a named stakeholder condition attached.
-          Owner: Marcus Oyelaran. Must complete before declaring Option A
-          fully implemented.
+          TEAM-005 contact resolution (escalation-contact-mechanism,
+          design.md Decision 2): an associated EM's on-page identity is
+          reused as the contact when one or more exist; only when the
+          team has no associated EM does this fall back to the Application
+          Admin contact mechanism TEAM-006 also uses. This is a separate
+          code path from TEAM-006's — TEAM-005's authorized-actor set
+          includes EMs, TEAM-006's does not.
       --------------------------------------------------------------- */}
       {!canAssignRoles && (
         <p
@@ -237,7 +274,13 @@ export function MemberManagement({ teamId }: Props) {
           }}
         >
           Only an Application Admin or an Engineering Manager for this team can
-          change roles. Contact your admin to update this before the session.
+          change roles.{" "}
+          {engineeringManagers.length > 0 ? (
+            <>Contact {engineeringManagers.length === 1 ? "your Engineering Manager" : "your Engineering Managers"},{" "}
+            {formatEmContacts(engineeringManagers)}, to update this before the session.</>
+          ) : (
+            <ApplicationAdminContactLine email={applicationAdminContactEmail} />
+          )}
         </p>
       )}
 
@@ -414,7 +457,7 @@ export function MemberManagement({ teamId }: Props) {
           Your Engineering Manager can see session history but cannot join or observe live sessions.
         </p>
 
-        {engineeringManagers.length === 0 ? (
+        {engineeringManagers.length === 0 && (
           /* Incomplete-setup indicator — not an error (Decision 7) */
           <div
             data-testid="no-em-association-indicator"
@@ -427,27 +470,29 @@ export function MemberManagement({ teamId }: Props) {
             }}
           >
             No Engineering Manager is associated with this team yet.
-            {/* Escalation path (Decision 1, Tasks 4.1, 4.2):
-                When canAssociateManagers is false (facilitator/engineer view),
-                show the explanation and specific contact path.
-                When canAssociateManagers is true (admin view), show the affordance
-                to establish the association. */}
-            {canAssociateManagers ? (
-              <span style={{ marginLeft: "0.5rem" }}>
-                {/* Admin sees the affordance — actual TEAM-006 call is wired separately */}
-                Use the admin panel to associate an Engineering Manager.
-              </span>
-            ) : (
-              <span
-                data-testid="associate-manager-escalation"
-                style={{ marginLeft: "0.5rem" }}
-              >
-                Associating an Engineering Manager requires Application Admin access.
-                Contact your admin to complete this before the session.
-              </span>
-            )}
           </div>
+        )}
+
+        {/* Escalation path (Decision 1, Tasks 4.1, 4.2; escalation-contact-mechanism
+            Decision 2, task 3.3): gated on canAssociateManagers alone, not on
+            whether an EM is already associated — a team can have more than one
+            active EM (Context), so a non-admin is blocked from calling TEAM-006
+            regardless of current association count, and the contact mechanism
+            must never resolve to an EM even when one is associated elsewhere
+            on this page. */}
+        {canAssociateManagers ? (
+          <p style={{ marginTop: "0.75rem" }}>
+            {/* Admin sees the affordance — actual TEAM-006 call is wired separately */}
+            Use the admin panel to associate an Engineering Manager.
+          </p>
         ) : (
+          <p data-testid="associate-manager-escalation" style={{ marginTop: "0.75rem" }}>
+            Associating an Engineering Manager requires Application Admin access.{" "}
+            <ApplicationAdminContactLine email={applicationAdminContactEmail} />
+          </p>
+        )}
+
+        {engineeringManagers.length > 0 && (
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {engineeringManagers.map((em) => (
               <li

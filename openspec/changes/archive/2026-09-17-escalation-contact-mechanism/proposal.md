@@ -1,0 +1,35 @@
+## Why
+
+The team membership screen already tells a facilitator or engineer *that* they lack authority to change roles or associate an Engineering Manager — but it stops at "Contact your admin," with no name, address, or path to actually do that. For a facilitator running a session with a team they've never worked with before (the exact scenario this application exists to support), "contact your admin" is a dead end: they have no idea who the admin is. In practice that dead end routes back to whoever has been explaining this ritual by hand for years, which is precisely the informal-help-desk failure mode the application was built to eliminate.
+
+This gap is not new — it is a named, tracked condition. Rachel Okonkwo's (VP Engineering) sign-off on the admin-only TEAM-006 EM-association restriction was explicitly conditioned on this escalation path being built, not deferred (`MemberManagement.tsx:210-226`), and `tasks.md` task 4.2 has sat as the only unchecked item in its section since. GitHub issue #15 and BRD FR-1.6a name the requirement directly: "Contact the admin" with no mechanism does not meet the spec. This change closes that gap for real, for both places it appears — the TEAM-005 role-assignment escalation and the TEAM-006 EM-association escalation.
+
+## What Changes
+
+- Add a real, resolvable contact mechanism to the TEAM-006 (EM-association) escalation message: a single `mailto:` link to a configured Application Admin contact alias (e.g. `APPLICATION_ADMIN_CONTACT_EMAIL`) — a shared inbox / mailing-list address, not an individual's identity — rendered as one inline line of passive text, in the same visual register as the existing `access-model-statement` pattern. No new UI surface, no modal, no interactive flow.
+- Add the same Application-Admin-contact mechanism to the TEAM-005 (role-assignment) escalation message **for the case where no Engineering Manager is currently associated with the team** (no EM data exists to fall back to).
+- For the TEAM-005 escalation **when one or more EMs are already associated** with the team, reference that EM's (or, if more than one, all associated EMs', comma-separated) existing on-page name/email (`MemberManagement.tsx:469`) as the contact instead of the Application Admin alias — this endpoint's authorized-actor set legitimately includes the team's own EM(s), per `role-assignment/spec.md`. A team can have more than one active EM (the uniqueness constraint is per user-team pair, not per team, and `MemberManagement.tsx` already renders `engineeringManagers` as a list), so this branch renders all associated EMs comma-separated on one inline line rather than assuming exactly one. This is a data-reuse change, not new backend work.
+- Add an explicit fallback for when the Application Admin contact alias is unset or misconfigured: render a specific fallback sentence naming the actual state rather than silently repeating "Contact your admin" or rendering a broken/empty `mailto:` link.
+- Rewrite `packages/frontend/src/components/__tests__/MemberManagement.test.tsx`'s task-4.3 describe block (`:483-559`) so it asserts the presence of an actual resolvable mechanism (a `mailto:` href, or a rendered EM identity), not a match against the literal phrase "Contact your admin." Add explicit test cases for the TEAM-005 stacked case (no permission AND no associated EM), the multi-EM case, and the unconfigured-contact-alias fallback.
+- **Not in scope**: no facilitator-continuity tracking (whether a later facilitator can see that escalation was already requested) — that requires its own data model and UI surface and is being recommended as a separate follow-on issue, not bundled here. No in-app messaging/request system (Option D) — out of proportion to a text-and-data fix and not what FR-1.6a asks for.
+
+## Capabilities
+
+### New Capabilities
+(none — this closes a gap in two existing capabilities' requirements)
+
+### Modified Capabilities
+- `role-assignment`: The TEAM-005 escalation-message requirement (currently satisfied by generic "Contact your admin" text) is tightened to require a specific, resolvable contact mechanism — the associated EM's identity when one exists, otherwise the configured Application Admin contact alias, otherwise a named unconfigured-alias fallback.
+- `manager-team-association`: The TEAM-006 escalation-message requirement is tightened the same way — the configured Application Admin contact alias (this endpoint has no EM fallback, since Application Admin is its only authorized actor), otherwise the named unconfigured-alias fallback.
+
+## Impact
+
+- **Frontend**: `packages/frontend/src/components/MemberManagement.tsx` — both escalation-message render blocks (`:239-241` TEAM-005, `:445-447` TEAM-006).
+- **Backend**: `GET /api/v1/teams/:teamId` (TEAM-003) — the only endpoint this screen calls — gains a required `applicationAdminContactEmail: string | null` field on `TeamMembersResponse`, sourced from a new optional config key (`APPLICATION_ADMIN_CONTACT_EMAIL`) read in `packages/backend/src/config.ts`, the codebase's existing single source of truth for deployment-time configuration (see design.md Decision 5). The field is populated unconditionally for every caller — no viewer-state gating, since a shared contact alias is not individual PII. No database query, no new type, no `AdminContact[]`. The legacy `GET /api/v1/teams/:teamId/members` endpoint is out of scope — it is unused by `MemberManagement.tsx` and marked `@deprecated`. The TEAM-005 case with an EM already associated needs no new backend work — that data (`em.email`) is already fetched and rendered on the page.
+- **Tests**: `packages/frontend/src/components/__tests__/MemberManagement.test.tsx` task-4.3 describe block rewritten, with new cases for the TEAM-005 stacked case and the unconfigured-alias fallback. `packages/backend/src/routes/__tests__/teams.test.ts` gains coverage asserting `applicationAdminContactEmail` reflects the configured value (or `null` when unset) for any caller.
+- **Open items** (carried forward from exploration, `exploration-notes.md` §5):
+  1. ~~Real Application Admin headcount in the actual reference deployment~~ — **CLOSED.** A 2026-09-16 stakeholder decision resolved this by eliminating the question: the Application Admin contact point is a single configured alias (design.md Decision 1), not an enumerated roster, so headcount no longer matters to this design.
+  2. ~~Reconfirmation of the July 2026 security threat-model assumption~~ — **CLOSED, moot.** No individual admin identity is disclosed under the adopted design, so there is no expanded-scope blast-radius question to reconfirm against. See design.md Open Question #2.
+  3. **Exact rendered copy** for the single Application Admin `mailto:` line and the unconfigured-alias fallback sentence — format is constrained (single inline line, no directory/list layout) but final wording should get a design-phase review pass.
+
+  *(Resolved by design.md Decision 2: TEAM-005 and TEAM-006 stay separate resolution paths, sharing only rendering markup — not one shared contact-resolution component. Unaffected by the 2026-09-16 decision.)*
