@@ -98,8 +98,6 @@ The Docker Compose stack includes a stubbed OIDC identity provider built with [`
 
 **Discovery endpoint:** http://localhost:4011/.well-known/openid-configuration
 
-> **Known issue (pre-existing, not specific to the persona login shortcut):** `GET /auth/callback` in `packages/backend/src/routes/auth.ts` reconstructs the callback URL from `request.hostname`, which Fastify reports without the port. Against this stack's default `http://localhost:3000`, the reconstructed URL loses `:3000`, the `redirect_uri` the token exchange derives from it no longer matches the one used at the authorization step, and the stub IdP rejects the code exchange with `invalid_grant` — this affects every sign-in, persona shortcut or manual password entry alike, and predates this change. Flagged for a follow-up fix; not addressed here because it lives in `auth.ts`'s callback handler, which this change does not modify.
-
 ### Signing in
 
 When an unauthenticated request hits any route, the frontend checks whether the persona login shortcut is available (`GET /auth/dev-login-options`, bounded by a 300ms timeout). This check only ever succeeds locally — it is double-gated on `NODE_ENV !== "production"` AND the configured `OIDC_ISSUER` resolving to a private/local address, so it is a hard `404` in any deployed environment, with no added latency there.

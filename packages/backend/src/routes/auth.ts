@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { randomBytes } from "node:crypto";
 import * as oidcClient from "openid-client";
 import { redis } from "../redis.js";
-import { config, isPrivateAddress } from "../config.js";
+import { config, isPrivateAddress, getAppOrigin } from "../config.js";
 import { db } from "../db.js";
 import {
   getAuthorizationUrl,
@@ -116,6 +116,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // GET /auth/callback
   app.get("/callback", async (request, reply) => {
     const correlationId = crypto.randomUUID();
+    // This handler always runs on the backend's own origin (OIDC_REDIRECT_URI
+    // points directly at it, bypassing the frontend dev server in local dev),
+    // so every redirect below must be absolute against the frontend's origin
+    // -- a relative target would resolve against this backend instead and
+    // 404/401 there rather than reaching the SPA.
+    const appOrigin = getAppOrigin();
 
     try {
       // Use request.host (not request.hostname) since hostname drops the port, which breaks redirect_uri matching against the value registered at authorization.
@@ -131,7 +137,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           correlationId,
         });
         return reply.redirect(
-          `/auth/error?category=invalid_request&message=${encodeURIComponent("The sign-in request could not be verified. Please try signing in again from the beginning.")}&correlationId=${correlationId}`,
+          `${appOrigin}/auth/error?category=invalid_request&message=${encodeURIComponent("The sign-in request could not be verified. Please try signing in again from the beginning.")}&correlationId=${correlationId}`,
         );
       }
 
@@ -150,7 +156,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           correlationId,
         });
         return reply.redirect(
-          `/auth/error?category=invalid_request&message=${encodeURIComponent("The sign-in request has expired or is invalid. Please try signing in again.")}&correlationId=${correlationId}`,
+          `${appOrigin}/auth/error?category=invalid_request&message=${encodeURIComponent("The sign-in request has expired or is invalid. Please try signing in again.")}&correlationId=${correlationId}`,
         );
       }
 
@@ -321,7 +327,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       }
 
       await request.session.save();
-      return reply.redirect(redirectUrl);
+      return reply.redirect(`${appOrigin}${redirectUrl}`);
     } catch (err: unknown) {
       const authError = mapAuthError(err);
 
@@ -347,7 +353,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       emitAuditEvent(request.log, "auth.failure", auditFields);
 
       return reply.redirect(
-        `/auth/error?category=${authError.category}&message=${encodeURIComponent(authError.message)}&correlationId=${correlationId}`,
+        `${appOrigin}/auth/error?category=${authError.category}&message=${encodeURIComponent(authError.message)}&correlationId=${correlationId}`,
       );
     }
   });
@@ -417,12 +423,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     // Attempt IdP logout
     if (idToken) {
-      const appOrigin =
-        config.APP_ORIGIN ??
-        (config.NODE_ENV === "production"
-          ? ""
-          : "http://localhost:5173");
-      const endSessionUrl = await getEndSessionUrl(idToken, appOrigin);
+      const endSessionUrl = await getEndSessionUrl(idToken, getAppOrigin());
 
       if (endSessionUrl) {
         return reply.send({ redirectUrl: endSessionUrl.toString() });
