@@ -101,7 +101,7 @@ export async function emViewRoutes(app: FastifyInstance): Promise<void> {
     const { teamId } = request.params;
 
     // Use shared evaluateTeamAccess helper (Advisory fix 6)
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
 
     if (grant === null || grant.path !== "member" || grant.role !== "engineering_manager") {
       await applyTimingFloor(startTime);
@@ -291,7 +291,7 @@ export async function emViewRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId, sessionId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
     if (grant === null || grant.path !== "member" || grant.role !== "engineering_manager") {
       await applyTimingFloor(startTime);
       return reply.code(403).send({
@@ -494,7 +494,7 @@ export async function emViewRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
     if (grant === null || grant.path !== "member" || grant.role !== "engineering_manager") {
       await applyTimingFloor(startTime);
       return reply.code(403).send({
@@ -645,7 +645,7 @@ export async function emViewRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId, topicId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
     if (grant === null || grant.path !== "member" || grant.role !== "engineering_manager") {
       await applyTimingFloor(startTime);
       return reply.code(403).send({
@@ -773,7 +773,7 @@ export async function emViewRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
     if (grant === null || grant.path !== "member" || grant.role !== "engineering_manager") {
       await applyTimingFloor(startTime);
       return reply.code(403).send({
@@ -849,7 +849,7 @@ export async function emViewRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId, actionItemId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
     if (grant === null || grant.path !== "member" || grant.role !== "engineering_manager") {
       await applyTimingFloor(startTime);
       return reply.code(403).send({

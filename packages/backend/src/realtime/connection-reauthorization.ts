@@ -75,7 +75,7 @@ async function runSweepCheck(
     const grant = await evaluateSessionSubscriberAccess(conn.userId, id);
     authorized = grant !== null;
   } else {
-    const grant = await evaluateTeamAccess(conn.userId, id);
+    const grant = await evaluateTeamAccess(conn.userId, id, log);
     authorized = grant !== null && grant.path !== "admin";
   }
 

@@ -174,7 +174,7 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
       void (async () => {
         // Subscription-time early rejection. Mirrors the delivery-time rule
         // for topic_history_update: an admin-path grant does not qualify.
-        const grant = await evaluateTeamAccess(session.userId, teamId);
+        const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
         if (grant === null || grant.path === "admin") {
           socket.close(CLOSE_UNAUTHORIZED);
           return;

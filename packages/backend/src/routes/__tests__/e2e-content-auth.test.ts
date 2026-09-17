@@ -691,36 +691,52 @@ describe("Task 11.6: Cache prohibition — role change takes effect on next requ
 // ---------------------------------------------------------------------------
 // Task 11.7 — Dual-check pattern: membership role governs content profile
 //
-// Design Decision (session-participation spec, Task 2.3):
-//   The EM content profile is produced when team_memberships.role = 'engineering_manager',
-//   regardless of users.global_role. A user with global_role = 'engineer' but
-//   membership_role = 'engineering_manager' receives the EM content profile
-//   (aggregate only), not the engineer/participant profile.
+// restrict-team-005-em-promotion (GitHub issue #109), design.md Decisions
+// A/E: this describe block previously pinned the exact bug this change
+// fixes. The original session-participation spec framed membership_role
+// alone as authoritative for the EM content profile; Decision 14
+// (establish-manager-team-relationship, archived) tightened that to a dual
+// control (global_role AND membership_role both = 'engineering_manager'),
+// but evaluateTeamAccess never implemented the AND — until this change.
 //
-//   This is the E2E acceptance criterion for the session-participation capability
-//   modification (cross-reference: Task 2.3, Task 5.9).
+// A user with global_role = 'engineer' but membership_role =
+// 'engineering_manager' is now the Decision E mismatched-state case: it
+// degrades to the PARTICIPANT content profile (ownVoteValue included, null
+// when the caller isn't the topic's voter), not the EM aggregate-only
+// profile — denying the elevated EM grant is exactly the point of the
+// dual-check fix. The inverse test below (global_role=EM,
+// membership_role=participant) already covered the other mismatch
+// direction and is unaffected by this change.
 // ---------------------------------------------------------------------------
 describe("Task 11.7: Dual-check pattern — membership role governs content profile", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("user with global_role='engineer' AND membership_role='engineering_manager' receives EM profile", async () => {
-    // This is the acceptance criterion: even if the user's global_role is 'engineer',
-    // the membership_role='engineering_manager' governs the content profile.
-    // The serializer receives grant.role = 'engineering_manager' and produces aggregate-only output.
+  it("user with global_role='engineer' AND membership_role='engineering_manager' (mismatched state) receives the degraded participant profile, not the EM profile", async () => {
+    // restrict-team-005-em-promotion Decision A/E: the dual-check now governs.
+    // membership_role='engineering_manager' alone is no longer sufficient —
+    // global_role must also match, or the grant degrades to 'participant'.
     mockQ1EMWithEngineerGlobalRole(); // global_role: 'engineer', membership_role: 'engineering_manager'
-    mockResourceWithVotes();
+    mockResourceWithVotes(); // voter_id: 'actor-1'
 
-    const app = await buildApp("actor-em");
+    const app = await buildApp("actor-1");
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
 
     expect(res.statusCode).toBe(200);
-    // Blocking Issue 1 fix: response is { sessions: [EMContentView] }
     const body = res.json() as { sessions: Array<{ topics: Array<Record<string, unknown>> }> };
-    // MUST NOT receive individual attribution (EM profile, not participant profile)
-    expect(body.sessions[0].topics[0]).not.toHaveProperty("ownVoteValue");
-    // MUST receive aggregate distribution (EM profile confirmed)
-    expect(body.sessions[0].topics[0]).toHaveProperty("voteDistribution");
-    expect(body.sessions[0].topics[0]).toHaveProperty("average");
+    // Degraded PARTICIPANT profile: ownVoteValue IS present (identifies the
+    // caller's own vote) — this is what distinguishes it from the EM
+    // aggregate-only shape, which never includes ownVoteValue (see the
+    // "EM: 200 with aggregate-only shape" test above, Task 11.1).
+    expect(body.sessions[0].topics[0]).toHaveProperty("ownVoteValue", 3);
+    // Decision E: the mismatch fires the log-only detection signal.
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "team.access_grant_mismatch",
+      expect.objectContaining({
+        globalRole: "engineer",
+        membershipRole: "engineering_manager",
+      }),
+    );
   });
 
   it("user with global_role='engineering_manager' AND membership_role='participant' receives participant profile", async () => {

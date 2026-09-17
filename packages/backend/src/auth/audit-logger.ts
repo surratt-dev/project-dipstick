@@ -83,6 +83,35 @@ export type AuditEventName =
   | "admin.membership_list_accessed"
   | "admin.team_detail_accessed"
   | "admin.session_content_denied"
+  // team.access_grant_mismatch: restrict-team-005-em-promotion, design.md
+  // Decision E. Fired by evaluateTeamAccess (team-content-access-helper.ts)
+  // whenever a team_memberships row has role = 'engineering_manager' but the
+  // user's global_role does NOT also equal 'engineering_manager' — the
+  // dual-control check's mismatched-state branch. The function degrades to
+  // role: 'participant' rather than a hard 403; this event is the only
+  // detection signal for that degrade. No synchronous audit_log DB row is
+  // written for this event — evaluateTeamAccess runs on essentially every
+  // content request (Decision 6, no caching), so a user parked in this
+  // anomalous state would otherwise generate a DB write per page view. Same
+  // log-only-given-call-volume reasoning as
+  // team.manager_association_rate_approaching above. metadata: { userId,
+  // teamId, globalRole, membershipRole }.
+  | "team.access_grant_mismatch"
+  // team.role_change_denied: restrict-team-005-em-promotion, design.md
+  // Decision F. Fired by TEAM-005 (PATCH .../members/:userId/role) when an
+  // otherwise-authorized actor (passed checkAssignRolesAuthorization)
+  // attempts a participant -> engineering_manager transition, which is now
+  // unconditionally blocked for every actor (Decision B) — establishing a
+  // new EM relationship is exclusively TEAM-006's function. Unlike
+  // team.access_grant_mismatch above, this DOES get a synchronous audit_log
+  // DB row (denyAdminContentAccess precedent, content.ts): a blocked
+  // promotion attempt is a security-relevant event at a low, human-scale
+  // volume (an admin action, not a per-page-view read), and a fix that
+  // closes the gap but leaves attempts against it invisible to audit
+  // repeats the exact blind spot that made the original bug severe.
+  // metadata: { from_role: 'participant', to_role: 'engineering_manager',
+  // http_status }.
+  | "team.role_change_denied"
   // session.* events are the structured-log counterparts to audit_log DB
   // rows written for WebSocket-triggered actions (SEC-13/SEC-14,
   // websocket-delivery-time-authorization design.md Decision D7). The DB

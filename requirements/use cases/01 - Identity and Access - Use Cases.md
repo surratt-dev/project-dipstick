@@ -177,9 +177,11 @@
 
 *Q1 resolved — Option A selected (Rachel Okonkwo, VP Engineering). Facilitators cannot assign roles. Edit 1 (remove Facilitator as assignable role) applied; Edit 2 (actor field and stale AC update) applied simultaneously.*
 
-**Trigger:** An authorized actor needs to change a team member's role from the default (Engineer) to Engineering Manager, or needs to demote an Engineering Manager back to Engineer.
+*Edit 3 applied (restrict-team-005-em-promotion, GitHub issue #109, design.md Decision B): TEAM-005 supports demotion (Engineering Manager → Engineer) only. Establishing a new Engineering Manager relationship is exclusively TEAM-006's ("Establish a Manager/Team Relationship") function, for every actor including Application Admin — this UC's Main Flow, AC1, AC4, the zero-Engineers Alternate Flow, and the Out-of-Scope note below are corrected accordingly.*
 
-**Goal:** As an authorized actor (Application Admin or Engineering Manager for this team), I want to assign or change a team member's membership role so that the application enforces the correct access and capabilities for that person.
+**Trigger:** An authorized actor needs to demote a team member who currently holds Engineering Manager back to Engineer. (Promoting a team member to Engineering Manager is exclusively UC "Establish a Manager/Team Relationship"'s function — see Edit 3.)
+
+**Goal:** As an authorized actor (Application Admin or Engineering Manager for this team), I want to demote a team member's membership role from Engineering Manager back to Engineer so that the application enforces the correct access and capabilities for that person.
 
 ---
 
@@ -191,17 +193,18 @@
 
 ## Main Flow
 1. The actor navigates to the team's member management view.
-2. The actor selects a new role for a team member from the available options (Engineer or Engineering Manager).
+2. The actor selects a new role for a team member from the role selector. **(Edit 3, restrict-team-005-em-promotion):** as of this change, this UC's role selector produces only a demotion (Engineering Manager → Engineer) or a no-op — selecting "Engineering Manager" for a member currently designated Engineer is no longer offered/attempted through this flow; see the "Blocked promotion attempt" Alternate Flow below and UC "Establish a Manager/Team Relationship" for the only remaining way to make that change.
 3. The application validates that the role change is permitted (valid role, authorized actor, per-team verification from the database).
-4. If the change would leave the team with no Engineer-role members, the application displays a warning message before the actor confirms: "This change will leave [team name] with no Engineers. A session cannot start without at least one Engineer. You can still make this change."
+4. **(Edit 3):** this step no longer fires through this UC. The zero-Engineers warning was reachable only via a promotion (Engineer → Engineering Manager) dropping the participant count to zero; the only transition this UC's role selector can now produce (demotion) strictly *increases* the team's Engineer count. See AC4 and the "Role change would leave zero Engineers" Alternate Flow below for the corrected statement of this gap.
 5. The actor confirms the change (or cancels at the warning step).
 6. The application updates the team member's `membership_role` in a database transaction that also writes an audit log entry.
-7. The application confirms the change with a plain-language message: "[Member name] is now an Engineering Manager for this team" or "[Member name] is now an Engineer for this team."
+7. The application confirms the change with a plain-language message: "[Member name] is now an Engineer for this team."
 
 ## Alternate Flows
 - **Invalid role selection:** The application rejects the change and displays an error.
 - **Unauthorized actor:** A Facilitator, Engineer, or Engineering Manager not affiliated with this team attempts to change a role. The application rejects the request with 403. If the actor is a Facilitator viewing the member management view, the application displays a plain-language explanation: "Only an Application Admin or an Engineering Manager for this team can change roles. Contact your admin to update this before the session."
-- **Role change would leave zero Engineers:** The application returns 422 on the first submission and requires explicit confirmation before applying the change (see Main Flow step 4–5).
+- **Blocked promotion attempt (added, Edit 3):** An otherwise-authorized actor (Application Admin, or Engineering Manager for this team) requests `role = 'engineering_manager'` for a team member whose current `membership_role = 'participant'`. The application rejects the request and displays a redirective message identifying TEAM-006 / UC "Establish a Manager/Team Relationship" as the correct path. The team member's role is unchanged. This applies to every actor, including Application Admin — there is no admin override.
+- **Role change would leave zero Engineers (corrected, Edit 3):** No longer reachable through this UC. This warning previously fired only on a promotion (Engineer → Engineering Manager) that would drop the team's Engineer count to zero; TEAM-005's only remaining transition (demotion) strictly increases that count. TEAM-006 ("Establish a Manager/Team Relationship"), now the sole remaining promotion path, has no equivalent warning — this is a named, on-purpose gap (see AC4 and design.md Open Question 8), not a silent one.
 
 ## Postconditions
 - **Success:** The team member's `membership_role` is updated. The new role takes effect immediately on the next authenticated request from the affected user. An audit log entry is written in the same transaction.
@@ -210,10 +213,10 @@
 ---
 
 ## Acceptance Criteria
-- [x] AC1: An Application Admin or an Engineering Manager for this specific team can change a team member's `membership_role` between `participant` (Engineer) and `engineering_manager` (Engineering Manager).
+- [ ] AC1 (reopened, Edit 3 — restrict-team-005-em-promotion, GitHub issue #109, design.md Decision B): An Application Admin or an Engineering Manager for this specific team can demote a team member from `engineering_manager` to `participant` via TEAM-005. TEAM-005 does NOT support promoting a team member from `participant` to `engineering_manager`, for any actor including Application Admin — establishing a new Engineering Manager relationship is exclusively UC "Establish a Manager/Team Relationship"'s (TEAM-006) function. Verified against the shipped implementation (`packages/backend/src/routes/teams.ts`).
 - [x] AC2: The role change takes effect immediately. No cached role value is used.
 - [x] AC3: An actor who does not hold the required authorization sees a plain-language explanation of why the action is unavailable. A grayed-out control with no explanation does not satisfy this criterion.
-- [x] AC4: A role change to `engineering_manager` that would leave the team with zero `participant`-role members displays the message "This change will leave [team name] with no Engineers. A session cannot start without at least one Engineer. You can still make this change." before the confirmation step.
+- [ ] AC4 (reopened, Edit 3): This warning is no longer reachable through this UC. It was implemented only in TEAM-005's transaction block, reachable exclusively via a promotion (Engineer → Engineering Manager) dropping the team's Engineer count to zero; TEAM-005's sole remaining transition (demotion) strictly *increases* that count, so this warning cannot fire through TEAM-005. TEAM-006, now the sole remaining promotion path, has no equivalent guard. This is a named, on-purpose gap, not a silent one — whether TEAM-006 should gain an equivalent warning is tracked as design.md Open Question 8 and is not resolved by this UC.
 - [x] AC5: Every role change produces an audit log entry containing: actor user ID, actor's `global_role` at the time of the change, actor IP, subject user ID, team ID, from-role, to-role, and timestamp.
 - [x] AC6: A user whose `membership_role` is updated to `engineering_manager` cannot lock in a vote in that team's next session.
 - [x] AC7: A user whose `membership_role` is updated from `engineering_manager` to `participant` loses access to that team's session history on their next request (403).
@@ -221,7 +224,7 @@
 
 ## Out of Scope
 - Facilitator designation (`users.global_role = 'facilitator'`) — deferred; see "Designate a Facilitator — Deferral" stub.
-- `TEAM-006` (`POST /api/v1/teams/:teamId/managers`) — not called as part of this change. TEAM-005 alone is sufficient for all `membership_role` writes.
+- `TEAM-006` (`POST /api/v1/teams/:teamId/managers`) — not called as part of this change. **Corrected (Edit 3, restrict-team-005-em-promotion):** TEAM-005 is sufficient only for demotion and for role changes that were never promotions; establishing a new Engineering Manager relationship requires TEAM-006. TEAM-005 is no longer "sufficient for all `membership_role` writes."
 - Modification of `users.global_role` for any role — this change writes only to `team_memberships.role`.
 - Removing a user from a team — separate use case.
 - Defining new role types — the set of membership roles is fixed: `participant` and `engineering_manager`.
@@ -292,12 +295,12 @@
 
 ## Dependencies
 - UC: First Access — the Engineering Manager must have an account and `global_role = 'engineering_manager'` set via IdP claim mapping before they can be associated with a team.
-- UC: Assign a Role to a Team Member — distinct from this use case; TEAM-005 changes the `team_memberships.role` of an existing member; TEAM-006 establishes the relationship for a user who was not previously a team member.
+- UC: Assign a Role to a Team Member — distinct from this use case; TEAM-005 supports demotion of an existing member only (see that UC's Edit 3); TEAM-006 establishes the relationship for a user who was not previously a team member, and is now the exclusive path for promoting an existing member to Engineering Manager as well.
 
 ## Notes
 - An Engineering Manager may manage multiple teams. The application must support one-to-many manager/team relationships.
 - The reverse — removing a manager/team relationship — is not described in this use case and should be addressed separately. An interim administrative procedure for removal exists in design.md Q4.
-- TEAM-006 is distinct from TEAM-005. TEAM-005 changes the `team_memberships.role` of an existing member and does not check `global_role`. TEAM-006 establishes the relationship for a user who was not previously a team member and requires `global_role = 'engineering_manager'` as a hard precondition.
+- TEAM-006 is distinct from TEAM-005. **Corrected (restrict-team-005-em-promotion, GitHub issue #109, design.md):** TEAM-005 supports demotion (`engineering_manager` → `participant`) only — it can no longer originate a `participant` → `engineering_manager` transition, for any actor, and this restriction does not check `global_role` (the block is unconditional on the transition itself). TEAM-006 establishes the relationship for a user who was not previously a team member and requires `global_role = 'engineering_manager'` as a hard precondition. Prior to this correction, this note stated that TEAM-005 "does not check `global_role`" as if that were a currently-accepted, unrestricted design; in the shipped implementation `checkAssignRolesAuthorization` never inspected the requested role value at all — the promotion path was an unintended gap (issue #109), not a considered design that this change relaxes.
 
 ---
 

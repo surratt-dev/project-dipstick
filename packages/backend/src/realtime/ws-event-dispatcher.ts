@@ -270,7 +270,7 @@ async function dispatchTopicHistoryUpdate(
     candidates.map(async (conn) => {
       if (isConnectionExpired(conn, logger)) return;
 
-      const grant = await evaluateTeamAccess(conn.userId, envelope.teamId);
+      const grant = await evaluateTeamAccess(conn.userId, envelope.teamId, logger);
       if (grant === null) return;
 
       // Explicit admin-path rejection (Decision D2). This holds even when
