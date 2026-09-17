@@ -24,6 +24,14 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
 
    Derive a kebab-case change name from the description.
 
+   Determine whether this run corresponds to a specific, already-filed GitHub
+   issue — the user named one directly (e.g. "issue #109", a pasted issue
+   URL), or the use case description is clearly that issue restated. If it's
+   ambiguous whether one applies, don't guess — treat it as not tied to an
+   issue rather than asking, since most exploratory `agent-team` runs (a use
+   case description with no issue reference) have no corresponding issue at
+   all. Call this `[issue]` (a bare number, e.g. `109`) when one applies.
+
 2. **Create an isolated branch**
 
    Before any work begins, run the following git commands to create a fresh branch off of main:
@@ -36,6 +44,24 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
    ```
 
    Report the branch name to the user so they know where changes will land.
+
+   If `[issue]` was identified in Step 1, mark it **In Progress** on the
+   project board now, before any stage work begins — this is what tells
+   anyone glancing at the board that the team has picked it up:
+
+   ```bash
+   gh project item-edit 1 --owner surratt-dev \
+     --url https://github.com/surratt-dev/project-dipstick/issues/[issue] \
+     --field "Status" --value "In Progress"
+   ```
+
+   (Project 1 — "Project Dipstick" — is this repo's only project board; its
+   Status field has Todo / In Progress / Done options.) If the command fails
+   because the issue isn't tracked on the board (no matching item), note that
+   to the user and continue — don't add it to the board yourself or block the
+   pipeline on this. This status update only ever moves forward to In
+   Progress here; nothing in this skill moves it to Done — that's a separate,
+   human call about whether the issue is actually resolved.
 
 3. **Stage 1: Explore** (`opsx:explore`)
 
@@ -301,3 +327,4 @@ This gives the user control over pacing while the agents handle the work.
 - If reviewers raise conflicting concerns, the executor flags the conflict for the user to resolve
 - All review artifacts are preserved in the change directory for traceability
 - Stages run sequentially; reviewers within a stage run in parallel
+- When the run is tied to a filed GitHub issue, that issue's project status moves to In Progress at branch creation (Step 2) — before any persona work starts, not after
