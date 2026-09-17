@@ -17,15 +17,21 @@ The role system has two distinct layers that must not be conflated:
 
 ### Requirement: Authorized actor can change a team member's membership role
 
-An authorized actor SHALL be able to change a team member's `team_memberships.role` between `participant` (displayed as "Engineer") and `engineering_manager` (displayed as "Engineering Manager") via the member management view. The change is submitted via `PATCH /api/v1/teams/:teamId/members/:userId/role` (TEAM-005).
+An authorized actor SHALL be able to change a team member's `team_memberships.role` via the member management view, submitted through `PATCH /api/v1/teams/:teamId/members/:userId/role` (TEAM-005) — **subject to the restriction below.** `TEAM-005` supports demotion (`engineering_manager` → `participant`) for any currently-authorized actor exactly as before. `TEAM-005` does NOT support promotion (`participant` → `engineering_manager`) under any circumstance; establishing a new Engineering Manager relationship for a team is exclusively `TEAM-006`'s (`POST /api/v1/teams/:teamId/managers`) function.
 
-**Authorized actors (Q1 Option A):**
-- `users.global_role = 'application_admin'` — authorized to change roles on any team
-- `users.global_role = 'engineering_manager'` with an active (`removed_at IS NULL`) `team_memberships` row with `role = 'engineering_manager'` for the specific `teamId` in the request URL — authorized to change roles on their own team only
+**Unconditional promotion block:** `TEAM-005` SHALL reject any request that would change a team member's `membership_role` from `participant` to `engineering_manager`. This restriction:
+- Applies regardless of actor — an Application Admin or an EM otherwise authorized to call `TEAM-005` for this team is rejected identically for this specific transition, with no actor-role branch in the check.
+- Applies regardless of identity — actor and target being the same person is not a special case; the block fires the same way it does for any two-account case.
+- Applies regardless of the target's existing `global_role` — a target who already legitimately holds `users.global_role = 'engineering_manager'` (e.g., from EM status on a different team) is still rejected; only `TEAM-006`, with its own `global_role` precondition and audit trail, may establish that specific team relationship.
+- MUST NOT be bypassable through any feature flag, environment variable, configuration value, or admin-only override. The restriction is unconditional in code.
+
+**Authorized actors (Q1 Option A) — unchanged for the demotion direction:**
+- `users.global_role = 'application_admin'` — authorized to demote an Engineering Manager on any team
+- `users.global_role = 'engineering_manager'` with an active (`removed_at IS NULL`) `team_memberships` row with `role = 'engineering_manager'` for the specific `teamId` in the request URL — authorized to demote an Engineering Manager on their own team only
 
 The authorization check MUST query the `team_memberships` table directly at request time using the `teamId` from the request path. It MUST NOT use role information from session state, in-memory state, or token claims. An EM on Team A calling the endpoint for Team B MUST receive 403.
 
-Facilitators are not authorized actors. TEAM-006 is not called by this change. `users.global_role` is never written by this change.
+Facilitators are not authorized actors. `TEAM-006` is not called by `TEAM-005`'s demotion path. `users.global_role` is never written by this change.
 
 The role selector MUST display human-readable labels, not database enum values:
 - `participant` displays as **Engineer**
@@ -35,14 +41,27 @@ Each option in the role selector MUST include an inline description:
 - **Engineer** — participates in session voting
 - **Engineering Manager** — can view session history; will not vote
 
-The assignable roles are Engineer and Engineering Manager only. Facilitator is NOT assignable through this change.
+The assignable roles are Engineer and Engineering Manager only. Facilitator is NOT assignable through this change. Selecting "Engineering Manager" for a member currently designated Engineer in the UI submits a request that the server rejects per the restriction above; the UI's redirect/error handling for this case is a frontend follow-on item.
 
-#### Scenario: Authorized actor promotes Engineer to Engineering Manager
+#### Scenario: TEAM-005 rejects a promotion attempt and does not change the member's role
 
-- **WHEN** an authorized actor selects "Engineering Manager" for a team member currently designated as Engineer
-- **THEN** the application submits a PATCH to TEAM-005 with `role = 'engineering_manager'`
-- **AND** on success, the member management view reflects "Engineering Manager" for that member
-- **AND** a plain-language confirmation is displayed: "[Member name] is now an Engineering Manager for this team"
+- **WHEN** an otherwise-authorized actor submits a PATCH to TEAM-005 requesting `role = 'engineering_manager'` for a team member whose current `membership_role = 'participant'`
+- **THEN** the server rejects the request
+- **AND** the member's `team_memberships.role` remains `participant`
+- **AND** the response identifies TEAM-006 as the correct endpoint for establishing a new Engineering Manager relationship
+
+#### Scenario: TEAM-005 rejects a promotion attempt even when the target already holds engineering_manager global_role from a different team
+
+- **WHEN** an EM with legitimate standing on Team A submits a PATCH to TEAM-005 requesting `role = 'engineering_manager'` for a Team-A participant who already holds `users.global_role = 'engineering_manager'` from an established EM relationship on Team B
+- **THEN** the server rejects the request
+- **AND** the target's `team_memberships.role` for Team A remains `participant`
+- **AND** no EM read-access grant to Team A results for the target
+
+#### Scenario: TEAM-005 rejects a self-targeted promotion attempt
+
+- **WHEN** a user with EM standing on Team A submits a PATCH to TEAM-005 requesting `role = 'engineering_manager'` for their own `participant`-role membership on a different team
+- **THEN** the server rejects the request the same way it rejects a two-account promotion attempt
+- **AND** actor-equals-target is not treated as an implicit exception
 
 #### Scenario: Authorized actor demotes Engineering Manager to Engineer
 
@@ -114,12 +133,15 @@ The warning MUST appear at the confirmation step, before any change is committed
 
 **Implementation status:** The `SELECT id FROM team_memberships WHERE team_id = $1 AND removed_at IS NULL FOR UPDATE` lock is present in the TEAM-005 handler before the UPDATE statement. Verified by architect review.
 
-#### Scenario: Role change reduces Engineers to zero — 422 returned on first submission
+**Current reachability — as of `restrict-team-005-em-promotion` (GitHub #109):** This requirement's trigger condition (a `participant → engineering_manager` promotion that would drop the team's participant count to zero) can no longer be reached through TEAM-005. TEAM-005 now unconditionally rejects any `participant → engineering_manager` transition before the transaction ever opens (see the "Authorized actor can change a team member's membership role" requirement's unconditional promotion block); the only transition TEAM-005 still performs, demotion (`engineering_manager → participant`), strictly *increases* the participant count and can never trigger this check. The transaction-locking and count-check mechanics described above remain live code — kept deliberately as a defensive guard against a future write path that reopens a promotion route through this transaction, not deleted — but are presently dead code for TEAM-005's only remaining transition. `TEAM-006` (`POST /api/v1/teams/:teamId/managers`), the sole remaining promotion path, has no equivalent zero-participant check; adding one was considered and explicitly deferred to a separate follow-on proposal rather than bundled into the #109 security fix (design.md Open Question 8 of `restrict-team-005-em-promotion`, decided by the Solution Architect as Non-Goals owner).
+
+#### Scenario: Role change reduces Engineers to zero — 422 returned on first submission (dead branch, kept defensively — see reachability note above)
 
 - **GIVEN** a team with exactly one member with `team_memberships.role = 'participant'`
 - **WHEN** an authorized actor submits a PATCH to change that member's role to `engineering_manager` with no `confirmedZeroParticipant` flag
 - **THEN** the server returns `422 Unprocessable Entity` with `{ "requiresConfirmation": true }`
 - **AND** the role change is not committed to the database
+- **NOTE:** As of #109, TEAM-005 rejects this request at the unconditional promotion block before this point is ever reached; this scenario describes the transaction-level guard's designed behavior, which is preserved as defensive code but not exercisable through TEAM-005 today.
 
 #### Scenario: Warning allows the actor to confirm and proceed
 
@@ -139,7 +161,7 @@ The warning MUST appear at the confirmation step, before any change is committed
 
 ### Requirement: Role change is audited
 
-Every change to `team_memberships.role` MUST produce an audit log entry in the `role_change_audit` table. The audit write MUST execute in the same database transaction as the role change. If the audit write fails, the transaction MUST roll back and the role change MUST NOT commit.
+Every change to `team_memberships.role` MUST produce an audit log entry in the `audit_log` table (`operation = 'team.role_changed'`), with `from_role` and `to_role` recorded in the `metadata` JSONB column. (`role_change_audit` was a dedicated table dropped in migration 8 and replaced by the shared `audit_log` table — this requirement is written against the current schema.) The audit write MUST execute in the same database transaction as the role change. If the audit write fails, the transaction MUST roll back and the role change MUST NOT commit.
 
 The audit record MUST include:
 - `actor_user_id` — the actor's user ID
@@ -151,16 +173,15 @@ The audit record MUST include:
 - `to_role` — the new `team_memberships.role` value
 - `changed_at` — timestamp of the change
 
-Both promotion (`participant` → `engineering_manager`) and demotion (`engineering_manager` → `participant`) MUST be logged. The audit log is append-only. Audit records are not deletable through any application UI or API — deletion requires direct database access by a designated DBA under change control.
+**Demotion (`engineering_manager` → `participant`) MUST be logged in `audit_log` with `operation = 'team.role_changed'`.** This is now the only `team_memberships.role` transition `TEAM-005` can produce. Promotion (`participant` → `engineering_manager`) no longer occurs through `TEAM-005` — that event, and its audit record (`operation = 'team.manager_established'` in `audit_log`), comes exclusively from `TEAM-006` per the `manager-team-association` capability. An `audit_log` row with `operation = 'team.role_changed'`, `metadata->>'from_role' = 'participant'`, and `metadata->>'to_role' = 'engineering_manager'` MUST NOT occur going forward; if the underlying data model still permits recording such a row, its presence indicates the write-side restriction above did not hold and MUST be treated as a defect, not a valid audit outcome.
+
+A *blocked* promotion attempt itself produces a distinguishable audit event, separate from the rejected request's error response: a synchronous `audit_log` row with `operation = 'team.role_change_denied'`, plus a matching `emitAuditEvent` call, written before the error response is sent, for actors who pass the base `TEAM-005` authorization check.
+
+The audit log is append-only. Audit records are not deletable through any application UI or API — deletion requires direct database access by a designated DBA under change control.
 
 **Retention:** Minimum 12 months from the date of each role change event.
 
 **Access:** Accessible to Application Admins only through the application. Engineering Managers do not have read access to the audit trail in the initial implementation.
-
-#### Scenario: Promotion to Engineering Manager is logged
-
-- **WHEN** a user's `team_memberships.role` is changed from `participant` to `engineering_manager`
-- **THEN** an audit log entry is created with all required fields including `actor_global_role` and `actor_ip`
 
 #### Scenario: Demotion to Engineer is logged
 
@@ -172,6 +193,13 @@ Both promotion (`participant` → `engineering_manager`) and demotion (`engineer
 - **WHEN** the audit INSERT fails within the transaction
 - **THEN** the transaction is rolled back and the role change is not committed
 - **AND** a role change with no audit record is not a possible outcome through normal application paths
+
+#### Scenario: A blocked promotion attempt does not produce a team.role_changed audit entry for the attempted transition, but does produce a distinguishable denial event
+
+- **WHEN** TEAM-005 rejects a `participant → engineering_manager` promotion attempt from an actor who is otherwise authorized to call TEAM-005
+- **THEN** no `audit_log` row with `operation = 'team.role_changed'`, `metadata->>'from_role' = 'participant'`, and `metadata->>'to_role' = 'engineering_manager'` is created
+- **AND** the team member's `team_memberships.role` is unchanged
+- **AND** an `audit_log` row with `operation = 'team.role_change_denied'` is created before the error response is sent, carrying the actor, target, team, and requested transition
 
 ---
 

@@ -103,6 +103,8 @@ Changes applied to the API contract:
 - **TEAM-005**: Authorization updated to `application_admin` (any team) or `engineering_manager` (own team). EMs may only assign the `participant` role; assigning `engineering_manager` via TEAM-005 is rejected with `403` (that path requires admin via TEAM-006).
 - **TEAM-006**: Authorization corrected from the incorrect `facilitator` to `application_admin` only. Establishing the EM-team relationship is a privileged action that cannot be self-granted or delegated to existing EMs.
 
+**Addendum — 2026-09-16 (restrict-team-005-em-promotion, GitHub issue #109):** The 2026-03-15 resolution above described the TEAM-005 promotion restriction as EM-only ("EMs may only assign the `participant` role... assigning `engineering_manager` via TEAM-005 is rejected with `403`"). It was silent on whether an `application_admin` actor invoking TEAM-005 for the same transition was likewise restricted — that silence was never a deliberate carve-out for admins; the scope was simply not addressed. This is now resolved: the restriction applies unconditionally to **every** actor, including `application_admin`, with no admin override. An admin promoting a team member to Engineering Manager must use TEAM-006. This does not reverse the 2026-03-15 decision — it closes an actor-scope ambiguity the original entry left open. (Corresponding source-of-truth correction: `REST API Contract.md`'s TEAM-005 section, "Promotion block" note.)
+
 ---
 
 **4. SESSION-008 EM vote data — RESOLVED (2026-03-15)**
@@ -185,9 +187,11 @@ OR-6.3 is clear and intentional — a facilitator must be able to prepare for a 
 
 ---
 
-**OQ-6: Authorization scope for role management — RESOLVED (2026-03-15)**
+**OQ-6: Authorization scope for role management — RESOLVED (2026-03-15; scope corrected 2026-09-16)**
 
 Decision: `application_admin` (any team) and `engineering_manager` (own team, participant role assignment only) may both manage team membership. TEAM-005 and TEAM-006 updated accordingly. FR-1.6 amended in the BRD.
+
+**Scope correction (restrict-team-005-em-promotion, GitHub issue #109, 2026-09-16):** "participant role assignment only" for the EM actor was correctly scoped in 2026-03-15, but the corresponding restriction was never stated for the `application_admin` actor — an omission, not a considered carve-out. As of this change, TEAM-005 unconditionally rejects any `participant` → `engineering_manager` transition for every actor, including `application_admin`; establishing a new EM relationship is exclusively TEAM-006's function. See Section 2, item 3's addendum above for the full correction.
 
 ---
 

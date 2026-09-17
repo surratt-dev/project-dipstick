@@ -276,7 +276,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // Task 5.6: Authorization check BEFORE any resource query
     // Task 5.8: evaluateTeamAccess uses live DB reads — no cache
     // Task 5.9: authorization is NOT read from the session cookie
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
 
     if (grant === null) {
       // Error State 4: detect cross-team facilitator and return session-context message.
@@ -345,7 +345,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
 
     if (grant === null) {
       // Error State 4: cross-team facilitator detection + timing floor
@@ -412,7 +412,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
 
     if (grant === null) {
       // Error State 4: cross-team facilitator detection + timing floor
@@ -460,7 +460,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
 
     if (grant === null) {
       // Error State 4: cross-team facilitator detection + timing floor
@@ -501,7 +501,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId, sessionId } = request.params;
 
-    const grant = await evaluateTeamAccess(session.userId, teamId);
+    const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
 
     if (grant === null) {
       // Error State 4: cross-team facilitator detection + timing floor

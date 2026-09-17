@@ -418,7 +418,9 @@ Updates the team-scoped membership role for an existing team member.
 
 **Authorization:** `global_role = 'application_admin'` (any team) OR `global_role = 'engineering_manager'` with an active membership for team `:teamId` (own team only).
 
-**EM role assignment constraint:** An Engineering Manager may only assign the `participant` role via this endpoint. Assigning the `engineering_manager` role requires `application_admin` and is performed via TEAM-006, not this endpoint. A request from an EM to set `role = 'engineering_manager'` must be rejected with `403 Forbidden`.
+**Promotion block (corrected — restrict-team-005-em-promotion, GitHub issue #109, design.md Decision B):** This endpoint SHALL reject any request that would change a member's role from `participant` to `engineering_manager`, unconditionally — for **every** actor, including `application_admin`, with no admin override, feature flag, or configuration exception. Establishing a new Engineering Manager relationship is exclusively TEAM-006's function. This endpoint supports demotion (`engineering_manager` → `participant`) only.
+  - This corrects the prior text of this note, which described the constraint as EM-only ("An Engineering Manager may only assign the `participant` role... requires `application_admin`") and, by omission, left admin-initiated promotion via this endpoint looking permitted. The shipped implementation prior to this change did not enforce even the EM-only version of this constraint — `checkAssignRolesAuthorization` never inspected the requested role value at all, for either actor type. This correction is not reversing a considered decision; it is documenting what the code now actually does.
+  - A blocked promotion attempt returns `403 Forbidden` with a redirective message identifying TEAM-006 as the correct endpoint (see the Error Responses table below).
 
 **Request**
 
@@ -454,7 +456,8 @@ interface UpdateMemberRoleResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not an `application_admin` or `engineering_manager` for this team; or EM attempting to assign `engineering_manager` role |
+| `403 Forbidden` | Not an `application_admin` or `engineering_manager` for this team |
+| `403 Forbidden` | **(Added — restrict-team-005-em-promotion, issue #109)** Requested transition is `participant` → `engineering_manager`. Fires for every otherwise-authorized actor, including `application_admin`. Redirective message names TEAM-006 as the correct endpoint (Decision D — not punitive; the actor is not accused, only redirected). Distinguished in the audit trail from the row above: this case only fires for actors who already passed the base authorization check, and writes a synchronous `audit_log` row (`operation = 'team.role_change_denied'`) before the response is sent. |
 | `404 Not Found` | Team or user does not exist; user is not an active member of this team |
 | `422 Unprocessable Entity` | `role` value is invalid |
 
@@ -462,6 +465,7 @@ interface UpdateMemberRoleResponse {
 - **BRD authority:** FR-1.6 (admin manages membership) extended by decision 2026-03-15: EMs may also manage roles for their own team.
 - Role changes take effect immediately on the next authenticated request from the affected user (SEC-11).
 - The audit log must record the change: who changed it, what it changed from, what it changed to, and the role of the actor (SEC-13).
+- **restrict-team-005-em-promotion (issue #109):** see the Promotion block note above the Request section — this endpoint no longer supports promotion for any actor.
 
 ---
 

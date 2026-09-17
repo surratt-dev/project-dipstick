@@ -98,7 +98,7 @@ export async function actionItemRoutes(app: FastifyInstance): Promise<void> {
     const isOwner = item.owner_id === userId;
     let hasRelationship = isOwner;
     if (!hasRelationship) {
-      const teamAccessGrant = await evaluateTeamAccess(userId, item.team_id);
+      const teamAccessGrant = await evaluateTeamAccess(userId, item.team_id, request.log);
       hasRelationship = teamAccessGrant !== null;
     }
     if (!hasRelationship) {

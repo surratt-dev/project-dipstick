@@ -680,10 +680,20 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
   // distinct endpoints serving distinct use cases — see design.md.
   // (Task 3.8 comment — establish-manager-team-relationship)
   //
-  // Changes a team member's membership_role between 'participant' and
-  // 'engineering_manager'. Authorized actors: Application Admins (any team)
-  // and Engineering Managers with an active membership on THIS specific team
-  // (Decision 3, Q1 resolution: Option A).
+  // restrict-team-005-em-promotion (GitHub issue #109), design.md Decision B:
+  // TEAM-005 supports DEMOTION ONLY (engineering_manager -> participant) and
+  // no-op requests. It is structurally incapable of originating a
+  // participant -> engineering_manager transition — unconditionally, for
+  // every actor including Application Admin, no flag or config override.
+  // Establishing a new EM relationship is exclusively TEAM-006's function.
+  // A promotion attempt is rejected with a redirective 403 pointing at
+  // TEAM-006 (see the transition check below, inserted between the subject-
+  // membership lookup and the transaction block).
+  //
+  // Authorized actors: Application Admins (any team) and Engineering Managers
+  // with an active membership on THIS specific team (Decision 3, Q1
+  // resolution: Option A) — this authorization check is orthogonal to, and
+  // runs before, the promotion-transition block above.
   //
   // Two-submission flow for zero-participant guard (Decision 5):
   //   1st PATCH: no confirmedZeroParticipant → server checks post-update
@@ -783,6 +793,86 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       return reply.send(response);
     }
 
+    // ---------------------------------------------------------------------
+    // restrict-team-005-em-promotion, design.md Decision B/C (GitHub issue
+    // #109): TEAM-005 is structurally incapable of originating a
+    // participant -> engineering_manager transition, unconditionally — no
+    // flag, no config, no admin override, for any actor. Establishing a new
+    // EM relationship is exclusively TEAM-006's function
+    // (POST /api/v1/teams/:teamId/managers). This check is unconditional on
+    // actor: it fires identically for Application Admins and Engineering
+    // Managers alike (Decision B, formerly Open Question 1) — an admin
+    // reaching the same effect through TEAM-005 exercises the same authority
+    // through a door with none of TEAM-006's audit trail, rate limiting, or
+    // deliberate-single-action framing. Demotion (engineering_manager ->
+    // participant) is unaffected.
+    //
+    // Ordering (Decision B): this must run after checkAssignRolesAuthorization's
+    // 403 above and after the no-op fast-path above, but before the
+    // transaction opens below — an actor with no standing to call TEAM-005
+    // at all must get the existing generic 403, not a response that also
+    // confirms this specific transition is policy-blocked, and a request
+    // this check rejects must never acquire the team-level lock.
+    // ---------------------------------------------------------------------
+    if (fromRole === "participant" && newRole === "engineering_manager") {
+      // Decision F: a blocked promotion attempt produces a distinguishable
+      // audit event, synchronous and written before the error response —
+      // following the denyAdminContentAccess precedent (content.ts). Fires
+      // only here, i.e. only for actors who already passed
+      // checkAssignRolesAuthorization above.
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation,
+            target_user_id, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          session.userId,
+          actorGlobalRole,
+          request.ip,
+          "team.role_change_denied",
+          subjectUserId,
+          teamId,
+          JSON.stringify({
+            from_role: "participant",
+            to_role: "engineering_manager",
+            http_status: 403,
+          }),
+        ],
+      );
+
+      emitAuditEvent(request.log, "team.role_change_denied", {
+        actorUserId: session.userId,
+        actorGlobalRole,
+        actorIp: request.ip,
+        targetUserId: subjectUserId,
+        teamId,
+        fromRole: "participant",
+        toRole: "engineering_manager",
+        httpStatus: 403,
+      });
+
+      // Decision D: redirective, not punitive — names the correct action
+      // rather than leaving the actor at a dead end, following the existing
+      // pattern at teams.ts:745 (wrong-team) and :1074 (admin-only).
+      // Copy/status finalized by Facilitator sign-off (tasks.md task 1.4):
+      // no internal endpoint identifiers ("TEAM-005"), no raw path/method —
+      // matches the plain-language register of the two precedents above —
+      // and explicitly covers Application Admins so an admin actor isn't
+      // left wondering why "Only an Application Admin can..." doesn't apply
+      // to them (it isn't an actor-permission gate; it blocks this specific
+      // transition for every actor, admins included).
+      return reply.code(403).send({
+        error: {
+          category: "forbidden" as const,
+          message:
+            "This action cannot be used to establish a new Engineering Manager " +
+            "relationship for this team, for any actor including Application Admins. " +
+            "Use 'Establish a Manager/Team Relationship' instead.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
     // Transaction: UPDATE + zero-participant check + audit log
     // The count check is evaluated on the POST-UPDATE state within the
     // transaction to prevent the race condition described in Decision 5.
@@ -832,6 +922,21 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       // Zero-participant guard (Decision 5):
       // If the change would leave zero Engineers and the actor has not
       // explicitly confirmed, roll back and return 422.
+      //
+      // DEFENSIVE / UNREACHABLE POST-restrict-team-005-em-promotion:
+      // the only transition that reaches this point in the transaction is
+      // now demotion (engineering_manager -> participant) — the
+      // participant -> engineering_manager block above returns before the
+      // transaction opens, and the no-op fast-path already returned earlier.
+      // Demotion strictly INCREASES participantCount, so this branch cannot
+      // fire today. Left in place deliberately rather than deleted (Full
+      // Stack Engineer recommendation, design review 2026-09-16, design.md
+      // task 3.7): removing it deletes a correctness guard that would matter
+      // again if a future change reopens any promotion path through this
+      // transaction, and the cost of a few dead lines with an honest comment
+      // is lower than the cost of silently deleting a guard whose absence
+      // nobody will notice until it's needed. Do not delete this branch or
+      // confirmedZeroParticipant without a new design decision.
       if (participantCount === 0 && !confirmedZeroParticipant) {
         await client.query("ROLLBACK");
         return reply.code(422).send({ requiresConfirmation: true });

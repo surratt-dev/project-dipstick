@@ -332,8 +332,16 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  // Task 4.8 — promoting to engineering_manager succeeds
-  it("4.8: promotes participant to engineering_manager and returns updated member", async () => {
+  // restrict-team-005-em-promotion (GitHub issue #109), design.md Decision B.
+  // Rewritten (task 3.7): this test previously pinned the bug this change
+  // fixes — TEAM-005 promoting a participant to engineering_manager and
+  // succeeding. TEAM-005 now unconditionally rejects this transition, for
+  // every actor including Application Admin — establishing a new EM
+  // relationship is exclusively TEAM-006's function. Coverage for the
+  // Application-Admin-specific and EM-actor-specific variants of this
+  // rejection lives in the "restrict-team-005-em-promotion" describe block
+  // below (tasks 4.1/4.4).
+  it("4.8 (superseded): rejects participant -> engineering_manager for an Application Admin actor, does not update team_memberships", async () => {
     // 1) authorization — application_admin
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "application_admin", membership_role: null }],
@@ -348,17 +356,9 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
         },
       ],
     });
-
-    // Transaction client
-    const client = makeMockClient([
-      { rows: [] }, // BEGIN
-      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
-      { rows: [] }, // UPDATE
-      { rows: [{ participant_count: "1" }] }, // count check — 1 Engineer remains
-      { rows: [] }, // INSERT audit log
-      { rows: [] }, // COMMIT
-    ]);
-    mockDbConnect.mockResolvedValueOnce(client);
+    // Blocked-promotion audit_log INSERT (not the transaction — this check
+    // runs before the transaction opens)
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({
@@ -367,17 +367,19 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       payload: { role: "engineering_manager" },
     });
 
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.member.role).toBe("engineering_manager");
-    expect(body.member.displayName).toBe("Alice");
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toContain("TEAM-005");
+    // The transaction (BEGIN/UPDATE/COMMIT) must never open for a blocked
+    // promotion attempt.
+    expect(mockDbConnect).not.toHaveBeenCalled();
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
-      "team.role_changed",
+      "team.role_change_denied",
       expect.objectContaining({
-        subjectUserId: "user-alice",
+        targetUserId: "user-alice",
         fromRole: "participant",
         toRole: "engineering_manager",
+        httpStatus: 403,
       }),
     );
   });
@@ -419,8 +421,19 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     expect(res.json().member.role).toBe("participant");
   });
 
-  // Task 4.3 — zero-participant 422 on first PATCH (without confirmation)
-  it("4.3: returns 422 with requiresConfirmation when change would leave zero Engineers", async () => {
+  // restrict-team-005-em-promotion (GitHub issue #109), design.md Decision B,
+  // task 3.7. These two tests previously reached the zero-participant guard
+  // (teams.ts's transaction block) via a participant -> engineering_manager
+  // promotion. That transition is now rejected before the transaction ever
+  // opens, so the guard is unreachable through TEAM-005 (the only remaining
+  // transition, demotion, strictly INCREASES participant count). Rewritten
+  // to assert exactly that: the promotion-block check fires before, and
+  // regardless of, confirmedZeroParticipant — this flag cannot be used to
+  // bypass the promotion restriction (Decision C: no admin-configurable
+  // exception, structurally). The guard itself and confirmedZeroParticipant
+  // are left in place undeleted, per task 3.7's resolution — see the
+  // defensive comment at the guard's call site in teams.ts.
+  it("4.3 (superseded): rejects the promotion before the zero-participant check ever runs, without confirmedZeroParticipant", async () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{ global_role: "application_admin", membership_role: null }],
@@ -433,17 +446,9 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
             current_role: "participant",
           },
         ],
-      });
-
-    // Transaction: count returns 0 after update, no confirmation flag
-    const client = makeMockClient([
-      { rows: [] }, // BEGIN
-      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
-      { rows: [] }, // UPDATE
-      { rows: [{ participant_count: "0" }] }, // 0 engineers remain — trigger 422
-      { rows: [] }, // ROLLBACK
-    ]);
-    mockDbConnect.mockResolvedValueOnce(client);
+      })
+      // Blocked-promotion audit_log INSERT
+      .mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({
@@ -452,12 +457,13 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       payload: { role: "engineering_manager" },
     });
 
-    expect(res.statusCode).toBe(422);
-    expect(res.json()).toEqual({ requiresConfirmation: true });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).not.toEqual({ requiresConfirmation: true });
+    // The transaction that would run the zero-participant count check never opens
+    expect(mockDbConnect).not.toHaveBeenCalled();
   });
 
-  // Task 4.3 — second PATCH with confirmedZeroParticipant: true applies the change
-  it("4.3: applies change when confirmedZeroParticipant: true even if zero Engineers remain", async () => {
+  it("4.3 (superseded): confirmedZeroParticipant: true does not bypass the promotion block", async () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{ global_role: "application_admin", membership_role: null }],
@@ -470,17 +476,9 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
             current_role: "participant",
           },
         ],
-      });
-
-    const client = makeMockClient([
-      { rows: [] }, // BEGIN
-      { rows: [] }, // SELECT FOR UPDATE (team-level lock)
-      { rows: [] }, // UPDATE
-      { rows: [{ participant_count: "0" }] }, // 0 engineers — but confirmed
-      { rows: [] }, // INSERT audit log
-      { rows: [] }, // COMMIT
-    ]);
-    mockDbConnect.mockResolvedValueOnce(client);
+      })
+      // Blocked-promotion audit_log INSERT
+      .mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
     const res = await app.inject({
@@ -489,8 +487,9 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       payload: { role: "engineering_manager", confirmedZeroParticipant: true },
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json().member.role).toBe("engineering_manager");
+    expect(res.statusCode).toBe(403);
+    expect(res.json().member).toBeUndefined();
+    expect(mockDbConnect).not.toHaveBeenCalled();
   });
 
   // Task 4.4 — audit log is written with correct fields
@@ -508,6 +507,14 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
   //   $5 = target_user_id (subject_user_id in the old schema)
   //   $6 = team_id
   //   $7 = metadata JSONB (contains from_role and to_role)
+  //
+  // restrict-team-005-em-promotion (GitHub issue #109), design.md Decision B,
+  // task 3.7: this test originally exercised a participant -> engineering_manager
+  // promotion, which TEAM-005 now unconditionally rejects. Rewritten to use
+  // demotion (engineering_manager -> participant) — TEAM-005's one remaining
+  // transition — to preserve this test's original intent (audit_log gets the
+  // correct column layout and values for a TEAM-005 change) without relying
+  // on now-blocked behavior.
   it("4.4: writes audit_log with correct fields for TEAM-005 role change", async () => {
     mockDbQuery
       .mockResolvedValueOnce({
@@ -523,7 +530,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
           {
             display_name: "Carol",
             email: "carol@test.com",
-            current_role: "participant",
+            current_role: "engineering_manager",
           },
         ],
       });
@@ -532,7 +539,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       { rows: [] }, // BEGIN
       { rows: [] }, // SELECT FOR UPDATE (team-level lock)
       { rows: [] }, // UPDATE
-      { rows: [{ participant_count: "2" }] }, // count check
+      { rows: [{ participant_count: "3" }] }, // count check — demotion increases it
       { rows: [] }, // audit INSERT into audit_log
       { rows: [] }, // COMMIT
     ]);
@@ -542,7 +549,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     await app.inject({
       method: "PATCH",
       url: "/api/v1/teams/team-1/members/user-carol/role",
-      payload: { role: "engineering_manager" },
+      payload: { role: "participant" },
     });
 
     // The 5th call to client.query is the audit INSERT (index 4)
@@ -569,10 +576,12 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     // $7 = metadata JSONB — stored as a JSON string in the parameterized query;
     // must be parsed before structural comparison.
     const metadata = JSON.parse(auditValues[6] as string) as Record<string, unknown>;
-    expect(metadata).toMatchObject({ from_role: "participant", to_role: "engineering_manager" });
+    expect(metadata).toMatchObject({ from_role: "engineering_manager", to_role: "participant" });
   });
 
   // Task 4.5 — TEAM-006 is NOT called
+  // restrict-team-005-em-promotion, task 3.7: rewritten to use demotion — see
+  // the rationale on the 4.4 test above.
   it("4.5: does not call TEAM-006 (POST /api/v1/teams/:teamId/managers) during role assignment", async () => {
     // TEAM-005 only touches team_memberships.role. We verify no route for
     // /api/v1/teams/:teamId/managers exists in the teamRoutes handler.
@@ -587,7 +596,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
           {
             display_name: "Dave",
             email: "dave@test.com",
-            current_role: "participant",
+            current_role: "engineering_manager",
           },
         ],
       });
@@ -606,7 +615,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     const res = await app.inject({
       method: "PATCH",
       url: "/api/v1/teams/team-1/members/user-dave/role",
-      payload: { role: "engineering_manager" },
+      payload: { role: "participant" },
     });
 
     // The route has 6 DB interactions (BEGIN, SELECT FOR UPDATE, UPDATE, COUNT, AUDIT, COMMIT)
@@ -617,6 +626,8 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
   });
 
   // Task 4.6 — users.global_role is NOT written
+  // restrict-team-005-em-promotion, task 3.7: rewritten to use demotion — see
+  // the rationale on the 4.4 test above.
   it("4.6: does not write users.global_role during role assignment", async () => {
     mockDbQuery
       .mockResolvedValueOnce({
@@ -627,7 +638,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
           {
             display_name: "Eve",
             email: "eve@test.com",
-            current_role: "participant",
+            current_role: "engineering_manager",
           },
         ],
       });
@@ -646,7 +657,7 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
     await app.inject({
       method: "PATCH",
       url: "/api/v1/teams/team-1/members/user-eve/role",
-      payload: { role: "engineering_manager" },
+      payload: { role: "participant" },
     });
 
     // None of the SQL queries sent to the mock client should UPDATE the users
@@ -657,6 +668,206 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
       // Must not UPDATE the users table at all
       expect(sql).not.toMatch(/update\s+users\b/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// restrict-team-005-em-promotion (GitHub issue #109) — regression suite from
+// tasks.md §4 / exploration §6. TEAM-005 must be structurally incapable of
+// originating a participant -> engineering_manager transition, for every
+// actor, unconditionally (design.md Decision B/C).
+// ---------------------------------------------------------------------------
+describe("PATCH /api/v1/teams/:teamId/members/:userId/role — TEAM-005 promotion block (issue #109)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Task 4.1
+  it("4.1: rejects a Team-A EM promoting a Team-A participant who already holds global_role=engineering_manager from a different team", async () => {
+    mockDbQuery
+      // authorization: actor is EM on team-a
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
+      })
+      // subject lookup: target is currently a participant on team-a — note the
+      // target's users.global_role is irrelevant to TEAM-005 (it never queries
+      // it); the "already holds global_role=engineering_manager elsewhere"
+      // half of this scenario is exactly why the read-side dual-check
+      // (evaluateTeamAccess) is pinned independently in
+      // team-content-access-helper.test.ts — this test only proves the write
+      // side rejects the transition and never touches team_memberships.
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            display_name: "Frank",
+            email: "frank@test.com",
+            current_role: "participant",
+          },
+        ],
+      })
+      // blocked-promotion audit_log INSERT
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/teams/team-a/members/user-frank/role",
+      payload: { role: "engineering_manager" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    // No transaction opens — team_memberships.role is never touched
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  // Task 4.3
+  it("4.3: rejects self-targeting — an EM-authorized actor cannot use TEAM-005 to promote their own row from participant to engineering_manager", async () => {
+    mockDbQuery
+      // authorization check for this actor/team combination succeeds
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
+      })
+      // subject lookup — actor === target (self-targeting): current_role participant
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            display_name: "Self Actor",
+            email: "actor@test.com",
+            current_role: "participant",
+          },
+        ],
+      })
+      // blocked-promotion audit_log INSERT
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "PATCH",
+      // session.userId defaults to "actor-1" (see buildApp) — targeting the
+      // same id models actor === target
+      url: "/api/v1/teams/team-b/members/actor-1/role",
+      payload: { role: "engineering_manager" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  // Task 4.4
+  it("4.4: rejects an Application Admin's participant -> engineering_manager transition via TEAM-005, distinct from the unauthorized-actor 403", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "application_admin", membership_role: null }],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            display_name: "Grace",
+            email: "grace@test.com",
+            current_role: "participant",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/teams/team-1/members/user-grace/role",
+      payload: { role: "engineering_manager" },
+    });
+
+    // This actor IS fully authorized to call TEAM-005 (unlike the 4.7 tests'
+    // unauthorized-actor 403s) — the rejection here is the transition block,
+    // not the authorization check. Both currently surface as 403, but the
+    // audit trail distinguishes them (team.role_change_denied is only
+    // reachable after checkAssignRolesAuthorization already passed).
+    expect(res.statusCode).toBe(403);
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "team.role_change_denied",
+      expect.objectContaining({ actorGlobalRole: "application_admin" }),
+    );
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  // Task 4.5 (EM-actor half; the Application-Admin half is covered by the
+  // existing "4.9: demotes engineering_manager back to participant" test above)
+  it("4.5: demotion (engineering_manager -> participant) still succeeds for an authorized EM actor", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineering_manager", membership_role: "engineering_manager" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            display_name: "Henry",
+            email: "henry@test.com",
+            current_role: "engineering_manager",
+          },
+        ],
+      });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT FOR UPDATE
+      { rows: [] }, // UPDATE
+      { rows: [{ participant_count: "4" }] }, // count check
+      { rows: [] }, // audit INSERT
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/teams/team-1/members/user-henry/role",
+      payload: { role: "participant" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().member.role).toBe("participant");
+  });
+
+  // Task 4.6
+  it("4.6: a blocked promotion attempt writes audit_log with operation='team.role_change_denied', never 'team.role_changed', for the participant->engineering_manager transition", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "application_admin", membership_role: null }],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            display_name: "Iris",
+            email: "iris@test.com",
+            current_role: "participant",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    await app.inject({
+      method: "PATCH",
+      url: "/api/v1/teams/team-1/members/user-iris/role",
+      payload: { role: "engineering_manager" },
+    });
+
+    // The 3rd call to db.query is the blocked-promotion audit_log INSERT
+    // (index 2: 0 = authorization check, 1 = subject lookup, 2 = audit insert)
+    const auditInsertCall = mockDbQuery.mock.calls[2];
+    expect(auditInsertCall).toBeDefined();
+    const auditValues = auditInsertCall[1] as unknown[];
+    expect(auditValues[3]).toBe("team.role_change_denied");
+    const metadata = JSON.parse(auditValues[6] as string) as Record<string, unknown>;
+    expect(metadata).toMatchObject({
+      from_role: "participant",
+      to_role: "engineering_manager",
+      http_status: 403,
+    });
+
+    // No audit_log row for this request carries operation = 'team.role_changed'
+    // with from_role=participant/to_role=engineering_manager — the mockDbConnect
+    // transaction (where 'team.role_changed' would be written) never opened.
+    expect(mockDbConnect).not.toHaveBeenCalled();
   });
 });
 

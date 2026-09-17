@@ -4,11 +4,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mocks — must be defined before importing the module under test
 // ---------------------------------------------------------------------------
 const mockDbQuery = vi.fn();
+const mockEmitAuditEvent = vi.fn();
 
 vi.mock("../../db.js", () => ({
   db: {
     query: (...args: unknown[]) => mockDbQuery(...args),
   },
+}));
+
+vi.mock("../audit-logger.js", () => ({
+  emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
 }));
 
 vi.mock("../../config.js", () => ({
@@ -57,6 +62,11 @@ function mockUserNotFound() {
 const USER_ID = "user-uuid-1";
 const TEAM_ID = "team-uuid-1";
 
+// evaluateTeamAccess only needs a logger to pass through to emitAuditEvent,
+// which is itself mocked above — the logger's own methods are never invoked
+// directly, so an empty object cast is sufficient here.
+const MOCK_LOGGER = {} as Parameters<typeof evaluateTeamAccess>[2];
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -71,7 +81,7 @@ describe("evaluateTeamAccess", () => {
   it("returns null when user is not found", async () => {
     mockUserNotFound();
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toBeNull();
     // Only one DB query should have been made
@@ -85,7 +95,7 @@ describe("evaluateTeamAccess", () => {
   it("returns admin grant for application_admin regardless of membership", async () => {
     mockUserQuery("application_admin", null);
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toEqual({
       path: "admin",
@@ -99,7 +109,7 @@ describe("evaluateTeamAccess", () => {
     // Application Admins may also be team members; admin path takes priority
     mockUserQuery("application_admin", "participant");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toEqual({
       path: "admin",
@@ -114,7 +124,7 @@ describe("evaluateTeamAccess", () => {
   it("returns member grant with role=participant for a participant member", async () => {
     mockUserQuery("engineer", "participant");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toEqual({
       path: "member",
@@ -133,7 +143,7 @@ describe("evaluateTeamAccess", () => {
     // No membership — check facilitator path
     mockNoFacilitatorSession();
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toBeNull();
     expect(mockDbQuery).toHaveBeenCalledTimes(2);
@@ -148,7 +158,7 @@ describe("evaluateTeamAccess", () => {
     // the dual-check pattern from session-participation spec
     mockUserQuery("engineering_manager", "engineering_manager");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toEqual({
       path: "member",
@@ -158,19 +168,34 @@ describe("evaluateTeamAccess", () => {
     });
   });
 
-  it("returns EM content profile for user with global_role=engineer but membership_role=engineering_manager", async () => {
-    // Acceptance criterion from proposal.md: a user with diverged roles must
-    // be served the EM content shape (aggregate only). The membership_role governs.
+  // restrict-team-005-em-promotion (GitHub issue #109), design.md Decisions
+  // A/E: this test previously pinned the bug this change fixes — a
+  // membership-role-alone grant path let a mismatched global_role still
+  // receive the EM content profile. Rewritten (task 2.4) to assert the
+  // dual-control fix: mismatched state degrades to role: 'participant',
+  // never 'engineering_manager', plus the log-only team.access_grant_mismatch
+  // signal (Decision E) — not a synchronous audit_log row.
+  it("degrades to role=participant (dual-check mismatch) for global_role=engineer with membership_role=engineering_manager", async () => {
     mockUserQuery("engineer", "engineering_manager");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toEqual({
       path: "member",
-      role: "engineering_manager",
+      role: "participant",
       teamId: TEAM_ID,
       actorGlobalRole: "engineer",
     });
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      MOCK_LOGGER,
+      "team.access_grant_mismatch",
+      expect.objectContaining({
+        userId: USER_ID,
+        teamId: TEAM_ID,
+        globalRole: "engineer",
+        membershipRole: "engineering_manager",
+      }),
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -181,7 +206,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("facilitator", null); // not a team member
     mockFacilitatorSession("session-1", "active");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toEqual({
       path: "facilitator",
@@ -196,7 +221,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("facilitator", null);
     mockFacilitatorSession("session-2", "lobby");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toMatchObject({ path: "facilitator", sessionStatus: "lobby" });
   });
@@ -206,7 +231,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("facilitator", null);
     mockFacilitatorSession("session-3", "draft");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toMatchObject({
       path: "facilitator",
@@ -221,7 +246,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("facilitator", null);
     mockNoFacilitatorSession(); // SQL condition excluded the old draft
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toBeNull();
   });
@@ -230,7 +255,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("facilitator", null);
     mockFacilitatorSession("session-4", "complete");
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toMatchObject({
       path: "facilitator",
@@ -244,7 +269,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("facilitator", null);
     mockNoFacilitatorSession(); // SQL excluded the expired session
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toBeNull();
   });
@@ -257,7 +282,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("engineer", null); // no membership
     mockNoFacilitatorSession(); // not a facilitator
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     expect(grant).toBeNull();
     expect(mockDbQuery).toHaveBeenCalledTimes(2);
@@ -270,11 +295,11 @@ describe("evaluateTeamAccess", () => {
   it("executes live DB reads on every call (no shared cache between calls)", async () => {
     // First call
     mockUserQuery("engineer", "participant");
-    await evaluateTeamAccess(USER_ID, TEAM_ID);
+    await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     // Second call to the same user/team MUST make another DB query
     mockUserQuery("engineer", "participant");
-    await evaluateTeamAccess(USER_ID, TEAM_ID);
+    await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     // Two calls → two user-query calls (and no shared state from the first call)
     expect(mockDbQuery).toHaveBeenCalledTimes(2);
@@ -288,7 +313,7 @@ describe("evaluateTeamAccess", () => {
     mockUserQuery("engineer", null);
     mockNoFacilitatorSession();
 
-    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID);
+    const grant = await evaluateTeamAccess(USER_ID, TEAM_ID, MOCK_LOGGER);
 
     // Strict null check — a falsy result that is not null would fail this
     expect(grant).toBeNull();

@@ -1,0 +1,67 @@
+# Design Review — Full Stack Engineer (Marcus Oyelaran)
+
+## Verdict
+
+Implementable, and the core fixes (Decisions A and B) are smaller and cleaner than the design doc's own language suggests — the actual code is in better shape to receive this fix than the narrative implies. But I found one finding that blocks Open Question 5 from being answered the way it's currently framed (a naive DB trigger would break TEAM-006), and one finding that's a real gap in tasks.md: three existing tests assert the exact behavior this change removes, and nothing in tasks.md says so. Both are addressed below with line references.
+
+## 1. Decision A (read-side) — implementable, and simpler than design.md describes
+
+Design.md frames this as "Path 1's sub-case" vs. "Path 2" as if `evaluateTeamAccess` has two separate code branches today. It doesn't — `team-content-access-helper.ts:116-141` is a single merged branch that already reads both `global_role` and `membership_role` in one query and just never compares them for the EM case. The fix is a straight three-way split of that one `if` block:
+
+```
+if (membership_role === 'participant') → return participant grant
+if (membership_role === 'engineering_manager' && global_role === 'engineering_manager') → return EM grant
+if (membership_role === 'engineering_manager' && global_role !== 'engineering_manager') → mismatched state (Open Question 2)
+```
+
+This mirrors `checkAssignRolesAuthorization`'s AND-logic (`teams.ts:353-356`) exactly, as design.md intends. No type changes needed either way Open Question 2 resolves — `TeamAccessGrant` (`packages/shared/src/types/team-content-access.ts:17-40`) already has a `null`-return path for "no access," which covers a hard-403 resolution, and the existing `role: 'participant'` shape covers a graceful-downgrade resolution. Whoever implements this should not go looking for "Path 1" and "Path 2" as literal separate blocks in the current file — flagging so the implementer doesn't lose time reconciling design.md's narrative with the code.
+
+Task 2.2 (comment correction) is necessary, not cosmetic: the current comment at lines 130-132 says the membership role governing over global role is "per the proposal's acceptance criterion" — that's citing session-participation's dual-check decision as the reason this shortcut is *correct*, when it's actually the bug. A partial edit that only fixes the code and leaves that sentence intact recreates the exact failure mode (comment asserting behavior the code doesn't have) this whole change exists to close.
+
+## 2. Decision B (write-side) — implementable, clean insertion point
+
+The natural insertion point is right after the subject-user lookup at `teams.ts:742-772` (which already fetches `current_role` → `fromRole`) and before the no-op check at `teams.ts:775`. This is before `client.connect()` / `BEGIN` / the team-level row lock (`teams.ts:789-806`) — important, because it means a blocked promotion attempt never acquires the team-level lock, never touches the transaction machinery at all. Cheap to implement, cheap to test, no interaction with the zero-participant transaction logic. Both actor-scope resolutions to Open Question 1 (block admins too, or EM-only) are a one-line conditional either way — there's no implementation-cost reason to prefer one over the other, so that question is genuinely just a policy call, not an engineering trade-off.
+
+## 3. Finding — a blanket DB-layer trigger (Open Question 5) would break TEAM-006 itself
+
+This is the one place I think the design doc's framing needs correction before a Solution Architect signs off on it. Open Question 5 asks whether the write-side restriction wants "a check constraint or trigger... following the precedent of `migrations/7_team_memberships_partial_constraint.sql`." Two problems with that framing as stated:
+
+- **A CHECK constraint structurally cannot do this.** Postgres check constraints validate a single row's columns in isolation — they have no access to the row's prior (`OLD`) value. Blocking a *transition* (`participant → engineering_manager`) requires a `BEFORE UPDATE` trigger, not a constraint. The migration-7 precedent (a partial unique index) doesn't transfer — that's a structural precedent for adding a DB object via migration, but it's not solving a transition problem, only a set-membership problem.
+- **A transition-based trigger on `team_memberships` cannot distinguish TEAM-005 from TEAM-006 without extra plumbing, and TEAM-006 legitimately performs the identical row-level transition.** Look at TEAM-006's upsert (`teams.ts:1156-1163`): `INSERT ... ON CONFLICT (user_id, team_id) WHERE removed_at IS NULL DO UPDATE SET role = 'engineering_manager'`. The `ON CONFLICT` target matches *any* active membership row for that `(user_id, team_id)` pair — including an ordinary existing `participant` row. Promoting an existing team member into the EM role for their own team (global_role granted via IdP claim, then an admin runs TEAM-006) is exactly this: a `participant → engineering_manager` `UPDATE` on `team_memberships`, originated legitimately. A trigger that blocks that transition unconditionally breaks TEAM-006's own primary use case. To make a trigger safe, it would need to inspect which code path issued the write — e.g., a `SET LOCAL` session variable set inside each handler's transaction and read via `current_setting()` in the trigger — which is real, non-trivial complexity for a defense-in-depth layer, not a drop-in constraint.
+
+My recommendation for the Solution Architect: either scope the DB-layer defense-in-depth to something that doesn't require transition-awareness (e.g., a trigger or scheduled check that flags any `team_memberships.role = 'engineering_manager'` row with no corresponding `team.manager_established` audit_log row — a detection control, not a prevention control), or accept the session-variable-tagging approach explicitly as added complexity with its own review. I'd lean toward the former given Marcus's general allergy to incidental complexity, but this is the Architect's call per the doc's own ownership assignment — I'm flagging it so "add a trigger" isn't rubber-stamped as low-effort when it isn't.
+
+## 4. Finding — three existing tests assert the exact behavior this change removes, and tasks.md doesn't say so
+
+`packages/backend/src/routes/__tests__/teams.test.ts` currently has:
+- Line 336, `"4.8: promotes participant to engineering_manager and returns updated member"` — an Application Admin promoting via TEAM-005, asserting `200` and `role: 'engineering_manager'`. This is the bug's happy path, encoded as a passing test.
+- Line 423, `"4.3: returns 422 with requiresConfirmation when change would leave zero Engineers"` — reachable only via a promotion (participant→EM) that drops the participant count to zero.
+- Line 460, `"4.3: applies change when confirmedZeroParticipant: true even if zero Engineers remain"` — same promotion path, second submission.
+
+Once Decision B ships, all three fail — correctly. But more than that: **the entire zero-participant guard branch (`teams.ts:832-838`, and the `confirmedZeroParticipant` field on `RoleChangeRequest`) becomes unreachable dead code.** The only transition that survives Decision B into the transaction block is demotion (`engineering_manager → participant`), which strictly *increases* the participant count — it can never trigger a zero-participant condition. No-op requests already return early at line 775, before the transaction. So after this ships, `participantCount === 0` inside that transaction can never be true through any reachable code path.
+
+This isn't in tasks.md anywhere. Group 4 (regression suite) adds new tests but doesn't mention retiring the three that pin the old behavior, and no task addresses the now-dead zero-participant branch. I'd add to tasks.md:
+- Update or delete tests at lines 336, 423, 460 as part of task 3.1/3.5's implementation, not as an incidental side effect discovered when CI goes red.
+- A decision (Engineer-owned, not blocking): leave the zero-participant guard in place with a comment marking it defensive/unreachable-post-fix, or remove it along with `confirmedZeroParticipant` and the 422 response shape. I'd lean toward *leaving it* with an explicit comment — removing it deletes a correctness guard that would matter again if a future change reopens any promotion path, and the cost of leaving a few dead lines with an honest comment is much lower than the cost of silently deleting a guard whose absence nobody will notice until it's needed. But this should be a stated decision either way, not silence.
+
+## 5. Cross-check against `REST API Contract.md` — confirms the gap predates this bug, not just this proposal
+
+`requirements/design/REST API Contract.md:421-427` already documents (dated 2026-03-15) that "an Engineering Manager may only assign the `participant` role via this endpoint... a request from an EM to set `role = 'engineering_manager'` must be rejected with `403 Forbidden`." I checked the actual code: **that EM-only restriction was never implemented.** `checkAssignRolesAuthorization` (`teams.ts:325-359`) only checks *whether* the actor may call TEAM-005 at all — it never inspects the requested role value, and neither does the handler until the change proposed here. So the current dated decision record isn't just silent on Application Admins (Open Question 1's framing) — it's a restriction that was written down and never built, for either actor type. This matters for whoever resolves Open Question 1: there's no existing enforced behavior to preserve backward-compatibility with; both the EM-only and EM-and-admin resolutions are equally "new" from the code's perspective. I'd treat this as removing a reason to default toward the narrower (EM-only) reading out of caution — there's no shipped behavior on the admin side being changed either way.
+
+## 6. Finding — `role_change_audit` is a dropped table; tasks.md and this change's own spec delta reference it
+
+`role_change_audit` was dropped in migration 8 (`packages/backend/migrations/8_audit_log.sql`) and replaced by `audit_log` with `operation = 'team.role_changed'` and `from_role`/`to_role` folded into the `metadata` JSONB column — confirmed by the current code (`teams.ts:849-865`) and by the existing test at line 555 (`expect(auditSql).not.toContain("role_change_audit")`).
+
+Despite that, this change's own delta spec — `openspec/changes/restrict-team-005-em-promotion/specs/role-assignment/spec.md`, the "Role change is audited" requirement and its new scenario "A blocked promotion attempt does not produce a role_change_audit entry..." — is written entirely against `role_change_audit`, and **tasks.md task 4.6** asks for a test asserting "`role_change_audit` never contains a row with `from_role = 'participant'` and `to_role = 'engineering_manager'`" against a table that doesn't exist in the schema. If implemented literally, that test either errors on a missing relation or gets quietly rewritten by whoever hits the error — silently, with no record that the spec text was wrong. That's the identical failure mode this whole proposal exists to close (a document asserting something about the system that isn't true), except this time it's in the artifacts this proposal is producing, not the ones it's correcting. This predates this change (the base spec has the same error), but this change's delta restates and extends the wrong text rather than fixing it, so I'd treat it as in-scope here rather than deferred. Recommend: task 4.6 and the delta spec's audited-role requirement should read `audit_log` with `operation = 'team.role_changed'` and `metadata->>'from_role'` / `metadata->>'to_role'`, matching the pattern already established in the existing `4.4` test at `teams.test.ts:511`.
+
+## 7. Minor — error response shape (Decision D / Open Question 4)
+
+Not blocking, but worth putting in front of whoever picks the status code: the two precedents Decision D cites (`teams.ts:734-737`, `:973-976`) are both "you have no standing to touch this at all" 403s. This case is different in kind — the actor *is* otherwise authorized to call TEAM-005, but this specific transition is structurally unavailable through this door. That's closer to TEAM-006's own `409 GLOBAL_ROLE_PRECONDITION_NOT_MET` pattern (`teams.ts:1112-1126`) — authorized caller, structurally-blocked specific request, machine-readable `code` field for the frontend to key off of. I'd suggest a `code: "TEAM005_PROMOTION_BLOCKED"` (or similar) on whatever status is chosen, for the same reason TEAM-006 has one: the frontend follow-on work that spec.md defers ("UI's redirect/error handling... is a frontend follow-on") will want to switch on something more specific than a bare message string.
+
+## Summary for sign-off
+
+- No structural blockers to shipping Decisions A–D as designed.
+- Open Question 5 needs re-scoping before an Architect signs off on "trigger" as the answer — see §3.
+- tasks.md is missing an explicit task to retire/rewrite the three tests at `teams.test.ts:336,423,460` and to decide the fate of the now-dead zero-participant branch — see §4.
+- tasks.md task 4.6 and the delta spec's audit requirement reference a table (`role_change_audit`) that no longer exists — see §6. This should be corrected before implementation starts, not discovered mid-implementation.
+- Open Question 1 (actor scope) has no cost-based reason to prefer either answer, and §5 removes the "existing behavior" argument for defaulting to the narrower one.

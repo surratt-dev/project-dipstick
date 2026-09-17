@@ -1,4 +1,6 @@
+import type { FastifyBaseLogger } from "fastify";
 import { db } from "../db.js";
+import { emitAuditEvent } from "./audit-logger.js";
 import type { TeamAccessGrant, SessionStatus } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -21,19 +23,23 @@ import type { TeamAccessGrant, SessionStatus } from "@dipstick/shared";
 //           for admin grants. Administrative data endpoints (membership lists,
 //           role assignments, EM associations) MAY proceed.
 //
-//   Path 1 — Team Member:
-//     team_memberships row with removed_at IS NULL for (userId, teamId)
-//     Returns { path: 'member', role, teamId, actorGlobalRole }
+//   Path 1 — Team Member (participant):
+//     team_memberships row with removed_at IS NULL for (userId, teamId) and
+//     role = 'participant'.
+//     Returns { path: 'member', role: 'participant', teamId, actorGlobalRole }
 //
-//   Path 2 — Engineering Manager (dual-check, session-participation spec):
+//   Path 2 — Engineering Manager (dual-check, restrict-team-005-em-promotion
+//   Decision A, honoring Decision 14 from the archived
+//   establish-manager-team-relationship change):
 //     users.global_role = 'engineering_manager' AND
-//     team_memberships.role = 'engineering_manager' for this team
-//     This is Path 1 with the EM dual-check enforced — it produces the same
-//     grant shape { path: 'member', role: 'engineering_manager', ... }
-//     The dual-check is a superset of Path 1 and is handled automatically:
-//     when the membership row has role = 'engineering_manager', the returned
-//     grant carries that role. The effective authorization is the membership
-//     row, not the global_role alone.
+//     team_memberships.role = 'engineering_manager' for this team, BOTH read
+//     live in the same query. This is the ONLY path that can return
+//     { path: 'member', role: 'engineering_manager', ... } — membership_role
+//     alone is never sufficient. A membership row with role =
+//     'engineering_manager' whose global_role does NOT match degrades to the
+//     mismatched-state handling below; it does not fall through to Path 1's
+//     participant grant either, since the membership row is not actually a
+//     participant row.
 //
 //   Path 3 — Active Session Facilitator:
 //     The full SQL condition from Decision 3 / design.md:
@@ -59,6 +65,7 @@ import type { TeamAccessGrant, SessionStatus } from "@dipstick/shared";
 export async function evaluateTeamAccess(
   userId: string,
   teamId: string,
+  logger: FastifyBaseLogger,
 ): Promise<TeamAccessGrant | null> {
   // -------------------------------------------------------------------------
   // Single query: fetch the user's global_role AND their active membership
@@ -114,27 +121,67 @@ export async function evaluateTeamAccess(
   }
 
   // ---------------------------------------------------------------------------
-  // Path 1 & 2: Team Member (participant or EM)
+  // Path 1: Team Member (participant)
   //
-  // Decision 8: If the user has an active membership row for this team,
-  // they are authorized as a team member. The role on the membership row
-  // determines the response shape (aggregate-only for EM, aggregate+own-vote
-  // for participant).
-  //
-  // Decision (session-participation dual-check): The EM path is NOT a separate
-  // code branch. If users.global_role = 'engineering_manager' AND
-  // team_memberships.role = 'engineering_manager', the membership row is found
-  // and the grant carries role: 'engineering_manager'. The dual-check is
-  // enforced by the serializer: an EM never sees voter_id in their response.
-  //
-  // A user with global_role = 'engineer' but membership_role = 'engineering_manager'
-  // receives the EM content profile (aggregate only) per the proposal's acceptance
-  // criterion — the membership role governs, not the global role.
+  // Decision 8: If the user has an active membership row for this team with
+  // role = 'participant', they are authorized as a participant.
   // ---------------------------------------------------------------------------
-  if (membership_role !== null) {
+  if (membership_role === "participant") {
     return {
       path: "member",
-      role: membership_role as "participant" | "engineering_manager",
+      role: "participant",
+      teamId,
+      actorGlobalRole: global_role,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Path 2: Engineering Manager (dual-check)
+  //
+  // restrict-team-005-em-promotion Decision A: this is now the ONLY path that
+  // can grant role: 'engineering_manager'. Both users.global_role and
+  // team_memberships.role must equal 'engineering_manager' for this team,
+  // read live in the same query above — mirroring
+  // checkAssignRolesAuthorization's AND-logic (teams.ts) for the structurally
+  // identical question ("can this actor act as an EM on this team").
+  //
+  // Decision E (mismatched-state handling): a membership row with role =
+  // 'engineering_manager' whose global_role does NOT also equal
+  // 'engineering_manager' is a data-integrity anomaly (global_role comes from
+  // the IdP claim, not the membership row, so the two can drift). This
+  // degrades gracefully to role: 'participant' rather than a hard 403 or
+  // null — the user is a legitimate team member, just not correctly an EM,
+  // and denying them the team's baseline content entirely over a column they
+  // don't control is an availability cost with no matching security benefit.
+  // This is not "failing open": the fail-safe direction is away from the
+  // elevated grant, not toward denying the baseline access the membership
+  // row already establishes. No synchronous audit_log row is written here —
+  // this function runs on essentially every content request (Decision 6, no
+  // caching), so a user parked in this anomalous state would otherwise
+  // generate a DB write per page view. A structured log event alone is
+  // sufficient for detection; this mirrors how team.manager_association_rate_approaching
+  // is log-only while rate_limit_exceeded gets a DB row (audit-logger.ts).
+  // ---------------------------------------------------------------------------
+  if (membership_role === "engineering_manager") {
+    if (global_role === "engineering_manager") {
+      return {
+        path: "member",
+        role: "engineering_manager",
+        teamId,
+        actorGlobalRole: global_role,
+      };
+    }
+
+    emitAuditEvent(logger, "team.access_grant_mismatch", {
+      userId,
+      teamId,
+      globalRole: global_role,
+      membershipRole: membership_role,
+    });
+
+    return {
+      path: "member",
+      role: "participant",
       teamId,
       actorGlobalRole: global_role,
     };
