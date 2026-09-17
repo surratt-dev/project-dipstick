@@ -340,49 +340,8 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role", () => {
   // relationship is exclusively TEAM-006's function. Coverage for the
   // Application-Admin-specific and EM-actor-specific variants of this
   // rejection lives in the "restrict-team-005-em-promotion" describe block
-  // below (tasks 4.1/4.4).
-  it("4.8 (superseded): rejects participant -> engineering_manager for an Application Admin actor, does not update team_memberships", async () => {
-    // 1) authorization — application_admin
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{ global_role: "application_admin", membership_role: null }],
-    });
-    // 2) subject check — currently participant
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [
-        {
-          display_name: "Alice",
-          email: "alice@test.com",
-          current_role: "participant",
-        },
-      ],
-    });
-    // Blocked-promotion audit_log INSERT (not the transaction — this check
-    // runs before the transaction opens)
-    mockDbQuery.mockResolvedValueOnce({ rows: [] });
-
-    const app = await buildApp();
-    const res = await app.inject({
-      method: "PATCH",
-      url: "/api/v1/teams/team-1/members/user-alice/role",
-      payload: { role: "engineering_manager" },
-    });
-
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error.message).toContain("TEAM-005");
-    // The transaction (BEGIN/UPDATE/COMMIT) must never open for a blocked
-    // promotion attempt.
-    expect(mockDbConnect).not.toHaveBeenCalled();
-    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
-      expect.anything(),
-      "team.role_change_denied",
-      expect.objectContaining({
-        targetUserId: "user-alice",
-        fromRole: "participant",
-        toRole: "engineering_manager",
-        httpStatus: 403,
-      }),
-    );
-  });
+  // below (tasks 4.1/4.4); this test's own case is task 4.4 there, so it is
+  // removed here rather than kept as a redundant "(superseded)" duplicate.
 
   // Task 4.9 — demoting back to participant succeeds
   it("4.9: demotes engineering_manager back to participant and returns updated member", async () => {
