@@ -71,7 +71,11 @@ The application SHALL create an authenticated session represented by an HttpOnly
 
 #### Scenario: Session fixation prevention
 - **WHEN** the OIDC callback creates an authenticated session
-- **THEN** any pre-authentication session is destroyed and a new session is regenerated before populating user data
+- **THEN** any pre-authentication session state is invalidated by regenerating the session identifier before populating user data, without relying on a separate destroy operation
+
+#### Scenario: Session fixation prevention uses regenerate() alone, not destroy() plus regenerate()
+- **WHEN** the OIDC callback completes a successful authentication and establishes a new session
+- **THEN** the session store's `regenerate()` operation is invoked exactly once on that path, and the session store's `destroy()` operation is not invoked on that path
 
 ---
 
