@@ -95,3 +95,42 @@ describe("FacilitatorReadinessGrid.tsx non-disclosure invariants (task 1.9 — r
     expect(consoleCalls.length).toBe(0);
   });
 });
+
+describe("ReauthRequiredTreatment.tsx non-disclosure invariants (reauth-required-client-prompt tasks.md task 3.4(b), mirroring task 1.9's pattern)", () => {
+  const code = readSourceWithoutComments("../../components/ReauthRequiredTreatment.tsx");
+
+  it("never references STALE_SIGNAL_CLOSE_CODE or REAUTH_GRACE_EXPIRED_CLOSE_CODE as symbols", () => {
+    expect(code).not.toMatch(/STALE_SIGNAL_CLOSE_CODE/);
+    expect(code).not.toMatch(/REAUTH_GRACE_EXPIRED_CLOSE_CODE/);
+  });
+
+  it("never reads .code or compares against a raw numeric close-code literal", () => {
+    expect(code).not.toMatch(/\.code\b/);
+    expect(code).not.toMatch(/===\s*4000\b|===\s*4001\b/);
+  });
+
+  it("takes no props — the module has no exported *Props interface/type", () => {
+    expect(code).not.toMatch(/export\s+(interface|type)\s+\w*Props\b/);
+  });
+
+  it("performs no console logging at all", () => {
+    const consoleCalls = code.match(/console\.[a-zA-Z]+\([^]*?\)/g) ?? [];
+    expect(consoleCalls.length).toBe(0);
+  });
+});
+
+describe("No reveal-timing-aware special casing (spec.md, reauth-required-client-prompt tasks.md task 5.1, design.md Decision D6)", () => {
+  const files = [
+    "../connectionHealth.ts",
+    "../../components/ConnectionStatusBanner.tsx",
+    "../../components/FacilitatorReadinessGrid.tsx",
+    "../../components/ReauthRequiredTreatment.tsx",
+  ];
+
+  it.each(files)("%s references no reveal state, topic status, or other session-moment signal", (relativePath) => {
+    const code = readSourceWithoutComments(relativePath);
+    expect(code).not.toMatch(/reveal/i);
+    expect(code).not.toMatch(/topicStatus/i);
+    expect(code).not.toMatch(/SessionTopicStatus/);
+  });
+});

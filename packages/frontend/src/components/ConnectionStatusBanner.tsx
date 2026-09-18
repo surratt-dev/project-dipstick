@@ -2,6 +2,7 @@ import {
   useConnectionHealth,
   assertExhaustiveConnectionHealthState,
 } from "../realtime/connectionHealth.js";
+import { ReauthRequiredTreatment } from "./ReauthRequiredTreatment.js";
 
 // ---------------------------------------------------------------------------
 // ConnectionStatusBanner — participant-facing rendered treatment
@@ -15,14 +16,15 @@ import {
 // rendered-output-identity test exists to check. `"connected"` renders
 // nothing.
 //
-// COPY IS NOT FINAL. Both strings below are placeholders pending Priya
-// Nair's sign-off against actual layout (design.md Decision D11,
-// tasks.md task 6.1) — see the gate language in tasks.md Group 6. Do not
-// treat this wording as implementation-ready.
+// COPY IS NOT FINAL. `unknown-reconnecting`'s copy sign-off is already
+// closed (per the pilot-readiness gate status notes in
+// specs/websocket-staleness-signal/spec.md). `reauth-required`'s copy is
+// still pending Priya Nair's sign-off (reauth-required-client-prompt
+// design.md Decision D4, tasks.md task 3.1) — see ReauthRequiredTreatment.tsx,
+// which owns that copy now (Decision D9).
 // ---------------------------------------------------------------------------
 
 const UNKNOWN_RECONNECTING_TEXT = "Your view may be out of date. Refresh to continue.";
-const REAUTH_REQUIRED_TEXT = "Your session needs to be renewed. Please log in again.";
 
 export interface ConnectionStatusBannerProps {
   connect: () => WebSocket;
@@ -37,7 +39,7 @@ export function ConnectionStatusBanner({ connect }: ConnectionStatusBannerProps)
     case "unknown-reconnecting":
       return <div role="status">{UNKNOWN_RECONNECTING_TEXT}</div>;
     case "reauth-required":
-      return <div role="status">{REAUTH_REQUIRED_TEXT}</div>;
+      return <ReauthRequiredTreatment />;
     default: {
       const _exhaustive: never = state;
       return assertExhaustiveConnectionHealthState(_exhaustive);

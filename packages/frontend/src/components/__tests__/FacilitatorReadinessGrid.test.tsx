@@ -246,9 +246,14 @@ describe("FacilitatorReadinessGrid — reauth-required exclusion (design.md Deci
       expect(screen.queryByTestId(`stale-marker-${row.participantId}`)).not.toBeInTheDocument();
       expect(screen.queryByTestId(`row-${row.participantId}`)).not.toBeInTheDocument();
     }
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Your session needs to be renewed. Please log in again.",
-    );
+
+    // reauth-required-client-prompt tasks.md task 4.8 (resolves engineer
+    // design-review Finding 1): this used to only assert the grid rows
+    // disappeared, which stayed green even when the facilitator's
+    // reauth-required treatment was an independently-duplicated, CTA-less
+    // placeholder. Now also asserts the shared treatment actually rendered.
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument();
   });
 });
 
