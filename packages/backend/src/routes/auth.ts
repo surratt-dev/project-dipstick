@@ -16,6 +16,7 @@ import { emitAuditEvent } from "../auth/audit-logger.js";
 import { mapAuthError } from "../auth/error-handler.js";
 import { MissingClaimError } from "../auth/errors.js";
 import { sanitizeOidcError } from "../auth/oidc-error-sanitizer.js";
+import { writeSessionInvalidatedAuditRow } from "../auth/session-invalidation-audit.js";
 import type { AuthSession, DevLoginOption, DevLoginOptionsResponse } from "@dipstick/shared";
 
 const STATE_TTL_SECONDS = 600; // 10 minutes
@@ -421,10 +422,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       request.session.destroy(() => resolve());
     });
 
+    await writeSessionInvalidatedAuditRow(userId, sessionId, "explicit_logout", request);
     emitAuditEvent(request.log, "auth.session_invalidated", {
       userId,
       sessionId,
       reason: "explicit_logout",
+      sourceIp: request.ip,
     });
 
     // Attempt IdP logout

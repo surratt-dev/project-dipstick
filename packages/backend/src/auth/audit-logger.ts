@@ -19,6 +19,21 @@ export type AuditEventName =
   // never notified) queryable rather than only discoverable by grepping error
   // logs for shape.
   | "auth.idp_logout_failed"
+  // auth.audit_write_failed: http-auth-audit-log-coverage, design.md Decision
+  // D5. Fired by session-invalidation-audit.ts's writeSessionInvalidatedAuditRow
+  // whenever the durable `audit_log` row it attempts for an
+  // auth.session_invalidated emission fails -- either the actor-global-role
+  // SELECT or the INSERT itself, an explicit DB error or a timeout past
+  // AUDIT_WRITE_TIMEOUT_MS. Deliberately log-only, with no `audit_log` DB row
+  // of its own: if the DB is the thing that's unreachable, writing a DB row
+  // about that is not a real fallback (see docs/deployment.md's "Logging"
+  // section, which lists this as a 19th log-only, no-DB-backing event).
+  // Never blocks or fails the triggering request -- the 401/logout response
+  // proceeds regardless. No `correlationId`: none of this event's four call
+  // sites (three in middleware.ts's onRequest hook, one in auth.ts's
+  // /auth/logout) mints or has access to one today. metadata: { userId,
+  // authSessionId, reason, failureMode: "error" | "timeout", sourceIp }.
+  | "auth.audit_write_failed"
   | "join.link_created"
   | "join.link_redeemed"
   | "join.link_rejected"
