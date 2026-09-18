@@ -8,7 +8,7 @@
 - [x] 1.2 Add `facilitator_access_expires_at TIMESTAMPTZ NULL` column to the `sessions` table in the migration
 - [x] 1.3 Add index on `sessions(facilitator_id, team_id, status)` to support the Path 3 authorization query
 - [x] 1.4 Add index on `team_memberships(user_id, team_id)` if not already present, to support Path 1 and Path 2 authorization queries
-- [ ] 1.5 Run migration in local dev environment and verify columns and enum value are present
+- [x] 1.5 Run migration in local dev environment and verify columns and enum value are present *(Verified 2026-09-18 against a freshly recreated local dev database: `npm run db:migrate` ran migrations 1-9 cleanly; confirmed `'draft'` present in the `session_status` enum before `'lobby'`, `sessions.facilitator_access_expires_at` present as nullable `timestamptz`, and both `idx_sessions_facilitator_team_status` and `idx_team_memberships_user_team` indexes present.)*
 - [x] 1.6 Update the shared TypeScript types to include `'draft'` in the `SessionStatus` union and `facilitatorAccessExpiresAt` in the `Session` type
 
 ## 2. Authorization Helper — Core
