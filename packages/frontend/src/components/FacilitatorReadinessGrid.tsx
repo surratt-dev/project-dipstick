@@ -2,6 +2,7 @@ import {
   useConnectionHealth,
   assertExhaustiveConnectionHealthState,
 } from "../realtime/connectionHealth.js";
+import { ReauthRequiredTreatment } from "./ReauthRequiredTreatment.js";
 
 // ---------------------------------------------------------------------------
 // FacilitatorReadinessGrid — the grid-marker treatment
@@ -24,10 +25,12 @@ import {
 //
 // Scoped to "unknown-reconnecting" only: when the facilitator's own
 // connection is "reauth-required", no marker variant renders on any row —
-// the facilitator's client instead renders the same top-level
-// reauth-required treatment any client would, superseding the grid
-// entirely (a facilitator who needs to log back in cannot usefully view a
-// live grid regardless of markers).
+// the facilitator's client instead renders ReauthRequiredTreatment, the
+// same shared top-level treatment ConnectionStatusBanner.tsx renders
+// (design.md Decision D9), superseding the grid entirely (a facilitator
+// who needs to log back in cannot usefully view a live grid regardless of
+// markers). This was previously an independently-duplicated placeholder
+// here — see reauth-required-client-prompt engineer design-review Finding 1.
 //
 // STYLING IS A PLACEHOLDER (design.md Decision D10, tasks.md task 4.7).
 // The final visual register — dimmed/hollow vs. disconnected-adjacent — is
@@ -59,8 +62,6 @@ const ROW_STATE_LABEL: Record<ParticipantRowState, string> = {
 /** Placeholder copy (Priya Nair's sketch), non-final pending Decision D11's copy sign-off (task 6.1). */
 export const STALE_MARKER_TOOLTIP_TEXT = "Last known state may not be current.";
 
-const REAUTH_REQUIRED_TEXT = "Your session needs to be renewed. Please log in again.";
-
 export interface FacilitatorReadinessGridProps {
   connect: () => WebSocket;
   rows: ParticipantRow[];
@@ -75,7 +76,7 @@ export function FacilitatorReadinessGrid({ connect, rows }: FacilitatorReadiness
     case "unknown-reconnecting":
       return <GridRows rows={rows} showMarker={true} />;
     case "reauth-required":
-      return <div role="status">{REAUTH_REQUIRED_TEXT}</div>;
+      return <ReauthRequiredTreatment />;
     default: {
       const _exhaustive: never = state;
       return assertExhaustiveConnectionHealthState(_exhaustive);

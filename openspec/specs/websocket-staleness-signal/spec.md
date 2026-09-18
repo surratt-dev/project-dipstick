@@ -8,9 +8,9 @@ This spec is additive to, and depends on, `websocket-delivery-time-authorization
 
 This spec covers: the three-value client connection-health state machine (`connected` / `unknown-reconnecting` / `reauth-required`) and its single shared implementation; the disclosure-blind timing floor and retry policy for `unknown-reconnecting`; the no-retry, page-navigation-only recovery path for `reauth-required`; the participant-facing rendered banner for both non-`connected` states; and the facilitator-only, cause-blind readiness-grid marker, its signal source, lifecycle, and visual bound.
 
-This spec does NOT cover: any new server-side signal, close code, or heartbeat (none is introduced); issue [#33](https://github.com/surratt-dev/project-dipstick/issues/33)'s reauthorization-specific grid distinction (a deferred consumer of this capability's shared module, not built here); issue [#32](https://github.com/surratt-dev/project-dipstick/issues/32)'s fuller re-login UX for `reauth-required` (this capability builds the state and a minimal generic message only); the full live-session voting UI (topic display, vote casting, reveal); and session-history or trend-continuity for stale-connection events (declined, not deferred — see design.md Decision D12).
+This spec does NOT cover: any new server-side signal, close code, or heartbeat (none is introduced); issue [#33](https://github.com/surratt-dev/project-dipstick/issues/33)'s reauthorization-specific grid distinction (a deferred consumer of this capability's shared module, not built here); the full live-session voting UI (topic display, vote casting, reveal); and session-history or trend-continuity for stale-connection events (declined, not deferred — see design.md Decision D12). Issue [#32](https://github.com/surratt-dev/project-dipstick/issues/32)'s fuller re-login UX for `reauth-required` — previously deferred here as "the state and a minimal generic message only" — is now built out by the `reauth-required-client-prompt` change: the call-to-action, content requirements, and ARIA/persistence/visual-register contract below.
 
-**Implementation status:** Implemented. `packages/frontend/src/realtime/connectionHealth.ts` is the sole implementation, consumed identically by `ConnectionStatusBanner.tsx` (participant) and `FacilitatorReadinessGrid.tsx` (facilitator). All CI-enforced acceptance tests (retry-symmetry, `reauth-required` no-retry, cause-blind grid marker, exhaustiveness) pass; a follow-up closed a CI type-check gap that had left the exhaustiveness guard unverified at build time (`review-followup-summary.md`). **The facilitator-experience gate is only partially closed**: Priya Nair (Facilitator SME) signed off on all three copy strings, but withheld sign-off on the grid marker's visual-register mock — the shipped marker ships an intentionally neutral, unstyled placeholder (a bare glyph with no color/opacity/spacing differentiation) rather than either candidate visual register, and the live usability test has not been performed. These remaining items are tracked in [GitHub issue #36](https://github.com/surratt-dev/project-dipstick/issues/36) and deferred by product-owner decision rather than oversight. Per the pilot-readiness gate below, this capability is deployable to non-pilot/staging environments now but MUST NOT be used for a real pilot team's first live session until issue #36 closes.
+**Implementation status:** Implemented. `packages/frontend/src/realtime/connectionHealth.ts` is the sole implementation, consumed identically by `ConnectionStatusBanner.tsx` (participant) and `FacilitatorReadinessGrid.tsx` (facilitator). All CI-enforced acceptance tests (retry-symmetry, `reauth-required` no-retry, cause-blind grid marker, exhaustiveness) pass; a follow-up closed a CI type-check gap that had left the exhaustiveness guard unverified at build time (`review-followup-summary.md`). `reauth-required`'s rendering is implemented in a shared subcomponent, `ReauthRequiredTreatment.tsx` (design.md Decision D9 of `reauth-required-client-prompt`), consumed identically by both `ConnectionStatusBanner.tsx` and `FacilitatorReadinessGrid.tsx` — the latter's previously independently-duplicated placeholder copy and markup have been deleted in favor of the shared component. **The facilitator-experience gate is only partially closed**: Priya Nair (Facilitator SME) signed off on all three original copy strings for `unknown-reconnecting`, but withheld sign-off on the grid marker's visual-register mock — the shipped marker ships an intentionally neutral, unstyled placeholder (a bare glyph with no color/opacity/spacing differentiation) rather than either candidate visual register, and the live usability test has not been performed. These remaining items are tracked in [GitHub issue #36](https://github.com/surratt-dev/project-dipstick/issues/36) and deferred by product-owner decision rather than oversight. `reauth-required`'s own treatment — CTA, ARIA role, persistence, and content-checklist-satisfying draft copy — is implemented in code, but its copy is still draft/placeholder text pending Priya Nair's sign-off, and its visual-register mock sign-off and live usability test are open, new gate items introduced by this change (tracked alongside issue #36 or a linked follow-up). Per the pilot-readiness gate below, this capability is deployable to non-pilot/staging environments now but MUST NOT be used for a real pilot team's first live session until both the `unknown-reconnecting` and `reauth-required` gate items close.
 
 ---
 
@@ -87,7 +87,7 @@ The client SHALL NOT surface the `unknown-reconnecting` state to any rendered UI
 
 ### Requirement: Uniform participant-facing rendered treatment
 
-The client SHALL render exactly one treatment for the `unknown-reconnecting` state, applied identically regardless of whether the underlying cause was a rejected subscription, a mid-session force-expiry, or an ordinary network drop, and a separate, fixed treatment for the `reauth-required` state, applied identically regardless of SEC-26 sub-cause. Both treatments SHALL use plain, non-blaming, non-urgent language.
+The client SHALL render exactly one treatment for the `unknown-reconnecting` state, applied identically regardless of whether the underlying cause was a rejected subscription, a mid-session force-expiry, or an ordinary network drop, using plain, non-blaming, non-urgent language and an implicit-polite (`role="status"`) live region. The client SHALL render a separate, fixed treatment for the `reauth-required` state, applied identically regardless of SEC-26 sub-cause, distinct from `unknown-reconnecting`'s treatment along all of the following axes: it SHALL use an assertive live region (`role="alert"`, not `role="status"`); it SHALL be persistent — either not dismissible before its call-to-action is used, or, if dismissed, demoted to a small persistent badge rather than removed entirely; it SHALL use a visually distinct register (color, weight, or icon) from the `unknown-reconnecting` treatment, while stopping short of a full modal dialog; and its content SHALL satisfy the required-content checklist defined by the "Reauth-required content requirements" requirement below. Neither treatment's content, timing, or behavior SHALL vary based on the participant's or facilitator's role.
 
 #### Scenario: Rendered output is identical across causes
 
@@ -97,8 +97,103 @@ The client SHALL render exactly one treatment for the `unknown-reconnecting` sta
 #### Scenario: The reauth-required rendered output is identical across its two triggers, and distinct from unknown-reconnecting
 
 - **WHEN** the `reauth-required` state is reached via a `REAUTH_GRACE_EXPIRED_CLOSE_CODE` close versus via a `reauth_required` message
-- **THEN** the rendered text and DOM structure are identical in both cases
+- **THEN** the rendered text, DOM structure, and ARIA role are identical in both cases
 - **AND** this rendered output differs from the `unknown-reconnecting` state's rendered output
+
+#### Scenario: The reauth-required treatment uses an assertive live region, distinct from unknown-reconnecting's passive one
+
+- **WHEN** the `unknown-reconnecting` and `reauth-required` states are each rendered
+- **THEN** the `unknown-reconnecting` treatment's root element has `role="status"`
+- **AND** the `reauth-required` treatment's root element has `role="alert"`, not `role="status"`
+
+#### Scenario: The reauth-required treatment is persistent, not auto-dismissing
+
+- **WHEN** the `reauth-required` treatment is rendered and no dismiss affordance is exposed by this change
+- **THEN** the treatment remains visible for the full lifetime of the `reauth-required` state, with no code path that hides it before the call-to-action is used or the connection closes
+
+#### Scenario: The reauth-required treatment stops short of a full modal
+
+- **WHEN** the `reauth-required` treatment is rendered
+- **THEN** it does not use a native `<dialog>` element in modal mode, a focus trap, or any mechanism that blocks interaction with the rest of the page
+
+#### Scenario: Copy and CTA are identical regardless of participant or facilitator role
+
+- **WHEN** the `reauth-required` treatment is rendered for a participant-facing view versus a facilitator-facing view
+- **THEN** the rendered text, DOM structure, ARIA role, and call-to-action are identical in both cases
+
+### Requirement: Reauth-required call-to-action
+
+The `reauth-required` treatment SHALL include a call-to-action control that triggers a full top-level navigation to `/auth/login`, using the identical navigation call already used by `AuthContext.tsx` and `AuthErrorPage.tsx` (`window.location.href = "/auth/login"`), rather than a new or parallel re-authentication trigger. This control SHALL be present and interactive from the first frame the `reauth-required` treatment renders — it SHALL NOT be hidden, disabled, or otherwise gated behind any elapsed-time threshold within the grace period. The navigation SHALL NOT be parameterized with a query string, fragment, or any other value derived from connection state, cause, or session identifiers.
+
+#### Scenario: The call-to-action is present and interactive on first render
+
+- **WHEN** the `reauth-required` state is first entered and the treatment renders for the first time
+- **THEN** a call-to-action control is present in the rendered output
+- **AND** the control is not disabled and requires no elapsed-time threshold to become interactive
+
+#### Scenario: Activating the call-to-action navigates via the existing login route
+
+- **WHEN** a user activates the `reauth-required` treatment's call-to-action control
+- **THEN** the application sets `window.location.href` to exactly `/auth/login`, with no query string, fragment, or other appended parameter, identical to the call already used by `AuthContext.tsx` and `AuthErrorPage.tsx`
+- **AND** no new or alternate re-authentication route or mechanism is introduced
+
+### Requirement: Reauth-required content requirements
+
+The `reauth-required` treatment's copy SHALL satisfy the following content requirements: it SHALL NOT include a countdown, a numeric grace-period value, or any digit-plus-time-unit representation of remaining time; it SHALL NOT disclose which SEC-26 sub-cause (retry-budget exhaustion, definitive revocation, or concurrent session destruction) produced the state, beyond the fact that this client's own token needs re-authentication; it SHALL include a plain-language statement that continuing requires leaving and returning to the page; and it SHALL use a tone register appropriate to an expected token-lifetime event, not an error condition.
+
+The absence of a countdown or numeric grace-period value SHALL be enforced by an automated test asserting the full rendered `reauth-required` output — including element attribute values such as `aria-label`, `title`, and `data-*` attributes, not only the visible text node — never matches a digit-plus-time-unit pattern, mirroring the existing rendered-output-identity test for the `unknown-reconnecting` treatment. The treatment SHALL NOT include any non-textual representation of the grace period either — a progress bar, spinner, or animation whose duration or visual timing is derived from or approximates the grace-period interval is prohibited by the same rationale, verified at the visual-register mock sign-off rather than by pattern-matching rendered text.
+
+#### Scenario: The rendered copy contains no countdown or numeric grace-period value
+
+- **WHEN** the `reauth-required` treatment's rendered output — text content and attribute values alike — is inspected
+- **THEN** it does not match any digit-plus-time-unit pattern (e.g. "23s", "30 seconds", "1 min") anywhere in that output
+
+#### Scenario: The mock sign-off is checked against non-textual countdown surrogates too
+
+- **WHEN** the `reauth-required` treatment's visual-register mock is reviewed for sign-off
+- **THEN** the mock is rejected if it includes any animated element (progress bar, spinner, or CSS animation) whose duration or visual timing is derived from or approximates the grace-period constant
+
+#### Scenario: The rendered copy does not disclose the SEC-26 sub-cause
+
+- **WHEN** the `reauth-required` treatment is rendered, regardless of whether the underlying cause was retry-budget exhaustion, a definitive revocation, or a concurrent session destruction
+- **THEN** the rendered text is identical across all three causes and does not name or distinguish among them
+
+#### Scenario: The rendered copy states that continuing requires leaving and returning to the page
+
+- **WHEN** the `reauth-required` treatment's rendered text is inspected
+- **THEN** it includes a plain-language statement that using the call-to-action leaves and returns to the page (a full navigation), not an in-place action
+
+### Requirement: Conditional vote-loss disclosure in the reauth-required treatment
+
+The `reauth-required` treatment's copy SHALL include a plain-language statement that continuing will discard an unsubmitted vote, unless, at the time this change is implemented, the vote-compose UI then present in the codebase is confirmed to import and call `voteDraft.ts`'s (`packages/frontend/src/realtime/voteDraft.ts`, from the `vote-compose-recovery` capability) persist/restore hooks. This determination SHALL be made exactly once, at this change's implementation time, by a single checkable fact (whether the vote-compose UI's source imports `voteDraft.ts`'s persist/restore hooks) — not treated as a standing judgment call re-evaluated per reviewer.
+
+**Current status:** as of this requirement's addition, no vote-compose UI in the codebase imports `voteDraft.ts`'s persist/restore hooks — enforced by an automated grep test (`packages/frontend/src/realtime/__tests__/voteDraft.grep.test.ts`) — so the shipped copy includes the vote-loss statement. `openspec/specs/vote-compose-recovery/spec.md` carries a forward-pointing note directing whoever wires a real vote-compose UI to `voteDraft.ts` back to this determination, so it is re-checked and the copy updated in the same change that lands that wiring, rather than left to go stale.
+
+#### Scenario: The vote-loss statement is included when the compose UI does not wire voteDraft.ts
+
+- **GIVEN** no vote-compose UI in the codebase imports `voteDraft.ts`'s persist/restore hooks at this change's implementation time
+- **WHEN** the `reauth-required` treatment's copy is finalized
+- **THEN** the copy includes a plain-language statement that continuing discards an unsubmitted vote
+
+#### Scenario: The vote-loss statement is omitted when the compose UI wires voteDraft.ts
+
+- **GIVEN** a vote-compose UI in the codebase imports and calls `voteDraft.ts`'s persist/restore hooks at this change's implementation time
+- **WHEN** the `reauth-required` treatment's copy is finalized
+- **THEN** the copy omits the vote-loss statement
+
+### Requirement: No reveal-timing-aware special casing
+
+None of `connectionHealth.ts`, `ConnectionStatusBanner.tsx`, `FacilitatorReadinessGrid.tsx`, or the shared `reauth-required` rendering subcomponent they both consume SHALL contain any code path that inspects, branches on, delays, suppresses, or otherwise coordinates the `reauth-required` state or its rendered treatment based on session reveal timing or any other session-moment-specific state. The `reauth_required` signal and its rendered treatment SHALL be handled identically regardless of what is concurrently happening elsewhere in the session.
+
+#### Scenario: The reauth-required treatment renders identically whether or not a reveal is concurrently in progress
+
+- **WHEN** the `reauth_required` message arrives while a topic reveal is concurrently in progress, versus arriving at any other time
+- **THEN** the `reauth-required` treatment's rendered text, timing, and behavior are identical in both cases
+
+#### Scenario: connectionHealth.ts, ConnectionStatusBanner.tsx, FacilitatorReadinessGrid.tsx, and the shared reauth-required subcomponent contain no reveal-state references
+
+- **WHEN** `connectionHealth.ts`, `ConnectionStatusBanner.tsx`, `FacilitatorReadinessGrid.tsx`, and the shared `reauth-required` rendering subcomponent are inspected
+- **THEN** none of them reference reveal state, topic status, or any other session-moment-specific signal
 
 ### Requirement: Single shared implementation
 
@@ -168,18 +263,21 @@ The grid marker SHALL be a passive, informational display only. It SHALL NOT pro
 
 ### Requirement: Pilot-readiness gate on the staleness signal
 
-This capability SHALL NOT be used for a real pilot team's first live session until all of the following are complete: Priya Nair's (Facilitator SME) sign-off on the participant-facing and facilitator-tooltip copy, evaluated in actual layout; Priya Nair's sign-off on the grid marker's visual-register mock; and a live usability test with Priya Nair evaluating specifically whether the treatment reads as an alarm. This capability MAY be deployed to a non-pilot or staging environment before this gate closes.
+This capability SHALL NOT be used for a real pilot team's first live session until all of the following are complete: Priya Nair's (Facilitator SME) sign-off on the `unknown-reconnecting` participant-facing and facilitator-tooltip copy, evaluated in actual layout; Priya Nair's sign-off on the grid marker's visual-register mock; Priya Nair's sign-off on the `reauth-required` treatment's copy, evaluated in actual layout against the mock; Priya Nair's sign-off on the `reauth-required` treatment's visual-register mock, evaluated against a real session-screen mock rather than a bare placeholder; a live usability test with Priya Nair evaluating specifically whether the `unknown-reconnecting` treatment reads as an alarm; and a live usability test with Priya Nair evaluating specifically whether the `reauth-required` treatment reads as an alarm without failing to be noticed. This capability MAY be deployed to a non-pilot or staging environment before this gate closes.
 
-**Current status:** the copy-sign-off portion of this gate is closed — Priya Nair signed off on all three copy strings against the shipped components. The visual-register mock sign-off, the follow-on task to apply final styling once that sign-off lands, and the live usability test all remain open. A simulated-persona attempt at the visual-register sign-off was made against real screenshots of the shipped placeholder and was withheld, because the placeholder does not yet attempt either candidate register, so no register judgment could be made from it. The live usability test cannot be satisfied by any static or simulated review by construction — it requires a real facilitator in a real session. The product owner has accepted deferring the remaining gate items until the frontend surface is more mature rather than iterating on the mock further now; this is tracked in [GitHub issue #36](https://github.com/surratt-dev/project-dipstick/issues/36) and remains a genuinely open gate, not a formality.
+**Current status:** the copy-sign-off portion of this gate for `unknown-reconnecting` is closed — Priya Nair signed off on all three copy strings against the shipped components. The `unknown-reconnecting` grid marker's visual-register mock sign-off, its follow-on final-styling task, and its live usability test all remain open, tracked in GitHub issue #36. A simulated-persona attempt at the visual-register sign-off was made against real screenshots of the shipped placeholder and was withheld, because the placeholder does not yet attempt either candidate register, so no register judgment could be made from it. The live usability test cannot be satisfied by any static or simulated review by construction — it requires a real facilitator in a real session. The product owner has accepted deferring the remaining `unknown-reconnecting` gate items until the frontend surface is more mature rather than iterating on the mock further now.
+
+The `reauth-required` treatment's copy sign-off, visual-register mock sign-off, and live usability test are new gate items introduced by the `reauth-required-client-prompt` change and are all open as of that change's own initial implementation — this change replaces the prior placeholder copy and passive treatment with new interactive content (CTA, content-checklist-satisfying draft copy, `role="alert"`), so the `unknown-reconnecting` gate's existing copy sign-off does not carry forward to this richer treatment; the shipped `reauth-required` copy is draft text pending Priya Nair's own sign-off against it (tasks.md tasks 3.1 and 6.3 of that change). All open items across both treatments remain tracked in [GitHub issue #36](https://github.com/surratt-dev/project-dipstick/issues/36) or a linked follow-up, and remain a genuinely open gate, not a formality.
 
 #### Scenario: The capability is withheld from a pilot team's first live session until the gate closes
 
 - **WHEN** a real pilot team is about to run its first live session using this capability
-- **THEN** the session SHALL NOT proceed with this capability enabled unless the copy sign-off, the visual-register mock sign-off, and the usability test are all complete
+- **THEN** the session SHALL NOT proceed with this capability enabled unless the `unknown-reconnecting` copy sign-off, the grid-marker visual-register mock sign-off, the `reauth-required` copy sign-off, the `reauth-required` visual-register mock sign-off, and both usability tests are all complete
 
 #### Scenario: The gate is partially, not fully, closed as of the initial build
 
 - **WHEN** evaluating this capability's readiness for a real pilot team's first live session as of the initial implementation
-- **THEN** the copy sign-off is complete
-- **AND** the visual-register mock sign-off, its follow-on final-styling task, and the live usability test are all open, tracked in GitHub issue #36
+- **THEN** the `unknown-reconnecting` copy sign-off is complete
+- **AND** the grid-marker visual-register mock sign-off, its follow-on final-styling task, and the `unknown-reconnecting` live usability test are all open, tracked in GitHub issue #36
+- **AND** the `reauth-required` treatment's copy sign-off, visual-register mock sign-off, and live usability test are all open, tracked alongside the existing items in GitHub issue #36 or a linked follow-up
 - **AND** the capability therefore remains available in non-pilot and staging environments only, per this requirement's deployment allowance
