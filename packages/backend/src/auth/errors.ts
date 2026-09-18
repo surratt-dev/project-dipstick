@@ -6,7 +6,11 @@
  * logging PII.
  */
 export class MissingClaimError extends Error {
-  /** The name of the missing or empty claim, e.g. "sub" or "iss". */
+  /**
+   * The name of the missing or empty claim, e.g. "sub" or "iss". Also used
+   * as "id_token" to denote that the claims object itself was null (no
+   * claims to inspect), rather than a specific absent claim.
+   */
   readonly claim: string;
 
   constructor(claim: string) {

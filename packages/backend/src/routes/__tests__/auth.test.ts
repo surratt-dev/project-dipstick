@@ -685,7 +685,7 @@ describe("authRoutes", () => {
         );
         expect(failureCall).toBeDefined();
         const auditFields = failureCall![2] as Record<string, unknown>;
-        expect(auditFields.missingClaim).toBeDefined();
+        expect(auditFields.missingClaim).toBe("id_token");
         // No PII
         expect(auditFields).not.toHaveProperty("email");
       });

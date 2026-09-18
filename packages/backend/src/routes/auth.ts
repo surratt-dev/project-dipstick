@@ -192,7 +192,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // logging any claim values (only the claim name is safe to log).
       const claims = tokens.claims();
       if (!claims) {
-        throw new MissingClaimError("sub");
+        throw new MissingClaimError("id_token");
       }
       if (!claims.sub) {
         throw new MissingClaimError("sub");
