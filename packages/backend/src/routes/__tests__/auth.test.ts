@@ -151,6 +151,15 @@ describe("authRoutes", () => {
     mockConfig.OIDC_ISSUER = "https://idp.example.com";
     mockIsPrivateAddress.mockReturnValue(false);
     mockSanitizeOidcError.mockReturnValue({ errorClass: "MockSanitized" });
+    // http-auth-audit-log-coverage, tasks.md 2.4: a default fallback so the
+    // new SELECT global_role/INSERT audit_log calls that
+    // session-invalidation-audit.ts issues on every /auth/logout request
+    // (imported transitively -- this file's existing db.js mock is
+    // resolved-path-keyed, so it also intercepts that module's db import)
+    // resolve to something safe instead of undefined. Tests that care about
+    // specific db.query calls still override individual calls with
+    // mockResolvedValueOnce, which takes priority over this default.
+    mockDbQuery.mockResolvedValue({ rows: [] });
   });
 
   describe("GET /auth/dev-login-options", () => {
@@ -1364,8 +1373,35 @@ describe("authRoutes", () => {
       expect(mockEmitAuditEvent).toHaveBeenCalledWith(
         expect.anything(),
         "auth.session_invalidated",
-        expect.objectContaining({ reason: "explicit_logout" }),
+        expect.objectContaining({ reason: "explicit_logout", sourceIp: expect.any(String) }),
       );
+    });
+
+    // Task 5.7: confirms Decision D4 isn't silently "fixed" into resolving a
+    // real team_id later without a corresponding spec update -- team_id is a
+    // literal NULL in the INSERT's SQL text, not a bound parameter fed by
+    // any lookup, and no team/session lookup query is ever issued for this
+    // write (Decision D4/D7).
+    it("writes team_id as a literal NULL, with no team lookup query issued (Decision D4, task 5.7)", async () => {
+      mockGetDecryptedTokens.mockReturnValue({ idToken: "id-tok" });
+      mockGetEndSessionUrl.mockResolvedValue(null);
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "POST",
+        url: "/auth/logout?confirmed=true",
+      });
+
+      expect(res.statusCode).toBe(200);
+      const insertCall = mockDbQuery.mock.calls.find((c) =>
+        String(c[0]).includes("INSERT INTO audit_log"),
+      );
+      expect(insertCall).toBeDefined();
+      expect(insertCall![0]).toContain("NULL");
+      const teamLookupCall = mockDbQuery.mock.calls.find((c) =>
+        String(c[0]).includes("FROM sessions"),
+      );
+      expect(teamLookupCall).toBeUndefined();
     });
 
     it("should return / redirect when no end_session_endpoint", async () => {
@@ -1416,7 +1452,7 @@ describe("authRoutes", () => {
       expect(mockEmitAuditEvent).toHaveBeenCalledWith(
         expect.anything(),
         "auth.session_invalidated",
-        expect.objectContaining({ reason: "explicit_logout" }),
+        expect.objectContaining({ reason: "explicit_logout", sourceIp: expect.any(String) }),
       );
 
       // (c) the error is routed through sanitizeOidcError before being logged

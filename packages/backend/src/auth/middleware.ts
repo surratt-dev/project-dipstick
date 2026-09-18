@@ -6,6 +6,7 @@ import { getDecryptedTokens } from "./session-store.js";
 import type { SessionData } from "./session-store.js";
 import { emitAuditEvent } from "./audit-logger.js";
 import { sanitizeOidcError } from "./oidc-error-sanitizer.js";
+import { writeSessionInvalidatedAuditRow } from "./session-invalidation-audit.js";
 
 const PUBLIC_ROUTES = [
   "/health",
@@ -45,8 +46,8 @@ function isPublicRoute(url: string): boolean {
 
 export type RefreshResult =
   | { status: "refreshed"; session: SessionData }
-  | { status: "revoked" }
-  | { status: "transient_failure" }
+  | { status: "revoked"; retryCount: number }
+  | { status: "transient_failure"; retryCount: number }
   | { status: "no_refresh_token" };
 
 // ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ export async function refreshSessionTokens(
           failureType: "revoked",
           retryCount: retries,
         });
-        return { status: "revoked" };
+        return { status: "revoked", retryCount: retries };
       }
 
       retries++;
@@ -148,7 +149,7 @@ export async function refreshSessionTokens(
     failureType: "transient",
     retryCount: retries,
   });
-  return { status: "transient_failure" };
+  return { status: "transient_failure", retryCount: retries };
 }
 
 export async function authMiddleware(app: FastifyInstance): Promise<void> {
@@ -169,10 +170,12 @@ export async function authMiddleware(app: FastifyInstance): Promise<void> {
       const userId = session.userId;
       const sessionId = request.session.sessionId;
       request.session.destroy();
+      await writeSessionInvalidatedAuditRow(userId, sessionId, "absolute_timeout", request);
       emitAuditEvent(request.log, "auth.session_invalidated", {
         userId,
         sessionId,
         reason: "absolute_timeout",
+        sourceIp: request.ip,
       });
       return reply.code(401).send({ error: { category: "session_expired", message: "Your session has expired. Please sign in again.", correlationId: crypto.randomUUID() } });
     }
@@ -199,10 +202,15 @@ export async function authMiddleware(app: FastifyInstance): Promise<void> {
           const userId = session.userId;
           const sessionId = request.session.sessionId;
           request.session.destroy();
+          await writeSessionInvalidatedAuditRow(userId, sessionId, "token_revoked", request, {
+            failureType: "revoked",
+            retryCount: result.retryCount,
+          });
           emitAuditEvent(request.log, "auth.session_invalidated", {
             userId,
             sessionId,
             reason: "token_revoked",
+            sourceIp: request.ip,
           });
           return reply.code(401).send({ error: { category: "session_expired", message: "Your session has been terminated. Please sign in again.", correlationId: crypto.randomUUID() } });
         }
@@ -210,10 +218,15 @@ export async function authMiddleware(app: FastifyInstance): Promise<void> {
           const userId = session.userId;
           const sessionId = request.session.sessionId;
           request.session.destroy();
+          await writeSessionInvalidatedAuditRow(userId, sessionId, "refresh_failure", request, {
+            failureType: "transient",
+            retryCount: result.retryCount,
+          });
           emitAuditEvent(request.log, "auth.session_invalidated", {
             userId,
             sessionId,
             reason: "refresh_failure",
+            sourceIp: request.ip,
           });
           return reply.code(401).send({ error: { category: "provider_unavailable", message: "Unable to maintain your session. Please sign in again.", correlationId: crypto.randomUUID() } });
         }
