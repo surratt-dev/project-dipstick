@@ -114,6 +114,80 @@ A multi-agent workflow where each stage of the OpenSpec process is executed by a
 
 ---
 
+## Light Track
+
+**Purpose:** A reduced-ceremony path for changes that are small, bounded, and
+carry no design or security risk. Same personas, same execute → review →
+incorporate principle as the full track above, far fewer stages — the goal is
+to cut ceremony that exists to catch problems this class of change
+structurally cannot have, while keeping every check that catches problems it
+*can* have (implementation correctness, test coverage, spec drift).
+
+### Eligibility
+
+A change qualifies for the light track only when **all** of the following
+hold. This is a conjunctive, hard gate: any single criterion that's unclear
+or fails routes the change to the full track. The asymmetry is deliberate —
+over-scoping a small change to the full pipeline wastes ceremony; under-
+scoping a real change to the light track ships a defect with less review.
+
+| Criterion | Check |
+|---|---|
+| Bounded scope | Touches a small, enumerable set of files known up front (single feature area, no new files besides tests/specs) |
+| No new capability | Doesn't add a capability, endpoint, UI surface, or data model — corrects, tightens, or clarifies something that already exists |
+| No design decision required | The "how" is unambiguous from reading the issue/description — no architectural choice to make |
+| No ritual/session-mechanics surface | Doesn't touch the no-manager rule, simultaneous reveal, facilitator assignment, or anything a participant/facilitator would perceive during a live session |
+| No security-sensitive surface | Doesn't touch authentication, authorization, or data access boundaries (how something is logged/labeled is fair game; what's exposed is not) |
+| Low-priority / clarity-labeled, or equivalent | The issue is scoped that way (label, title prefix, or an explicit "no security/correctness impact" statement), or the user's own description is equivalently narrow |
+
+Classification runs automatically at kickoff, immediately after issue
+detection and before branch creation, but the user always confirms the
+routing before any branch or board state changes — the classification is
+proposed, never silently applied.
+
+### Stages
+
+| Stage | Executor | Reviewer(s) | Notes |
+|---|---|---|---|
+| 1. Assess | Internal Champion (Devon Calloway) | *One* reviewer, chosen by change shape (below) | Merges Explore + Propose + "design: not required" into one artifact. No separate design.md unless the reviewer surfaces a real decision — if so, escalate to the full track. |
+| 2. Implement (`opsx:apply`) | Full Stack Engineer (Marcus Oyelaran) | Solution Architect (Ingrid Sollenberger) | Unchanged from the full track — code-correctness review is cheap and always worth it regardless of change size. |
+| 3. Sync & Archive (`opsx:sync`, `opsx:archive`) | Business Analyst (Marcus Delgado) | — | Combined; no separate sign-off stage. The Assess-stage reviewer's approval stands as the record. |
+| 4. Verify & PR | (orchestrator, not a persona-agent) | — | Same Verify & PR step used by the full track. |
+
+**Reviewer selection for Assess** is automatic, chosen by the shape of the
+change rather than asked of the user:
+
+- **Business Analyst (Marcus Delgado)** if the change is requirements-shaped (does the fix match what the issue describes, is anything ambiguous)
+- **Full Stack Engineer (Marcus Oyelaran)** if the change is implementation-shaped (is the described fix correct/complete against the real code)
+- **Security Analyst (Tomás Ferreira)** if the change touches audit logging or error surfaces, even without touching auth logic itself
+
+The **Facilitator** and **Executive Stakeholder** are skipped by default —
+neither has relevant surface for a change this bounded. Facilitator review
+re-enters if the bounded-scope check shows any session/UI file touched;
+Executive review re-enters only if the user raises a strategic question
+themselves.
+
+### Escalation
+
+If the Assess-stage reviewer, or the Implement-stage architect, discovers the
+change is bigger than it looked — a real design decision, an unexpected
+security surface, coupling into session mechanics — that's a stopping
+condition. Escalate to the full track rather than push through
+under-reviewed: the Assess artifact becomes the seed for a proper
+Explore/Propose pass (not discarded), and the reviewers dropped at kickoff
+(Facilitator, Executive, and whichever of BA/Engineer/Security wasn't used
+for Assess) are looped back in from that point forward. Report the
+escalation to the user rather than deciding silently.
+
+### Cost
+
+Roughly 6 agent spawns (Assess executor + reviewer + optional incorporate,
+Implement executor + reviewer, Sync & Archive executor) versus ~20 for the
+full track — a ~70% reduction, while preserving the same two hard gates: an
+independent reviewer before code is written, an independent reviewer after.
+
+---
+
 ## Execution Model
 
 Each stage follows the same pattern:
@@ -167,4 +241,6 @@ Example:
 /agent-team add session facilitation workflow with real-time voting
 ```
 
-The skill runs each stage sequentially, spawning executor and reviewer agents with the appropriate personas. It pauses between stages for your approval before proceeding.
+The skill runs each stage sequentially, spawning executor and reviewer agents with the appropriate personas. It does not pause between stages for approval — it only stops early on a stopping condition (see each track's stopping conditions) or to confirm track classification at kickoff.
+
+Before any stage work begins, the skill classifies the change as full track or light track against the **Light Track** eligibility criteria above and asks you to confirm the routing. Most changes — anything adding a capability, touching design, or touching security/ritual surfaces — run the full 7-stage pipeline. Small, bounded, no-design-decision changes (e.g. a diagnostic message fix) can run the 3-stage light track instead.
