@@ -1,15 +1,18 @@
 ---
 name: agent-team
-description: Run the full OpenSpec workflow using persona-driven agent teams. Each stage is executed by an agent adopting a team persona, then reviewed by agents adopting complementary personas. Use when the user wants to build a feature end-to-end with the agent team process.
+description: Run the OpenSpec workflow using persona-driven agent teams, classifying each change into a full 7-stage pipeline or a lightweight 3-stage pipeline based on scope and risk. Each stage is executed by an agent adopting a team persona, then reviewed by agents adopting complementary personas. Use when the user wants to build a feature end-to-end with the agent team process.
 license: MIT
 metadata:
   author: dipstick
-  version: "1.0"
+  version: "1.1"
 ---
 
-Run the full OpenSpec pipeline with persona-driven agent teams.
+Run the OpenSpec pipeline with persona-driven agent teams, on one of two tracks:
 
-Each stage is executed by one agent adopting a persona, then reviewed by other persona-agents. The pipeline runs continuously, stage to stage, without pausing for confirmation: Explore → Propose → Design/Tasks → Implement → Sync → Archive → Verify & PR. It only stops early if a stopping condition (see below) requires the user's input.
+- **Full track** (default): Explore → Propose → Design/Tasks → Implement → Sync → Archive → Verify & PR
+- **Light track** (small, bounded, no-design-decision changes only): Assess → Implement → Sync & Archive → Verify & PR
+
+Each stage is executed by one agent adopting a persona, then reviewed by other persona-agents. Track classification happens once, at kickoff (Step 1c) — the user always confirms it before any branch or board state changes. Once a track is chosen, its pipeline runs continuously, stage to stage, without pausing for confirmation. It only stops early if a stopping condition (see below) requires the user's input.
 
 ---
 
@@ -32,6 +35,50 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
    case description with no issue reference) have no corresponding issue at
    all. Call this `[issue]` (a bare number, e.g. `109`) when one applies.
 
+   **1c. Classify track**
+
+   Before creating the branch, check the change against these six criteria.
+   This is a hard, conjunctive gate — all six must hold for the light track;
+   if even one is unclear or fails, default to the full track. Over-scoping a
+   small change to the full pipeline wastes ceremony; under-scoping a real
+   change to the light track ships a defect with less review — bias toward
+   the expensive-but-safe path when in doubt.
+
+   - **Bounded scope** — touches a small, enumerable set of files known up
+     front (single feature area, no new files except tests/specs)
+   - **No new capability** — doesn't add a capability, endpoint, UI surface,
+     or data model; only corrects, tightens, or clarifies something that
+     already exists
+   - **No design decision required** — the "how" is unambiguous from reading
+     the issue/description; there's no architectural choice to make
+   - **No ritual/session-mechanics surface** — doesn't touch the no-manager
+     rule, simultaneous reveal, facilitator assignment, or anything a
+     participant/facilitator would perceive during a live session
+   - **No security-sensitive surface** — doesn't touch authentication,
+     authorization, or data access boundaries (how something is logged or
+     labeled is fair game; what's exposed is not)
+   - **Low-priority / clarity-labeled, or equivalent** — the issue is scoped
+     that way (label, title prefix like `[Clarity]`, or an explicit
+     "no security/correctness impact" statement), or the user's own
+     description is equivalently narrow
+
+   Never silently route — always confirm with **AskUserQuestion**:
+
+   > "This looks like a light-track change: [criteria that passed]. Run the
+   > lightweight pipeline (~6 agent spawns) instead of the full 7-stage
+   > pipeline (~20 spawns)?"
+   > - Yes, light track
+   > - No, run the full pipeline
+   > - Let me describe the scope differently first
+
+   If any criterion is unclear or fails, propose the full track instead and
+   say which criterion tripped it, so the user can override with reasoning
+   rather than a gut call.
+
+   Record the answer as `[track]` (`full` or `light`). This determines
+   whether Steps 3–9 (**Full Track**) or Steps 3L–5L (**Light Track**) run
+   below — both converge on Step 10 (Verify and open PR).
+
 2. **Create an isolated branch**
 
    Before any work begins, run the following git commands to create a fresh branch off of main:
@@ -40,8 +87,13 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
    git fetch origin
    git checkout main
    git pull origin main
-   git checkout -b agent-team/[name]
+   git checkout -b agent-team/[branch-name]
    ```
+
+   Where `[branch-name]` is `[issue]-[name]` if `[issue]` was identified in
+   Step 1 (e.g. `109-reauth-required-client-prompt`), or just `[name]`
+   otherwise. The issue number, when present, is always the prefix — never
+   append it or bury it elsewhere in the branch name.
 
    Report the branch name to the user so they know where changes will land.
 
@@ -62,6 +114,12 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
    pipeline on this. This status update only ever moves forward to In
    Progress here; nothing in this skill moves it to Done — that's a separate,
    human call about whether the issue is actually resolved.
+
+   Branch creation and board update above run identically regardless of
+   `[track]`. If `[track]` is `light`, skip ahead to **Light Track** (Steps
+   3L–5L) below; otherwise continue with **Full Track** (Steps 3–9).
+
+**Full Track**
 
 3. **Stage 1: Explore** (`opsx:explore`)
 
@@ -312,9 +370,106 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
    If the sign-off raises unresolved concerns, treat that as a stopping condition
    (see **Stopping Conditions**) rather than continuing to verification.
 
-10. **Verify and open PR**
+   Full track complete — continue to Step 10.
 
-    Once archive and sign-off are clean, verify the change before publishing it:
+**Light Track**
+
+*(Runs instead of Steps 3–9 when `[track]` is `light`. Same personas, same
+execute → review → incorporate principle, far fewer stages — see the
+requirements doc's Light Track section for the eligibility criteria and
+rationale.)*
+
+3L. **Stage 1: Assess**
+
+   Spawn **executor agent — Internal Champion (Devon Calloway):**
+   ```
+   You are Devon Calloway, the Internal Champion. Read and fully adopt the persona from:
+   requirements/implementation team personas/Internal Champion - Persona.md
+
+   Your task: Assess the following use case for the light track — a merged
+   Explore + Propose pass for a small, bounded change with no design decision
+   required.
+   Use case: [description]
+
+   Produce a single artifact covering: what the change is, why it matters,
+   the acceptance criteria, and confirmation that no architectural decision
+   is needed (state explicitly why not). Read relevant requirements documents
+   in requirements/ for context. If you discover a real design decision is
+   needed, say so plainly — don't invent one to keep moving.
+
+   Write it to: openspec/changes/[name]/assess.md
+   ```
+
+   After the executor finishes, spawn exactly **one reviewer**, chosen by the
+   shape of the change (not asked of the user):
+
+   - **Business Analyst (Marcus Delgado)** if the change is requirements-shaped (does the fix match what the issue describes, is anything ambiguous)
+   - **Full Stack Engineer (Marcus Oyelaran)** if the change is implementation-shaped (is the described fix correct/complete against the real code)
+   - **Security Analyst (Tomás Ferreira)** if the change touches audit logging or error surfaces, even without touching auth logic itself
+
+   Skip the Facilitator and Executive Stakeholder by default — reintroduce
+   the Facilitator only if the bounded-scope check turns up a session/UI
+   file touched, and the Executive only if the user raises a strategic
+   question themselves.
+
+   Example reviewer prompt (substitute persona/file/focus per the selection above):
+   ```
+   You are Marcus Delgado, the Business Analyst. Read and fully adopt the persona from:
+   requirements/implementation team personas/Business Analyst - Persona.md
+
+   Review the assessment at: openspec/changes/[name]/assess.md
+
+   Focus on: Does the fix actually match what the issue describes? Is
+   anything ambiguous or missing? Confirm this genuinely has no design
+   decision to make.
+
+   Write your review to: openspec/changes/[name]/assess-review.md
+   ```
+
+   If the reviewer surfaces a real design decision, an unexpected security
+   surface, or coupling into session mechanics, treat this as an
+   **escalation** (see Stopping Conditions) rather than continuing on the
+   light track: assess.md becomes the seed for a full Explore/Propose pass,
+   and the reviewers dropped at kickoff (Facilitator, Executive, and
+   whichever of BA/Engineer/Security wasn't used here) are looped in from
+   this point forward. Report the escalation to the user before continuing —
+   don't decide silently.
+
+   Otherwise, spawn the **executor again** to incorporate reviewer feedback
+   into assess.md, then run the `opsx:propose` skill for change name "[name]"
+   using assess.md as the source, so `design.md` and `tasks.md` exist for the
+   Implement stage (design.md should stay minimal — there's no decision to
+   document).
+
+4L. **Stage 2: Implement** (`opsx:apply`)
+
+   Identical to Step 7 (Full Track's Implement stage): spawn the Full Stack
+   Engineer (Marcus Oyelaran) as executor, then the Solution Architect
+   (Ingrid Sollenberger) to review. Code-correctness review is cheap and
+   always worth it regardless of change size. If the design flagged
+   security-sensitive tasks, also spawn the Security Analyst for those.
+
+5L. **Stage 3: Sync & Archive**
+
+   Spawn **executor agent — Business Analyst (Marcus Delgado):**
+   ```
+   You are Marcus Delgado, the Business Analyst. Read and adopt your persona from:
+   requirements/implementation team personas/Business Analyst - Persona.md
+
+   Run the opsx:sync skill for change "[name]", then the opsx:archive skill
+   for the same change. Ensure the specs reflect what was actually built,
+   not just what was planned.
+   ```
+
+   No separate sign-off stage — the Assess-stage reviewer's approval already
+   stands as the record. There is no champion-signoff.md on the light track.
+
+   Light track complete — continue to Step 10.
+
+10. **Verify and open PR** (shared by both tracks)
+
+    Once the full track's archive and sign-off are clean, or the light
+    track's Sync & Archive step is complete, verify the change before publishing it:
 
     ```bash
     npm run lint
@@ -329,7 +484,7 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
     Once verification is clean, push the branch and open the PR:
 
     ```bash
-    git push -u origin agent-team/[name]
+    git push -u origin agent-team/[branch-name]
     gh pr create --title "..." --body "..."
     ```
 
@@ -361,7 +516,11 @@ what you need from the user:
 - A persona's review surfaces a genuine security, compliance, or ritual-intent
   concern that isn't a straightforward fix (e.g. an unresolved threat-model gap,
   a violation of a core constraint like the no-manager rule)
-- The champion sign-off at archive raises concerns rather than a clean pass
+- The champion sign-off at archive raises concerns rather than a clean pass (full track)
+- On the light track, the Assess-stage reviewer or the Implement-stage
+  architect determines the change is bigger than it looked — a real design
+  decision, an unexpected security surface, or coupling into session
+  mechanics (Step 3L/4L escalation)
 - Lint, test, or build fails during final verification and the fix isn't a
   small, obvious correction
 - A required file, persona, or upstream artifact is missing and can't be
@@ -386,3 +545,6 @@ project board item that simply isn't tracked (per Step 2).
 - Stages run sequentially and continuously (see **Continuous Flow**); reviewers within a stage run in parallel
 - When the run is tied to a filed GitHub issue, that issue's project status moves to In Progress at branch creation (Step 2) — before any persona work starts, not after
 - The run only ends in one of two ways: a PR is opened (Step 10), or processing stops early on a **Stopping Condition**
+- Track classification (Step 1c) is a hard, conjunctive gate — all six criteria must hold for the light track — and always requires explicit user confirmation via **AskUserQuestion** before branch creation; it is never silently routed
+- The light track never skips the two hard review gates: an independent reviewer before code is written (Assess), and an independent reviewer after (Implement) — only the surrounding ceremony is cut
+- A light-track run that escalates (Step 3L/4L) reuses its Assess artifact as the seed for a full Explore/Propose pass rather than discarding it, and reports the escalation to the user
