@@ -22,6 +22,11 @@ export type {
   ActionItemsReviewResponse,
   ActionItemsReviewWrongStatusResponse,
 } from "./types/session.js";
+export type {
+  EligibleTeam,
+  EligibleTeamsResponse,
+  SessionAlreadyExistsResponse,
+} from "./types/session-creation.js";
 export type { Vote, VoteType } from "./types/vote.js";
 export type { Topic, TopicStatus } from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";

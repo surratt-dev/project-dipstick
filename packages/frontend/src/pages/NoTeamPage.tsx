@@ -25,6 +25,17 @@ export function NoTeamPage() {
     );
   }
 
+  // session-creation-existing-team design.md Decision D5's routing carve-out:
+  // a zero-membership facilitator must reach the session-creation entry point,
+  // never the participant-facing /no-team copy. The OIDC callback's
+  // server-side redirect (packages/backend/src/routes/auth.ts) only looks at
+  // team_memberships and sends every zero-membership user here regardless of
+  // facilitator status, so this client-side guard is the actual enforcement
+  // point for the carve-out on the real sign-in path.
+  if (session && session.canFacilitateSessions) {
+    return <Navigate to="/sessions/new" replace />;
+  }
+
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: "2rem", maxWidth: "480px", margin: "0 auto" }}>
       <h1>Welcome, {session?.user.displayName}</h1>

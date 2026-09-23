@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import type { PoolClient } from "pg";
+import { DatabaseError } from "pg";
 import { db } from "../db.js";
 import type { SessionData } from "../auth/session-store.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
@@ -23,6 +24,9 @@ import type {
   TopicAdvanceResponse,
   ActionItemsReviewResponse,
   ActionItemsReviewWrongStatusResponse,
+  SessionAlreadyExistsResponse,
+  EligibleTeam,
+  EligibleTeamsResponse,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -172,10 +176,24 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
   // Creates a draft session for the facilitator to access team historical
   // data before the session room opens.
   //
-  // Task 8.2: Only users eligible to facilitate the team may create a draft.
-  // The facilitator eligibility check is: users.global_role = 'facilitator'
-  // (the facilitator-from-another-team constraint from session-participation spec).
-  // A team member with participant or EM role cannot create a draft session.
+  // session-creation-existing-team, design.md Decision D1: the facilitator
+  // eligibility check and the facilitator-from-another-team constraint are
+  // resolved in a single combined query (the checkAssignRolesAuthorization /
+  // evaluateTeamAccess LEFT JOIN shape), read live on every call. Check
+  // order, made explicit:
+  //   1. No row for the caller -> 401 (unchanged).
+  //   2. global_role !== 'facilitator' -> 403, "not a facilitator" message.
+  //      Runs first because it depends only on the actor's identity, not on
+  //      :teamId.
+  //   3. Team existence -> 404 if missing. Runs before the membership
+  //      rejection so a nonexistent :teamId never reaches that rejection's
+  //      audit write, mirroring every other handler in this file.
+  //   4. is_member (already fetched in step 1's query) -> 403,
+  //      cross-team-constraint message, audited (Decision D1) -- this is the
+  //      check that closes the previously-invisible enforcement gap.
+  //   5. Insert, inside a transaction with the session.draft_created audit
+  //      write (Decision D1/D3); a sessions_team_active_unique violation
+  //      (Decision D3) rolls back and becomes a 409.
   // -------------------------------------------------------------------------
   app.post<{
     Params: { teamId: string };
@@ -183,11 +201,16 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
-    // Task 8.2: Check facilitator eligibility
-    // Only users with global_role = 'facilitator' may create draft sessions.
-    const actorResult = await db.query<{ global_role: string }>(
-      `SELECT global_role FROM users WHERE id = $1`,
-      [session.userId],
+    const actorResult = await db.query<{ global_role: string; is_member: boolean }>(
+      `SELECT u.global_role,
+              (tm.id IS NOT NULL) AS is_member
+       FROM users u
+       LEFT JOIN team_memberships tm
+             ON tm.user_id = u.id
+            AND tm.team_id = $2
+            AND tm.removed_at IS NULL
+       WHERE u.id = $1`,
+      [session.userId, teamId],
     );
 
     if (actorResult.rows.length === 0) {
@@ -200,7 +223,10 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       });
     }
 
-    const { global_role } = actorResult.rows[0] as { global_role: string };
+    const { global_role, is_member } = actorResult.rows[0] as {
+      global_role: string;
+      is_member: boolean;
+    };
 
     if (global_role !== "facilitator") {
       return reply.code(403).send({
@@ -228,29 +254,128 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       });
     }
 
+    // Facilitator-from-another-team constraint (Decision D1): a facilitator
+    // with an active team_memberships row for this team may not create a
+    // session for it -- distinct wording from the "not a facilitator" 403
+    // above so the two rejections stay distinguishable at the API boundary.
+    if (is_member) {
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          session.userId,
+          global_role,
+          request.ip,
+          "session.draft_denied_membership_conflict",
+          teamId,
+        ],
+      );
+
+      emitAuditEvent(request.log, "session.draft_denied_membership_conflict", {
+        actorUserId: session.userId,
+        actorGlobalRole: global_role,
+        actorIp: request.ip,
+        teamId,
+      });
+
+      return reply.code(403).send({
+        error: {
+          category: "forbidden" as const,
+          message: "A facilitator cannot create a session for a team they are a member of.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
     // Create the draft session
     // join_token is required but not meaningful for draft sessions
     const joinToken = crypto.randomUUID().replace(/-/g, "").substring(0, 8);
 
-    const sessionResult = await db.query<{ id: string }>(
-      `INSERT INTO sessions
-         (team_id, facilitator_id, status, join_token, is_first_session, session_number)
-       VALUES ($1, $2, 'draft', $3, false,
-         COALESCE(
-           (SELECT MAX(session_number) + 1 FROM sessions WHERE team_id = $1),
-           1
-         )
-       )
-       RETURNING id`,
-      [teamId, session.userId, joinToken],
-    );
+    // Decision D1/D3: the INSERT and its session.draft_created audit_log row
+    // are one transaction. A sessions_team_active_unique violation (Decision
+    // D3's partial unique index) rolls back and becomes a 409 -- matched on
+    // the concrete node-postgres DatabaseError fields, not a message
+    // substring, so an unrelated 23505 or any other error propagates
+    // unchanged as a 500.
+    const client = await db.connect();
+    let draftSessionId: string;
+    try {
+      await client.query("BEGIN");
 
-    const draftSessionId = (sessionResult.rows[0] as { id: string }).id;
+      const sessionResult = await client.query<{ id: string }>(
+        `INSERT INTO sessions
+           (team_id, facilitator_id, status, join_token, is_first_session, session_number)
+         VALUES ($1, $2, 'draft', $3, false,
+           COALESCE(
+             (SELECT MAX(session_number) + 1 FROM sessions WHERE team_id = $1),
+             1
+           )
+         )
+         RETURNING id`,
+        [teamId, session.userId, joinToken],
+      );
+
+      draftSessionId = (sessionResult.rows[0] as { id: string }).id;
+
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          global_role,
+          request.ip,
+          "session.draft_created",
+          teamId,
+          JSON.stringify({ session_id: draftSessionId }),
+        ],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+
+      if (
+        err instanceof DatabaseError &&
+        err.code === "23505" &&
+        err.constraint === "sessions_team_active_unique"
+      ) {
+        const existingResult = await db.query<{ id: string; status: string }>(
+          `SELECT id, status FROM sessions
+           WHERE team_id = $1
+             AND status IN ('draft', 'lobby', 'pre_session', 'active', 'wrap_up')`,
+          [teamId],
+        );
+        const existing = existingResult.rows[0] as { id: string; status: string };
+
+        const response: SessionAlreadyExistsResponse = {
+          errorState: "session_already_exists",
+          existingSessionId: existing.id,
+          existingSessionStatus: existing.status as SessionStatus,
+          teamId,
+        };
+        return reply.code(409).send(response);
+      }
+
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    emitAuditEvent(request.log, "session.draft_created", {
+      actorUserId: session.userId,
+      actorGlobalRole: global_role,
+      actorIp: request.ip,
+      teamId,
+      sessionId: draftSessionId,
+    });
 
     return reply.code(201).send({
       sessionId: draftSessionId,
       teamId,
       status: "draft",
+      joinToken,
     });
   });
 
@@ -1564,8 +1689,9 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       team_id: string;
       facilitator_id: string;
       status: string;
+      join_token: string;
     }>(
-      `SELECT id, team_id, facilitator_id, status
+      `SELECT id, team_id, facilitator_id, status, join_token
        FROM sessions
        WHERE id = $1 AND team_id = $2`,
       [sessionId, teamId],
@@ -1586,6 +1712,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       team_id: string;
       facilitator_id: string;
       status: string;
+      join_token: string;
     };
 
     // Only the facilitator who owns this session may query its facilitator state.
@@ -1633,6 +1760,100 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       teamId,
       currentSessionState: sr.status as SessionStatus,
       bannerState,
+      joinToken: sr.join_token,
+    };
+
+    return reply.send(response);
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/teams/eligible-for-session
+  //
+  // session-creation-existing-team, design.md Decision D2. Returns the teams
+  // a facilitator may create a session for -- any non-deactivated team with
+  // no active team_memberships row for the caller. Deliberately does NOT
+  // exclude teams with a live non-terminal session: the 409 at submission
+  // time (POST /draft, Decision D3) is the only enforcement point for that,
+  // not list-filtering (see design.md D2's Resolved decision).
+  //
+  // The 403-vs-200 gate here is a live read of users.global_role, run fresh
+  // on every call -- never derived from canFacilitateSessions or any other
+  // request.session-carried value, matching every other authorization
+  // decision in this codebase (evaluateTeamAccess, session-participation's
+  // dual-check, POST /draft's own check above).
+  // -------------------------------------------------------------------------
+  app.get("/api/v1/teams/eligible-for-session", async (request, reply) => {
+    const session = request.session as unknown as SessionData;
+
+    const actorResult = await db.query<{ global_role: string }>(
+      `SELECT global_role FROM users WHERE id = $1`,
+      [session.userId],
+    );
+
+    if (actorResult.rows.length === 0) {
+      return reply.code(401).send({
+        error: {
+          category: "session_expired" as const,
+          message: "User not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const { global_role } = actorResult.rows[0] as { global_role: string };
+
+    if (global_role !== "facilitator") {
+      return reply.code(403).send({
+        error: {
+          category: "forbidden" as const,
+          message: "Only a facilitator can view eligible teams for session creation.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    // lastSessionAt: MAX(completed_at) over this team's status = 'complete'
+    // sessions only (design.md D2) -- mirrors fetchPreSessionActionItems's
+    // existing convention of sourcing only from completed sessions. A live
+    // or draft session never masquerades as "last session" context.
+    const eligibleResult = await db.query<{
+      team_id: string;
+      team_name: string;
+      last_session_at: Date | null;
+    }>(
+      `SELECT t.id AS team_id,
+              t.name AS team_name,
+              (SELECT MAX(s.completed_at) FROM sessions s
+                 WHERE s.team_id = t.id AND s.status = 'complete'
+              ) AS last_session_at
+       FROM teams t
+       LEFT JOIN team_memberships tm
+             ON tm.team_id = t.id
+            AND tm.user_id = $1
+            AND tm.removed_at IS NULL
+       WHERE tm.id IS NULL
+         AND t.deactivated_at IS NULL`,
+      [session.userId],
+    );
+
+    const eligibleTeams: EligibleTeam[] = eligibleResult.rows.map((row) => ({
+      teamId: row.team_id,
+      teamName: row.team_name,
+      lastSessionAt: row.last_session_at ? row.last_session_at.toISOString() : null,
+    }));
+
+    const membershipResult = await db.query<{ exists: boolean }>(
+      `SELECT EXISTS(
+         SELECT 1 FROM team_memberships
+         WHERE user_id = $1 AND removed_at IS NULL
+       ) AS exists`,
+      [session.userId],
+    );
+    const callerHasTeamMemberships = (membershipResult.rows[0] as { exists: boolean }).exists;
+
+    const response: EligibleTeamsResponse = {
+      eligibleTeams,
+      callerHasTeamMemberships,
     };
 
     return reply.send(response);

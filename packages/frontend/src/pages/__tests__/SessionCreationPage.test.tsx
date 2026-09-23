@@ -1,0 +1,208 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
+import { SessionCreationPage } from "../SessionCreationPage.js";
+import type { EligibleTeamsResponse, SessionAlreadyExistsResponse } from "@dipstick/shared";
+import type * as ReactRouterDom from "react-router-dom";
+
+// ---------------------------------------------------------------------------
+// SessionCreationPage — picker -> confirm -> create flow
+// session-creation-existing-team, tasks.md task 6.6.
+// ---------------------------------------------------------------------------
+
+const mockNavigate = vi.fn();
+vi.mock("react-router-dom", async (importOriginal) => {
+  const actual = await importOriginal<typeof ReactRouterDom>();
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
+vi.mock("../../auth/AuthContext.js", () => ({
+  useAuth: vi.fn().mockReturnValue({
+    session: {
+      user: { id: "fac-1", displayName: "Frankie Facilitator", email: "frankie@test.com" },
+      teamMemberships: [],
+      sessionCreatedAt: "",
+      expiresAt: "",
+      canFacilitateSessions: true,
+    },
+    loading: false,
+    refreshSession: vi.fn(),
+  }),
+}));
+
+function renderPage() {
+  return render(
+    <MemoryRouter initialEntries={["/sessions/new"]}>
+      <Routes>
+        <Route path="/sessions/new" element={<SessionCreationPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function mockFetchSequence(...responses: Array<Partial<Response> & { jsonBody?: unknown }>) {
+  const fn = vi.fn();
+  for (const r of responses) {
+    fn.mockResolvedValueOnce({
+      ok: r.ok ?? true,
+      status: r.status ?? 200,
+      json: () => Promise.resolve(r.jsonBody),
+    } as unknown as Response);
+  }
+  global.fetch = fn;
+  return fn;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("SessionCreationPage — picker empty states", () => {
+  it("6.1: renders the zero-home-team empty state when callerHasTeamMemberships is false", async () => {
+    const body: EligibleTeamsResponse = { eligibleTeams: [], callerHasTeamMemberships: false };
+    mockFetchSequence({ jsonBody: body });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+    expect(screen.getByTestId("picker-empty-state").textContent).toMatch(/don't have a home team/i);
+  });
+
+  it("6.1: renders the zero-eligible-targets empty state when callerHasTeamMemberships is true", async () => {
+    const body: EligibleTeamsResponse = { eligibleTeams: [], callerHasTeamMemberships: true };
+    mockFetchSequence({ jsonBody: body });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+    expect(screen.getByTestId("picker-empty-state").textContent).toMatch(/already a member of every team/i);
+  });
+
+  it("renders the eligible teams list when non-empty", async () => {
+    const body: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: "2026-08-01T00:00:00Z" }],
+      callerHasTeamMemberships: false,
+    };
+    mockFetchSequence({ jsonBody: body });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    expect(screen.getByText("Team Two")).toBeInTheDocument();
+  });
+});
+
+describe("SessionCreationPage — confirm screen", () => {
+  it("6.2/6.6: confirm screen displays team name plus lastSessionAt context, not the bare team name alone", async () => {
+    const body: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: "2026-08-01T00:00:00Z" }],
+      callerHasTeamMemberships: false,
+    };
+    mockFetchSequence({ jsonBody: body });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+
+    expect(screen.getByTestId("confirm-team-name").textContent).toBe("Team Two");
+    expect(screen.getByTestId("confirm-last-session-context").textContent).toMatch(/last session/i);
+    expect(screen.getByText(/Frankie Facilitator/)).toBeInTheDocument();
+  });
+
+  it("6.3: submits POST to /api/v1/teams/:teamId/sessions/draft on confirm", async () => {
+    const listBody: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+      callerHasTeamMemberships: false,
+    };
+    const fetchMock = mockFetchSequence(
+      { jsonBody: listBody },
+      { status: 201, jsonBody: { sessionId: "sess-9", teamId: "team-2", status: "draft", joinToken: "abc123" } },
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/teams/team-2/sessions/draft",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/team/team-2/session/sess-9",
+      expect.objectContaining({ replace: true }),
+    );
+  });
+
+  it("6.4: handles the 403 cross-team-constraint rejection with an inline, named error", async () => {
+    const listBody: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+      callerHasTeamMemberships: false,
+    };
+    mockFetchSequence(
+      { jsonBody: listBody },
+      { ok: false, status: 403, jsonBody: { error: { message: "A facilitator cannot create a session for a team they are a member of." } } },
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+
+    await waitFor(() => expect(screen.getByTestId("confirm-error-membership-conflict")).toBeInTheDocument());
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it("6.4: handles the 409 concurrent-session rejection with a resume-existing-session affordance", async () => {
+    const listBody: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+      callerHasTeamMemberships: false,
+    };
+    const conflictBody: SessionAlreadyExistsResponse = {
+      errorState: "session_already_exists",
+      existingSessionId: "sess-existing",
+      existingSessionStatus: "lobby",
+      teamId: "team-2",
+    };
+    mockFetchSequence({ jsonBody: listBody }, { ok: false, status: 409, jsonBody: conflictBody });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+
+    await waitFor(() => expect(screen.getByTestId("confirm-error-session-already-exists")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("resume-existing-session"));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/team/team-2/session/sess-existing",
+      expect.objectContaining({ state: { teamName: "Team Two", lastSessionAt: null } }),
+    );
+  });
+
+  it("6.5: after a confirm-screen rejection, the picker's eligible-teams list is re-fetched on next open", async () => {
+    const listBody: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+      callerHasTeamMemberships: false,
+    };
+    const fetchMock = mockFetchSequence(
+      { jsonBody: listBody },
+      { ok: false, status: 403, jsonBody: { error: { message: "cross-team" } } },
+      { jsonBody: listBody },
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+    await waitFor(() => expect(screen.getByTestId("confirm-error-membership-conflict")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("confirm-back-to-picker"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(fetchMock.mock.calls[2]![0]).toBe("/api/v1/teams/eligible-for-session");
+  });
+});

@@ -35,6 +35,7 @@ const noTeamSession: AuthSession = {
   teamMemberships: [],
   sessionCreatedAt: "",
   expiresAt: "",
+  canFacilitateSessions: false,
 };
 
 const withTeamSession: AuthSession = {
@@ -42,6 +43,15 @@ const withTeamSession: AuthSession = {
   teamMemberships: [{ teamId: "team-1", teamName: "Alpha", role: "participant" }],
   sessionCreatedAt: "",
   expiresAt: "",
+  canFacilitateSessions: false,
+};
+
+const facilitatorNoTeamSession: AuthSession = {
+  user: { id: "u1", displayName: "Bob", email: "bob@test.com" },
+  teamMemberships: [],
+  sessionCreatedAt: "",
+  expiresAt: "",
+  canFacilitateSessions: true,
 };
 
 describe("NoTeamPage", () => {
@@ -108,5 +118,29 @@ describe("NoTeamPage", () => {
     // No links or form inputs beyond the sign-out affordance
     expect(screen.queryAllByRole("link")).toHaveLength(0);
     expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+  });
+
+  // session-creation-existing-team: closes the drift where the real post-auth
+  // redirect (server-side, keyed only on team_memberships) sends a
+  // zero-membership facilitator straight to /no-team. This guard is what
+  // actually enforces design.md Decision D5's carve-out on that path, since
+  // App.tsx's AuthenticatedLanding carve-out is mounted at "/" and never
+  // reached by the OIDC callback's hard redirect.
+  it("redirects a zero-membership facilitator to /sessions/new instead of showing no-team copy", () => {
+    mockUseAuth.mockReturnValue({ loading: false, session: facilitatorNoTeamSession });
+    renderNoTeamPage(
+      <Route path="/sessions/new" element={<div>Session Creation</div>} />,
+    );
+    expect(screen.queryByText(/not yet a member of any team/)).not.toBeInTheDocument();
+    expect(screen.getByText("Session Creation")).toBeInTheDocument();
+  });
+
+  it("does not redirect a zero-membership non-facilitator away from /no-team", () => {
+    mockUseAuth.mockReturnValue({ loading: false, session: noTeamSession });
+    renderNoTeamPage(
+      <Route path="/sessions/new" element={<div>Session Creation</div>} />,
+    );
+    expect(screen.getByText(/not yet a member of any team/)).toBeInTheDocument();
+    expect(screen.queryByText("Session Creation")).not.toBeInTheDocument();
   });
 });

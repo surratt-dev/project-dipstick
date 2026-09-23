@@ -558,7 +558,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     // Fetch user data and team memberships
     const userResult = await db.query(
-      `SELECT id, display_name, email FROM users WHERE id = $1`,
+      `SELECT id, display_name, email, global_role FROM users WHERE id = $1`,
       [session.userId],
     );
 
@@ -576,6 +576,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       id: string;
       display_name: string;
       email: string;
+      global_role: string;
     };
 
     const membershipsResult = await db.query(
@@ -611,6 +612,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       })),
       sessionCreatedAt: session.sessionCreatedAt,
       expiresAt,
+      // session-creation-existing-team design.md Decision D4: computed live
+      // from users.global_role on every call, never cached in the Redis
+      // session blob (session.* here is the Redis-backed SessionData, which
+      // deliberately never carries global_role).
+      canFacilitateSessions: user.global_role === "facilitator",
     };
 
     return reply.send(authSession);

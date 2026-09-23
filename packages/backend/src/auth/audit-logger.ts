@@ -223,7 +223,26 @@ export type AuditEventName =
   // action-items.ts), matching recordRevealTriggeredAudit's shape. metadata:
   // { action_item_id, previous_status, new_status, authorization_path:
   // "owner" | "facilitator", session_id? }.
-  | "action_item.status_changed";
+  | "action_item.status_changed"
+  // session.draft_denied_membership_conflict: session-creation-existing-team,
+  // design.md Decision D1. Fired by POST /api/v1/teams/:teamId/sessions/draft
+  // when the caller (already confirmed global_role = 'facilitator') has an
+  // active team_memberships row for the target team -- the
+  // facilitator-from-another-team constraint. Written synchronously as a
+  // plain INSERT INTO audit_log (no transaction needed, since there is no
+  // paired state change) immediately before the 403 response. Unlike
+  // team.role_change_denied, there is no audit event for the earlier "not a
+  // facilitator at all" rejection -- see design.md D1's "Declined" note for
+  // why that baseline case follows checkAssignRolesAuthorization's unaudited
+  // convention instead. metadata: none beyond the standard actor/team
+  // fields; team_id column carries the target team.
+  | "session.draft_denied_membership_conflict"
+  // session.draft_created: session-creation-existing-team, design.md
+  // Decision D1/D3. Written in the same transaction as INSERT INTO sessions
+  // for a successful draft creation -- team.manager_established is the
+  // direct precedent (an access-grant-establishing event audited in the same
+  // transaction as the row it authorizes). metadata: { session_id }.
+  | "session.draft_created";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

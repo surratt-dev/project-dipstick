@@ -13,6 +13,19 @@ export interface AuthSession {
   }>;
   sessionCreatedAt: string;
   expiresAt: string;
+  /**
+   * Server-computed capability flag, evaluated fresh from users.global_role
+   * on every /auth/session call (never cached in the Redis session blob).
+   *
+   * session-creation-existing-team design.md Decision D4: this follows the
+   * role-assignment capability's canAssignRoles precedent -- the client
+   * reacts to a server-computed authorization result, it does not derive
+   * one from a raw role value. `globalRole` itself MUST NOT be added to
+   * AuthSession.user; this flag is additive to AuthSession, not nested
+   * under `user`, to keep that same identity-data/authorization-signal
+   * distinction.
+   */
+  canFacilitateSessions: boolean;
 }
 
 // Persona login (local-dev-only sign-in shortcut). Shared so the frontend's

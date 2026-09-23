@@ -860,7 +860,15 @@ describe("authRoutes", () => {
     });
 
     // Task 13: Server-side no-team redirect
-
+    //
+    // session-creation-existing-team design.md Decision D5: this redirect is
+    // intentionally membership-only and does not check global_role/facilitator
+    // status -- a zero-membership facilitator is still sent to /no-team here.
+    // The carve-out to /sessions/new for that user happens client-side, in
+    // NoTeamPage (see NoTeamPage.test.tsx), which re-checks
+    // session.canFacilitateSessions on mount. Do not read the tests below as
+    // covering the facilitator carve-out; they only lock in the
+    // membership-based routing this handler is actually responsible for.
     describe("server-side no-team redirect (Task 13)", () => {
       it("redirects new user with no team memberships to /no-team", async () => {
         setupValidCallbackMocks({ isNewUser: true, teamMemberships: [] });
@@ -1788,6 +1796,54 @@ describe("authRoutes", () => {
       expect(body.teamMemberships[0].teamId).toBe("team-1");
       expect(body.sessionCreatedAt).toBe("2025-06-01T12:00:00Z");
       expect(body.expiresAt).toBeDefined();
+    });
+
+    // session-creation-existing-team, design.md Decision D4, tasks.md 4.3-4.5
+    it("4.3: returns canFacilitateSessions: true for a facilitator caller", async () => {
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: "user-1", display_name: "Alice", email: "alice@example.com", global_role: "facilitator" }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const app = await buildApp({ sessionCreatedAt: new Date().toISOString() });
+      const res = await app.inject({ method: "GET", url: "/auth/session" });
+
+      expect(res.json().canFacilitateSessions).toBe(true);
+    });
+
+    it("4.4: returns canFacilitateSessions: false for a non-facilitator caller", async () => {
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: "user-1", display_name: "Alice", email: "alice@example.com", global_role: "engineer" }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const app = await buildApp({ sessionCreatedAt: new Date().toISOString() });
+      const res = await app.inject({ method: "GET", url: "/auth/session" });
+
+      expect(res.json().canFacilitateSessions).toBe(false);
+    });
+
+    it("4.5: a global_role change between two calls within the same session lifetime is reflected on the second call", async () => {
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: "user-1", display_name: "Alice", email: "alice@example.com", global_role: "engineer" }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const app = await buildApp({ sessionCreatedAt: new Date().toISOString() });
+      const res1 = await app.inject({ method: "GET", url: "/auth/session" });
+      expect(res1.json().canFacilitateSessions).toBe(false);
+
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: "user-1", display_name: "Alice", email: "alice@example.com", global_role: "facilitator" }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const res2 = await app.inject({ method: "GET", url: "/auth/session" });
+      expect(res2.json().canFacilitateSessions).toBe(true);
     });
   });
 });
