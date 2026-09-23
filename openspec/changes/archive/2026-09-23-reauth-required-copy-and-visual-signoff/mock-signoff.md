@@ -42,3 +42,15 @@ Evidence: `visual-register-capture.md` shows both hosts driven through a real `R
 ## 6. Standing disclaimer
 
 This sign-off is a persona-simulated review performed by an agent adopting the Priya Nair (Facilitator SME) persona — it is not Priya Nair's own review, and is explicitly identified as such. It is bounded to the checklist, negative-constraint, and felt-judgment items enumerated above; it is not evidence toward, and must not be read as predicting the outcome of, issue #142's live usability test (evaluating whether the `reauth-required` treatment reads as an alarm without failing to be noticed, in a real session with a real facilitator) or issue #143. Per this change's own `exploration-notes.md`, a clean #140/#141 pass does not predict #142's outcome, and neither issue is attempted, simulated, or partially satisfied by this artifact.
+
+## 7. Real human sign-off
+
+**Reviewer:** Brian Surratt.
+
+**Date:** 2026-09-23.
+
+**Method:** the real, unmodified `ReauthRequiredTreatment` component was mounted directly (both `role="participant"` and `role="facilitator"`) in a throwaway local preview route, viewed live in a browser against real rendered pixels — not the DOM-capture transcript in `visual-register-capture.md` and not a persona simulation. The throwaway route and component were deleted immediately after review; `git status` confirms no trace remains in the working tree.
+
+**Verdict: Signed off.** Reviewed against the same checklist as §1–§4 above (D1's four bounds, the no-animation negative constraint, and the felt assertive-vs-alarming/icon-legibility judgment) — no disagreement with the persona-simulated verdict recorded above.
+
+This supersedes the §6 standing disclaimer for issue #140's purposes specifically: #140 itself is now closed on the basis of a real human's own review, not a simulation. The §6 disclaimer's scope regarding issue #142 (live usability test) and #143 is unaffected — this preview review is still not a live usability test with a real facilitator in a real session, and does not close or predict either of those.
