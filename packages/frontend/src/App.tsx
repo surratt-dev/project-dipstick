@@ -14,7 +14,14 @@ import { EmTeamDashboardPage } from "./pages/EmTeamDashboardPage.js";
 import { EmSessionHistoryPage } from "./pages/EmSessionHistoryPage.js";
 import { EmTrendDataPage } from "./pages/EmTrendDataPage.js";
 import { EmActionItemsPage } from "./pages/EmActionItemsPage.js";
+import { SessionCreationPage } from "./pages/SessionCreationPage.js";
+import { DraftSessionHost } from "./pages/DraftSessionHost.js";
 
+// session-creation-existing-team design.md Decision D5. Routing carve-out
+// order:
+//   1. teamMemberships.length > 0 -> existing team-view routing (unchanged).
+//   2. Else, canFacilitateSessions === true -> session-creation entry point.
+//   3. Else -> /no-team (unchanged participant-facing copy).
 function AuthenticatedLanding() {
   const { session, loading } = useAuth();
 
@@ -24,11 +31,15 @@ function AuthenticatedLanding() {
 
   if (!session) return null;
 
-  if (session.teamMemberships.length === 0) {
-    return <Navigate to="/no-team" replace />;
+  if (session.teamMemberships.length > 0) {
+    return <Navigate to={`/team/${session.teamMemberships[0]!.teamId}`} replace />;
   }
 
-  return <Navigate to={`/team/${session.teamMemberships[0]!.teamId}`} replace />;
+  if (session.canFacilitateSessions) {
+    return <Navigate to="/sessions/new" replace />;
+  }
+
+  return <Navigate to="/no-team" replace />;
 }
 
 export function App() {
@@ -79,6 +90,41 @@ export function App() {
             element={
               <ProtectedRoute>
                 <TeamPage />
+              </ProtectedRoute>
+            }
+          />
+          {/*
+           * session-creation-existing-team: the picker -> confirm -> create
+           * flow for a facilitator creating a session for an existing team.
+           * SessionCreationPage itself checks canFacilitateSessions and
+           * redirects (design.md D5's gate) -- ProtectedRoute only verifies
+           * session presence, matching every other route in this file.
+           */}
+          <Route
+            path="/sessions/new"
+            element={
+              <ProtectedRoute>
+                <SessionCreationPage />
+              </ProtectedRoute>
+            }
+          />
+          {/*
+           * session-creation-existing-team, design.md Decision D6: a real,
+           * bookmarkable route for the facilitator's own draft control view
+           * (before "Open the room") and, after advancing, the live
+           * participant-readiness view -- one shared host component,
+           * rehydrated via GET .../facilitator-state on every mount so a
+           * refresh, direct hit, or the POST /draft 409's resume affordance
+           * all land in the same place. No client-side facilitator-only
+           * gate here beyond ProtectedRoute's session check: the
+           * facilitator-state endpoint already enforces
+           * facilitator_id === caller server-side (task 7.12).
+           */}
+          <Route
+            path="/team/:teamId/session/:sessionId"
+            element={
+              <ProtectedRoute>
+                <DraftSessionHost />
               </ProtectedRoute>
             }
           />

@@ -34,14 +34,24 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// session-creation-existing-team design.md Decision D5's routing carve-out
+// order, reconstructed here the same way this file already reconstructs the
+// rest of App's routing rather than importing App directly.
 function AuthenticatedLanding() {
   const { session, loading } = mockUseAuth();
   if (loading) return <AuthLoadingPage />;
   if (!session) return null;
-  if (session.teamMemberships.length === 0) {
-    return <Navigate to="/no-team" replace />;
+  if (session.teamMemberships.length > 0) {
+    return <Navigate to={`/team/${session.teamMemberships[0]!.teamId}`} replace />;
   }
-  return <Navigate to={`/team/${session.teamMemberships[0]!.teamId}`} replace />;
+  if (session.canFacilitateSessions) {
+    return <Navigate to="/sessions/new" replace />;
+  }
+  return <Navigate to="/no-team" replace />;
+}
+
+function SessionCreationPageStub() {
+  return <p>Session creation entry point</p>;
 }
 
 function TestApp({ initialEntry = "/" }: { initialEntry?: string }) {
@@ -63,6 +73,14 @@ function TestApp({ initialEntry = "/" }: { initialEntry?: string }) {
           element={
             <ProtectedRoute>
               <TeamPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/sessions/new"
+          element={
+            <ProtectedRoute>
+              <SessionCreationPageStub />
             </ProtectedRoute>
           }
         />
@@ -98,6 +116,7 @@ describe("App routing", () => {
       teamMemberships: [],
       sessionCreatedAt: "",
       expiresAt: "",
+      canFacilitateSessions: false,
     };
     mockUseAuth.mockReturnValue({ session, loading: false });
     render(<TestApp initialEntry="/" />);
@@ -110,6 +129,7 @@ describe("App routing", () => {
       teamMemberships: [{ teamId: "t1", teamName: "Alpha", role: "member" }],
       sessionCreatedAt: "",
       expiresAt: "",
+      canFacilitateSessions: false,
     };
     mockUseAuth.mockReturnValue({ session, loading: false });
     render(<TestApp initialEntry="/" />);
@@ -134,6 +154,7 @@ describe("App routing", () => {
       teamMemberships: [],
       sessionCreatedAt: "",
       expiresAt: "",
+      canFacilitateSessions: false,
     };
     mockUseAuth.mockReturnValue({ session, loading: false });
     render(<TestApp initialEntry="/no-team" />);
@@ -146,5 +167,84 @@ describe("App routing", () => {
 
     // The no-team content IS rendered (verify the page loaded correctly)
     expect(screen.getByText(/Welcome, Alice/)).toBeInTheDocument();
+  });
+
+  // session-creation-existing-team design.md Decision D5, tasks.md 5.4-5.6
+  describe("canFacilitateSessions routing carve-out (design.md Decision D5)", () => {
+    it("5.4: a user with canFacilitateSessions: false never sees the session-creation entry point, even with zero team memberships", () => {
+      const session: AuthSession = {
+        user: { id: "u1", displayName: "Alice", email: "a@b.com" },
+        teamMemberships: [],
+        sessionCreatedAt: "",
+        expiresAt: "",
+        canFacilitateSessions: false,
+      };
+      mockUseAuth.mockReturnValue({ session, loading: false });
+      render(<TestApp initialEntry="/" />);
+      expect(screen.queryByText("Session creation entry point")).not.toBeInTheDocument();
+      expect(screen.getByText(/Welcome, Alice/)).toBeInTheDocument();
+    });
+
+    it("5.5: a user with zero team memberships and canFacilitateSessions: true is routed to the session-creation entry point, not /no-team", () => {
+      const session: AuthSession = {
+        user: { id: "u1", displayName: "Alice", email: "a@b.com" },
+        teamMemberships: [],
+        sessionCreatedAt: "",
+        expiresAt: "",
+        canFacilitateSessions: true,
+      };
+      mockUseAuth.mockReturnValue({ session, loading: false });
+      render(<TestApp initialEntry="/" />);
+      expect(screen.getByText("Session creation entry point")).toBeInTheDocument();
+      expect(screen.queryByText(/Welcome, Alice/)).not.toBeInTheDocument();
+    });
+
+    it("5.6: /no-team page content and copy are unchanged for a canFacilitateSessions: false user", () => {
+      const session: AuthSession = {
+        user: { id: "u1", displayName: "Alice", email: "a@b.com" },
+        teamMemberships: [],
+        sessionCreatedAt: "",
+        expiresAt: "",
+        canFacilitateSessions: false,
+      };
+      mockUseAuth.mockReturnValue({ session, loading: false });
+      render(<TestApp initialEntry="/no-team" />);
+      expect(
+        screen.getByText(/ask your facilitator for a join link/i),
+      ).toBeInTheDocument();
+    });
+
+    // Closes the drift the Solution Architect found: the real OIDC callback
+    // redirect keys only on team_memberships and lands a zero-membership
+    // facilitator on /no-team directly (never on "/"), so
+    // AuthenticatedLanding's carve-out above is dead code for that path. This
+    // test drives NoTeamPage the way the real redirect does -- entering at
+    // /no-team, not at "/" -- to prove the carve-out holds there too.
+    it("a zero-membership facilitator landing directly on /no-team (the real post-auth redirect target) is routed to /sessions/new", () => {
+      const session: AuthSession = {
+        user: { id: "u1", displayName: "Alice", email: "a@b.com" },
+        teamMemberships: [],
+        sessionCreatedAt: "",
+        expiresAt: "",
+        canFacilitateSessions: true,
+      };
+      mockUseAuth.mockReturnValue({ session, loading: false });
+      render(<TestApp initialEntry="/no-team" />);
+      expect(screen.getByText("Session creation entry point")).toBeInTheDocument();
+      expect(screen.queryByText(/not yet a member of any team/)).not.toBeInTheDocument();
+    });
+
+    it("a user with existing team memberships is routed to their team regardless of canFacilitateSessions", () => {
+      const session: AuthSession = {
+        user: { id: "u1", displayName: "Alice", email: "a@b.com" },
+        teamMemberships: [{ teamId: "t1", teamName: "Alpha", role: "participant" }],
+        sessionCreatedAt: "",
+        expiresAt: "",
+        canFacilitateSessions: true,
+      };
+      mockUseAuth.mockReturnValue({ session, loading: false });
+      render(<TestApp initialEntry="/" />);
+      expect(screen.getByText("Team")).toBeInTheDocument();
+    });
   });
 });

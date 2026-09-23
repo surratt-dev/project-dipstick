@@ -15,7 +15,7 @@
 
 ## Preconditions
 - The Facilitator is authenticated via the Identity Provider.
-- The Facilitator is recognized by the application as a member of at least one team.
+- The Facilitator is assumed to have at least one team membership of their own, but this is not enforced by the application: a Facilitator with zero team memberships is a real, reachable state today (e.g., a newly granted Facilitator who hasn't yet been added to any team, or one whose last remaining team membership was later removed) and is explicitly supported by the session-creation entry point rather than treated as a blocking precondition.
 - The target team exists in the application and has at least one member.
 - The Facilitator is not a member of the target team.
 - No other session is currently active for the target team (or the application permits concurrent sessions — this is an open question; see Notes).
@@ -26,9 +26,14 @@
 3. The Facilitator selects an existing team from the list.
 4. The application displays a confirmation screen showing the selected team name and the Facilitator's name.
 5. The Facilitator confirms and submits the session creation request.
-6. The application creates a new session record associated with the selected team and the Facilitator.
-7. The application generates a unique join link for the session.
-8. The application displays the session room, including the join link and the participant readiness view (initially empty).
+6. The application creates a new session record, in a `draft` status, associated with the selected team and the Facilitator.
+7. The application generates a unique join link for the session, marked as not yet joinable while the session remains in `draft` status.
+8. The application navigates the Facilitator to their own draft control view — not the participant readiness view, and not an already-open session room — showing team context, the not-yet-joinable join link, and an explicit "Open the room" action. No participant can join the session while it is in this state.
+
+**Addendum (draft-landing decision):**
+
+9. The Facilitator reviews the draft control view, then activates "Open the room" when ready. Because this transition cannot be reversed, the application requires a lightweight inline confirmation before the request is submitted.
+10. Once confirmed, the application advances the session out of `draft` status into an open, joinable state. The same view updates in place — without navigating away — to the participant readiness view (initially empty), and the join link becomes usable for participants.
 
 ## Alternate Flows
 - **Facilitator has no eligible teams to facilitate:** The application displays a message explaining that no teams are available (either all teams include the Facilitator as a member, or no teams exist). No session is created.
@@ -36,17 +41,17 @@
 - **Session creation fails due to a system error:** The application displays an error message. No session record is created. The Facilitator can retry.
 
 ## Postconditions
-- **Success:** A session record exists for the target team, associated with the Facilitator. A unique join link has been generated. The session is in a "waiting for participants" state.
+- **Success:** A session record exists for the target team, associated with the Facilitator, initially in `draft` status. A unique join link has been generated but is not yet usable. The session is not opened to participants until the Facilitator explicitly activates "Open the room" (see Main Flow addendum).
 - **Failure:** No session record is created. The application state is unchanged.
 
 ---
 
 ## Acceptance Criteria
 - [ ] The team selection list excludes all teams the authenticated Facilitator belongs to.
-- [ ] Selecting a team and confirming creates a session record with status "waiting for participants."
-- [ ] A unique join link is generated and displayed immediately after session creation.
+- [ ] Selecting a team and confirming creates a session record with status `draft` — not "waiting for participants" — associated with the correct team and Facilitator.
+- [ ] A unique join link is generated and displayed immediately after session creation, visibly marked as not yet joinable.
 - [ ] The session is associated with the correct team and Facilitator.
-- [ ] The Facilitator sees the session room (participant readiness view) after creation.
+- [ ] The Facilitator lands on their own draft control view (team context, the not-yet-joinable join link, and an explicit "Open the room" action) after creation — not the participant readiness view. The participant readiness view appears only after the Facilitator explicitly opens the room (see Main Flow addendum).
 
 ## Out of Scope
 - Inviting participants in-app (notifications and invitations are out of scope; the Facilitator shares the link manually).

@@ -278,6 +278,7 @@ describe("Auth types", () => {
       teamMemberships: [{ teamId: "t1", teamName: "Team", role: "participant" }],
       sessionCreatedAt: "2024-01-01",
       expiresAt: "2024-01-02",
+      canFacilitateSessions: false,
     };
     expectTypeOf(authSession).toMatchTypeOf<AuthSession>();
     expectTypeOf<AuthSession>().toHaveProperty("user").toHaveProperty("id").toBeString();

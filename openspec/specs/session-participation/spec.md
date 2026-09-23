@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines requirements for recording users as active participants in a session, including enforcement of Engineering Manager non-participation and facilitator-from-another-team constraints. This spec is a first-entry stub: the EM enforcement and facilitator constraints are hard requirements surfaced during the join-team-invite-link change and documented here so they cannot be missed when the session participation feature is designed.
+Defines requirements for recording users as active participants in a session, including enforcement of Engineering Manager non-participation. The mid-session-arrival requirement below is a first-entry stub: a hard requirement surfaced during the join-team-invite-link change and documented here so it cannot be missed when the session participation feature is designed. (The facilitator-from-another-team constraint, formerly a stub in this spec, now lives in full in the `session-creation` capability, at its actual enforcement point.)
 
 ## Requirements
 
@@ -63,24 +63,6 @@ Both fields must be read from the database (not from cache) on every authorizati
 - **THEN** the helper queries both `users.global_role` AND `team_memberships.role` directly from the database
 - **AND** the helper does not resolve either field from a cached value or client-supplied claim
 - **AND** a user with `users.global_role = 'engineer'` and `team_memberships.role = 'engineering_manager'` receives the EM content access profile (aggregate vote distributions only), not the engineer content access profile
-
----
-
-### Requirement: Facilitator-from-another-team enforcement at session setup
-
-A user who is a member of a team (has a row in `team_memberships` for that team) SHALL NOT be permitted to facilitate a session for that team. This constraint MUST be enforced by the session setup layer via a check against `team_memberships`.
-
-**Enforcement point:** The session setup endpoint MUST check whether the user attempting to act as facilitator has a `team_memberships` row for the team whose session they are setting up. If such a row exists, the request SHALL be rejected (hard block, not a soft warning).
-
-**Why both `global_role` and `team_memberships` checks are required:** A user's `global_role` may be `facilitator` while they also hold a `participant` membership on the team they want to facilitate. Global role confirms they are a facilitator; team membership confirms which team they belong to. A facilitator who joined Team A via a join link is a member of Team A and must not facilitate Team A's sessions, regardless of their global role.
-
-#### Scenario: Facilitator who is a member of a team attempts to facilitate that team's session
-- **WHEN** a user with `global_role = 'facilitator'` who has a row in `team_memberships` for Team A attempts to set up a session for Team A
-- **THEN** the session setup endpoint rejects the request
-
-#### Scenario: Facilitator from a different team can facilitate a session
-- **WHEN** a user with `global_role = 'facilitator'` who has NO row in `team_memberships` for Team A attempts to set up a session for Team A
-- **THEN** the session setup endpoint permits the request
 
 ---
 
