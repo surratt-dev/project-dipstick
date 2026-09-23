@@ -69,3 +69,15 @@ This condition is now met. Per §6, this sign-off is treated as a clean pass for
 ## 7. Standing disclaimer
 
 This sign-off is a persona-simulated review performed by an agent adopting the Priya Nair (Facilitator SME) persona — it is not Priya Nair's own review, and is explicitly identified as such. It is bounded to the checklist, negative-constraint, and felt-judgment items enumerated above; it is not evidence toward, and must not be read as predicting the outcome of, issue #142's live usability test (evaluating whether the `reauth-required` treatment reads as an alarm without failing to be noticed, in a real session with a real facilitator) or issue #143. Per this change's own `exploration-notes.md`, a clean #140/#141 pass does not predict #142's outcome, and neither issue is attempted, simulated, or partially satisfied by this artifact.
+
+## 8. Real human sign-off
+
+**Reviewer:** Brian Surratt.
+
+**Date:** 2026-09-23.
+
+**Method:** reviewed the finalized copy — the reworded `REAUTH_REQUIRED_TEXT_BASE` from §6a — directly, in actual layout against the visual register.
+
+**Verdict: Signed off.** The copy reads correctly in layout; no disagreement with the persona-simulated verdict recorded in §1–§6a above.
+
+This supersedes the §7 standing disclaimer for issue #141's purposes specifically: #141 is now closed on the basis of a real human's own review, not a simulation. The §7 disclaimer's scope regarding issue #142 (live usability test) and #143 is unaffected — this review is still not a live usability test with a real facilitator in a real session, and does not close or predict either of those.
