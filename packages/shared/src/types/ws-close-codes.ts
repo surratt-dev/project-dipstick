@@ -16,17 +16,20 @@
 
 /**
  * The single WebSocket close code used for every server-initiated close
- * whose cause must not be disclosed to the client: an unauthorized
- * subscription attempt and the scheduled absolute-lifetime force-close
- * (websocket-delivery-time-authorization design.md Decision D8).
+ * whose cause must not be disclosed to the client: an unauthorized or
+ * rejected subscription attempt (websocket-delivery-time-authorization
+ * design.md Decision D8). The scheduled absolute-lifetime force-close now
+ * uses REAUTH_GRACE_EXPIRED_CLOSE_CODE instead (session-timeout-continuity).
  */
 export const STALE_SIGNAL_CLOSE_CODE = 4000;
 
 /**
  * The close code that follows an in-band `reauth_required` message once the
  * SEC-26 grace period expires without a fresh connection replacing this one.
- * Deliberately distinct from STALE_SIGNAL_CLOSE_CODE: this cause is
- * legitimately disclosed to the client it happens to
+ * Also used for the scheduled absolute-lifetime force-close
+ * (session-timeout-continuity), which was previously reported under
+ * STALE_SIGNAL_CLOSE_CODE. Deliberately distinct from STALE_SIGNAL_CLOSE_CODE:
+ * these causes are legitimately disclosed to the client they happen to
  * (websocket-connection-reauthorization design.md Decision D5, spec.md:107-121).
  */
 export const REAUTH_GRACE_EXPIRED_CLOSE_CODE = 4001;

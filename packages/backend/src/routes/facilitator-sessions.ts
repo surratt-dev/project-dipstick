@@ -7,6 +7,7 @@ import {
   publishSessionStateChange,
   publishVoteRevealed,
   publishTopicHistoryUpdate,
+  clearFacilitatorConnectedFlag,
 } from "../realtime/ws-pubsub.js";
 import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
@@ -1503,6 +1504,14 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
         previousStatus: "active",
         newStatus: "wrap_up",
         changedAt: new Date().toISOString(),
+      });
+      // facilitator-reconnect-indicator (design.md Decision 5): the session
+      // has just left `active` — the same lifecycle boundary that gates the
+      // facilitator_connection_status broadcast itself — so the "prior
+      // disconnect" flag no longer describes a live session and is cleared
+      // rather than left to outlive it.
+      await clearFacilitatorConnectedFlag(sessionId).catch((err: unknown) => {
+        request.log.warn({ err, sessionId }, "facilitator_connection_status: failed to clear flag on wrap-up, skipping");
       });
       // The just-completed last topic's completion is team-content-relevant
       // on its own, independent of the session-phase change (design.md

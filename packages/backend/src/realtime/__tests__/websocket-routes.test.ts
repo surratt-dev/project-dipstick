@@ -75,7 +75,7 @@ vi.mock("../connection-token-refresh.js", () => ({
 import Fastify from "fastify";
 import { registerWebSocketRoutes, scheduleForceClose } from "../websocket-routes.js";
 import { connectionRegistry, type RegisteredConnection } from "../connection-registry.js";
-import { STALE_SIGNAL_CLOSE_CODE } from "../staleness-signal.js";
+import { STALE_SIGNAL_CLOSE_CODE, REAUTH_GRACE_EXPIRED_CLOSE_CODE } from "@dipstick/shared";
 import { ABSOLUTE_LIFETIME_MS } from "../../auth/middleware.js";
 
 const ALLOWED_ORIGIN = "http://localhost:5173";
@@ -289,6 +289,34 @@ describe("registerWebSocketRoutes", () => {
     });
   });
 
+  describe("End-to-end absolute-lifetime force-close (session-timeout-continuity design.md Risk; tasks.md task 1.6)", () => {
+    it("a connection whose absolute lifetime elapses is closed by the real running app with the disclosed reauth close code, not the disclosure-blind one", async () => {
+      // Confirms the fix actually resolves the observed "retries forever"
+      // failure mode end-to-end — a real registerWebSocketRoutes app,
+      // scheduleForceClose's real setTimeout, and a real `ws` client socket
+      // — not only the isolated scheduleForceClose unit test above (which
+      // exercises the timer/close-call logic in isolation) or the frontend's
+      // own connectionHealth tests (which assume the correct code arrives).
+      mockEvaluateSessionSubscriberAccess.mockResolvedValue({
+        path: "participant",
+        sessionId: "session-lifetime-e2e",
+        teamId: "team-1",
+        actorGlobalRole: "engineer",
+      });
+      const almostExpiredCreatedAt = new Date(Date.now() - ABSOLUTE_LIFETIME_MS + 150).toISOString();
+      const built = await buildAndListen({ sessionCreatedAt: almostExpiredCreatedAt });
+      app = built.app;
+
+      const socket = connect(built.url, "/ws/sessions/session-lifetime-e2e");
+      await waitFor(socket, "open");
+
+      const [code] = await waitFor(socket, "close");
+
+      expect(code).toBe(REAUTH_GRACE_EXPIRED_CLOSE_CODE);
+      expect(code).not.toBe(STALE_SIGNAL_CLOSE_CODE);
+    }, 10000);
+  });
+
   describe("Origin check (Decision D9) is wired into the actual upgrade path", () => {
     it("rejects an upgrade from a disallowed origin before authorization is ever evaluated", async () => {
       const built = await buildAndListen();
@@ -356,7 +384,7 @@ describe("scheduleForceClose", () => {
     expect(conn.socket.close).not.toHaveBeenCalled();
   });
 
-  it("closes an OPEN socket with the generic staleness close code exactly at the absolute lifetime mark", () => {
+  it("closes an OPEN socket with the disclosed reauth close code, not the disclosure-blind one, exactly at the absolute lifetime mark (design.md Decision 1)", () => {
     const conn = fakeConn();
     const onExpire = vi.fn();
 
@@ -364,7 +392,8 @@ describe("scheduleForceClose", () => {
     vi.advanceTimersByTime(ABSOLUTE_LIFETIME_MS);
 
     expect(onExpire).toHaveBeenCalledTimes(1);
-    expect(conn.socket.close).toHaveBeenCalledWith(STALE_SIGNAL_CLOSE_CODE);
+    expect(conn.socket.close).toHaveBeenCalledWith(REAUTH_GRACE_EXPIRED_CLOSE_CODE);
+    expect(conn.socket.close).not.toHaveBeenCalledWith(STALE_SIGNAL_CLOSE_CODE);
   });
 
   it("still calls onExpire (deregistration) even if the socket is already closed, but does not call close() again", () => {

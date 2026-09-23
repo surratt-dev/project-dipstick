@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -56,6 +56,54 @@ describe("connectionHealth.ts non-disclosure invariants (task 1.9)", () => {
     const consoleCalls = code.match(/console\.[a-zA-Z]+\([^]*?\)/g) ?? [];
     expect(consoleCalls.length).toBe(0);
   });
+
+  it("is unmodified by facilitator-reconnect-indicator: no new state value or branch related to facilitator_connection_status (session-timeout-continuity design.md Decision 5, tasks.md task 4.14)", () => {
+    expect(code).not.toMatch(/facilitator_connection_status/);
+    expect(code).not.toMatch(/facilitatorConnected/i);
+    // The state union stays exactly the three values it always had.
+    expect(code).toMatch(
+      /export type ConnectionHealthState = "connected" \| "unknown-reconnecting" \| "reauth-required"/,
+    );
+  });
+});
+
+describe("Exactly one facilitator_connection_status indicator implementation exists (session-timeout-continuity design.md Decision 5, tasks.md task 4.14)", () => {
+  function collectSourceFiles(rootDir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(rootDir)) {
+      const full = path.join(rootDir, entry);
+      const stat = statSync(full);
+      if (stat.isDirectory()) {
+        collectSourceFiles(full, out);
+      } else if (/\.(ts|tsx)$/.test(entry) && !full.includes(`${path.sep}__tests__${path.sep}`)) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  it("exactly one module names the facilitator_connection_status eventType literal — no second, independent consumer anywhere else in the frontend source tree", () => {
+    const hookSource = readSourceWithoutComments("../facilitatorConnectionStatus.ts");
+    expect(hookSource).toMatch(/export function useFacilitatorConnectionStatus/);
+
+    const srcRoot = path.resolve(dir, "../../");
+    const consumerBasenames = collectSourceFiles(srcRoot)
+      .filter((f) => /facilitator_connection_status/.test(readFileSync(f, "utf-8")))
+      .map((f) => path.basename(f))
+      .sort();
+
+    expect(consumerBasenames).toEqual(["facilitatorConnectionStatus.ts"]);
+  });
+
+  it("FacilitatorReconnectIndicator.tsx is the one component that consumes useFacilitatorConnectionStatus, and no other component does", () => {
+    const srcRoot = path.resolve(dir, "../../");
+    const importerBasenames = collectSourceFiles(srcRoot)
+      .filter((f) => f.endsWith(".tsx"))
+      .filter((f) => /useFacilitatorConnectionStatus/.test(readFileSync(f, "utf-8")))
+      .map((f) => path.basename(f))
+      .sort();
+
+    expect(importerBasenames).toEqual(["FacilitatorReconnectIndicator.tsx"]);
+  });
 });
 
 describe("ConnectionStatusBanner.tsx non-disclosure invariants (task 1.9 — retry/render call sites)", () => {
@@ -109,8 +157,14 @@ describe("ReauthRequiredTreatment.tsx non-disclosure invariants (reauth-required
     expect(code).not.toMatch(/===\s*4000\b|===\s*4001\b/);
   });
 
-  it("takes no props — the module has no exported *Props interface/type", () => {
-    expect(code).not.toMatch(/export\s+(interface|type)\s+\w*Props\b/);
+  it("takes exactly the two deliberate, narrow prop exceptions this change adds (returnTo, role) — no prop derived from cause, close code, or connection state (session-timeout-continuity design.md Decisions 3/4)", () => {
+    const propsInterfaceMatch = code.match(/export\s+interface\s+ReauthRequiredTreatmentProps\s*{([^}]*)}/);
+    expect(propsInterfaceMatch).not.toBeNull();
+    const propsBody = propsInterfaceMatch![1]!;
+    const propNames = [...propsBody.matchAll(/^\s*([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]);
+    expect(new Set(propNames)).toEqual(new Set(["returnTo", "role"]));
+    expect(code).not.toMatch(/\bcause\b/i);
+    expect(code).not.toMatch(/\bcloseCode\b/i);
   });
 
   it("performs no console logging at all", () => {

@@ -815,6 +815,80 @@ describe("ws-event-dispatcher", () => {
     });
   });
 
+  describe("facilitator_connection_status (facilitator-reconnect-indicator, session-timeout-continuity design.md Decision 5)", () => {
+    it("delivers to a participant-path subscriber, excluding a facilitator-path subscriber by subscriberPath", async () => {
+      const registry = new ConnectionRegistry();
+      const participantConn = fakeConn("participant-1");
+      participantConn.subscriberPath = "participant";
+      const facilitatorConn = fakeConn("facilitator-1");
+      facilitatorConn.subscriberPath = "facilitator";
+      registry.register("session", "s1", participantConn);
+      registry.register("session", "s1", facilitatorConn);
+
+      // Only the participant-path connection reaches evaluateSessionSubscriberAccess —
+      // the facilitator-path connection is filtered out by subscriberPath
+      // before any query runs for it.
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "facilitator-1", session_status: "active",
+          global_role: "engineer", participant_row_id: "p1", membership_removed_at: null, membership_exists: true,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "facilitator_connection_status", sessionId: "s1", payload: { connected: false } },
+        registry,
+      );
+
+      expect(participantConn.sent).toHaveLength(1);
+      expect(facilitatorConn.sent).toHaveLength(0);
+      expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it("payload contains only { connected } — no cause, no close code, no sub-cause", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("participant-1");
+      conn.subscriberPath = "participant";
+      registry.register("session", "s1", conn);
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "facilitator-1", session_status: "pre_session",
+          global_role: "engineer", participant_row_id: "p1", membership_removed_at: null, membership_exists: true,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "facilitator_connection_status", sessionId: "s1", payload: { connected: false } },
+        registry,
+      );
+
+      expect(JSON.parse(conn.sent[0]!)).toEqual({
+        eventType: "facilitator_connection_status",
+        payload: { connected: false },
+      });
+    });
+
+    it("does not deliver to a subscriber whose team membership was removed (same authorization path as every other event)", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("removed-participant");
+      conn.subscriberPath = "participant";
+      registry.register("session", "s1", conn);
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "active",
+          global_role: "engineer", participant_row_id: "p1", membership_removed_at: new Date(), membership_exists: true,
+        }],
+      });
+
+      await dispatch(
+        { eventType: "facilitator_connection_status", sessionId: "s1", payload: { connected: true } },
+        registry,
+      );
+
+      expect(conn.sent).toHaveLength(0);
+    });
+  });
+
   describe("absolute lifetime rejection (Decision D8 compensating control)", () => {
     it("does not deliver to a connection older than the 90-minute absolute lifetime, and does not even query authorization", async () => {
       const registry = new ConnectionRegistry();

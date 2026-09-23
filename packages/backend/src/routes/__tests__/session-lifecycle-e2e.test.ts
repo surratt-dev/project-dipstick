@@ -21,6 +21,7 @@ const mockPublishSessionStateChange = vi.fn();
 const mockPublishVoteRevealed = vi.fn();
 const mockPublishTopicHistoryUpdate = vi.fn();
 const mockPublishVoteReadinessUpdate = vi.fn();
+const mockClearFacilitatorConnectedFlag = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../../db.js", () => ({
   db: {
@@ -36,6 +37,7 @@ vi.mock("../../realtime/ws-pubsub.js", () => ({
   publishVoteRevealed: (...args: unknown[]) => mockPublishVoteRevealed(...args),
   publishTopicHistoryUpdate: (...args: unknown[]) => mockPublishTopicHistoryUpdate(...args),
   publishVoteReadinessUpdate: (...args: unknown[]) => mockPublishVoteReadinessUpdate(...args),
+  clearFacilitatorConnectedFlag: (...args: unknown[]) => mockClearFacilitatorConnectedFlag(...args),
 }));
 vi.mock("../../config.js", () => ({
   config: {

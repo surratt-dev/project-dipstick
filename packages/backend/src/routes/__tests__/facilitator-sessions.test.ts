@@ -20,12 +20,14 @@ vi.mock("../../auth/audit-logger.js", () => ({
   emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
 }));
 const mockPublishVoteReadinessUpdate = vi.fn();
+const mockClearFacilitatorConnectedFlag = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../../realtime/ws-pubsub.js", () => ({
   publishSessionStateChange: (...args: unknown[]) => mockPublishSessionStateChange(...args),
   publishVoteRevealed: (...args: unknown[]) => mockPublishVoteRevealed(...args),
   publishTopicHistoryUpdate: (...args: unknown[]) => mockPublishTopicHistoryUpdate(...args),
   publishVoteReadinessUpdate: (...args: unknown[]) => mockPublishVoteReadinessUpdate(...args),
+  clearFacilitatorConnectedFlag: (...args: unknown[]) => mockClearFacilitatorConnectedFlag(...args),
 }));
 const mockEvaluateSessionSubscriberAccess = vi.fn();
 vi.mock("../../auth/session-subscriber-access-helper.js", () => ({
