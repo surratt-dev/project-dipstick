@@ -12,7 +12,7 @@ Run the OpenSpec pipeline with persona-driven agent teams, on one of two tracks:
 - **Full track** (default): Explore → Propose → Design/Tasks → Implement → Sync → Archive → Verify & PR
 - **Light track** (small, bounded, no-design-decision changes only): Assess → Implement → Sync & Archive → Verify & PR
 
-Each stage is executed by one agent adopting a persona, then reviewed by other persona-agents. Track classification happens once, at kickoff (Step 1c) — the user always confirms it before any branch or board state changes. Once a track is chosen, its pipeline runs continuously, stage to stage, without pausing for confirmation. It only stops early if a stopping condition (see below) requires the user's input.
+Each stage is executed by one agent adopting a persona, then reviewed by other persona-agents. Track classification happens once, at kickoff (Step 1c). When the full track is recommended, the pipeline proceeds automatically — no confirmation needed. When the light track is recommended, the user must confirm before any branch or board state changes, since it's the lower-ceremony, lower-review path. Once a track is chosen, its pipeline runs continuously, stage to stage, without pausing for confirmation. It only stops early if a stopping condition (see below) requires the user's input.
 
 ---
 
@@ -62,7 +62,8 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
      "no security/correctness impact" statement), or the user's own
      description is equivalently narrow
 
-   Never silently route — always confirm with **AskUserQuestion**:
+   If all six criteria hold, the light track is recommended — never silently
+   route into it. Confirm with **AskUserQuestion**:
 
    > "This looks like a light-track change: [criteria that passed]. Run the
    > lightweight pipeline (~6 agent spawns) instead of the full 7-stage
@@ -71,9 +72,10 @@ Each stage is executed by one agent adopting a persona, then reviewed by other p
    > - No, run the full pipeline
    > - Let me describe the scope differently first
 
-   If any criterion is unclear or fails, propose the full track instead and
-   say which criterion tripped it, so the user can override with reasoning
-   rather than a gut call.
+   If any criterion is unclear or fails, the full track is recommended.
+   Proceed automatically — no confirmation needed — and tell the user which
+   criterion tripped it, so they can see the reasoning and override to the
+   light track if they disagree.
 
    Record the answer as `[track]` (`full` or `light`). This determines
    whether Steps 3–9 (**Full Track**) or Steps 3L–5L (**Light Track**) run
@@ -545,6 +547,6 @@ project board item that simply isn't tracked (per Step 2).
 - Stages run sequentially and continuously (see **Continuous Flow**); reviewers within a stage run in parallel
 - When the run is tied to a filed GitHub issue, that issue's project status moves to In Progress at branch creation (Step 2) — before any persona work starts, not after
 - The run only ends in one of two ways: a PR is opened (Step 10), or processing stops early on a **Stopping Condition**
-- Track classification (Step 1c) is a hard, conjunctive gate — all six criteria must hold for the light track — and always requires explicit user confirmation via **AskUserQuestion** before branch creation; it is never silently routed
+- Track classification (Step 1c) is a hard, conjunctive gate — all six criteria must hold for the light track; when the light track is recommended, it always requires explicit user confirmation via **AskUserQuestion** before branch creation and is never silently routed. When the full track is recommended (any criterion unclear or failing), it proceeds automatically without confirmation — the user is told which criterion tripped it and can override to light if they disagree
 - The light track never skips the two hard review gates: an independent reviewer before code is written (Assess), and an independent reviewer after (Implement) — only the surrounding ceremony is cut
 - A light-track run that escalates (Step 3L/4L) reuses its Assess artifact as the seed for a full Explore/Propose pass rather than discarding it, and reports the escalation to the user
