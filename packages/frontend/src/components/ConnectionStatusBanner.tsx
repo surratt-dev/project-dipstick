@@ -21,12 +21,12 @@ import { ReauthRequiredTreatment } from "./ReauthRequiredTreatment.js";
 // calls useConnectionHealth directly for the facilitator's own connection,
 // since the facilitator-reconnect indicator is participant-facing only.
 //
-// COPY IS NOT FINAL. `unknown-reconnecting`'s copy sign-off is already
-// closed (per the pilot-readiness gate status notes in
-// specs/websocket-staleness-signal/spec.md). `reauth-required`'s copy is
-// still pending Priya Nair's sign-off (reauth-required-client-prompt
-// design.md Decision D4, tasks.md task 3.1) — see ReauthRequiredTreatment.tsx,
-// which owns that copy now (Decision D9).
+// Both strings' copy sign-off is closed. `unknown-reconnecting`'s copy
+// sign-off closed per the pilot-readiness gate status notes in
+// specs/websocket-staleness-signal/spec.md. `reauth-required`'s copy is
+// owned by ReauthRequiredTreatment.tsx (Decision D9) and is signed off by
+// reauth-required-copy-and-visual-signoff/copy-layout-signoff.md (#141,
+// "Signed off with conditions" — condition met per that artifact's §6a).
 // ---------------------------------------------------------------------------
 
 const UNKNOWN_RECONNECTING_TEXT = "Your view may be out of date. Refresh to continue.";

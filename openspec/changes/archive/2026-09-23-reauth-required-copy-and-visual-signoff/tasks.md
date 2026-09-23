@@ -1,0 +1,59 @@
+**Scope note:** this task list covers GitHub issues #137–#141 only. #142 (live usability test) and #143 (blocked on #142) have no tasks here — neither is attempted, simulated, or partially satisfied by any task below. A `Signed off` verdict on Groups 2/3 is not evidence toward #142 and must not be read as such.
+
+## 1. Visual Register Implementation (#139)
+
+- [x] 1.1 Implement a real candidate visual register in `ReauthRequiredTreatment.tsx` — color, weight, and an explicit icon-or-no-icon decision — replacing the `border: "2px solid currentColor"` placeholder. Direction per design.md Decision D2: amber/warning-toned (not red/error-toned), icon chosen from the starting allow-list (closed-lock glyph, sign-in-arrow glyph, or no icon) or a justified alternative if none of those three fit once actually rendered. Prefer an inline SVG with `fill="currentColor"` over a Unicode glyph (avoids emoji color-presentation fighting the chosen color); reuse the existing amber/warning color precedent (`MemberManagement.tsx`'s `#fff3e0` background / `#ffb74d` border) rather than inventing new values. If the icon has any accessible name (SVG `<title>`, `aria-label`, `title` attribute), it must avoid digit+time-unit patterns the same way the copy text does — the digit-pattern test (task 1.5) scans full `innerHTML`, including attribute values, not just visible text.
+- [x] 1.2 Add a standing, CI-enforced test asserting no `animation`, `transition`, `@keyframes`, or elapsed-time-tied duration property is present, co-located with the existing digit-pattern test in `ReauthRequiredTreatment.test.tsx` (design.md Decision D3) — replacing the one-time manual grep with a re-runnable check so a later, unrelated change can't silently reintroduce a countdown-surrogate animation. Scope the check to wherever the register's styling actually lives: the component's inline `style` object today (visible via `innerHTML`); if styling moves to an external stylesheet or CSS Module, the test must inspect that file too, not just the component's rendered `innerHTML`.
+- [x] 1.3 Self-check before requesting sign-off: confirm no CSS `animation`, `transition`, `@keyframes`, or any duration value tied to elapsed time was introduced by 1.1 (design.md Decision D3). Run the standing automated test added in 1.2 as part of this check — this is the same negative constraint Group 2's sign-off checks independently, but catching it here avoids a wasted sign-off attempt.
+- [x] 1.4 Confirm the register renders through both real host components — `SessionConnectionHost.tsx` and `FacilitatorConnectionHost.tsx` — driven by a real (faked-socket) transition into `reauth-required`, not a bare/isolated instance of the subcomponent. Capture what each host context actually looks like (screenshot or equivalent) for Group 2/3 to review against.
+- [x] 1.5 Confirm no regression to the settled mechanism: `role="alert"`, the CTA, persistence behavior, the digit-pattern test, and `reauthRequiredHostParity.test.tsx` all remain green with no changes to `connectionHealth.ts` or the copy text itself.
+
+## 2. Mock Sign-Off (#140)
+
+**Depends on: Group 1.**
+
+- [x] 2.1 Produce a mock sign-off artifact (`mock-signoff.md` in this change directory) using the fixed template (design.md Decision D4 / exploration-notes.md §3a): per-bound verdict against D1 (assertive / persistent / distinct-from-`unknown-reconnecting` / non-modal), one line each with cited evidence (a screenshot description, a CSS property, a DOM check — not an assertion). **Done — see `mock-signoff.md` §1.**
+- [x] 2.2 In the same artifact, record the no-animation negative constraint's verdict, citing the standing automated test added in 1.2 passing as evidence (not an ad hoc grep) — this is the sign-off-side check paired with task 1.3's self-check. If styling was moved out of `ReauthRequiredTreatment.tsx` (e.g. to an external stylesheet or CSS Module), confirm 1.2's test scope was extended to cover that file (design.md Decision D3). **Done — see `mock-signoff.md` §2; test re-run 2026-09-23, 9/9 passing, no stylesheet extraction to cover.**
+- [x] 2.3 Include a clearly separated section, labeled "felt judgment — persona-simulated, not equivalent to a real facilitator's read," covering both the assertive-vs-alarming call and whether the chosen icon's shape reads as countdown-adjacent (clock, hourglass, gauge, dial, or similar) (design.md Decisions D5) — do not let this read with the same confidence as the mechanical items above it. **Done — see `mock-signoff.md` §3.**
+- [x] 2.4 State explicitly which real host(s) — `SessionConnectionHost.tsx`, `FacilitatorConnectionHost.tsx`, or both — this verdict covers (design.md Decision D6). A verdict silent on host coverage is incomplete, not conservative. **Done — see `mock-signoff.md` §4: both hosts.**
+- [x] 2.5 Close with exactly one line using one of: `Signed off`, `Withheld — <reason>`, `Signed off with conditions — <conditions>`. If withheld or conditional, state the reason/conditions in enough detail that a future run can act on them without re-deriving this review. **Verdict: `Signed off` (clean, no conditions) — see `mock-signoff.md` §5.**
+- [x] 2.6 Include the standing disclaimer paragraph (persona-simulated, bounded to checklist/negative-constraint and felt-judgment items above, not evidence toward #142), unparaphrased. **Done — see `mock-signoff.md` §6.**
+
+**Group 2 closing verdict: `Signed off`.** #140 is closed by this artifact.
+
+## 3. Copy-in-Layout Sign-Off (#141, also closes #137/#138)
+
+**Depends on: Group 1 (needs the real mock) and the copy drafted by the prior `reauth-required-client-prompt` change (already shipped, draft status).**
+
+- [x] 3.1 Produce a copy-in-layout sign-off artifact (`copy-layout-signoff.md`) using the template defined in design.md D4, as Group 2 also does, substituting the coherence checks for D1: does the copy's tone match the register the mock commits to, do they contradict each other, is anything now redundant or missing once copy and mock are seen together (e.g., if the mock uses a warning icon, does the copy also need to say "warning"). **Done — see `copy-layout-signoff.md` §1.**
+- [x] 3.2 As part of the coherence review, evaluate the "Continuing will take you to log in again" phrasing against the lead-with-the-verb alternative raised in exploration-notes.md §4 (e.g., "Log in again to pick up where you left off") — decide and record the outcome explicitly rather than leaving it implicit; this is this sign-off's call to make, not a deferral. **Done — see `copy-layout-signoff.md` §2: the exploration alternative is not adopted wholesale (it drops the literal, test-asserted "leave this page and return to it" statement); a narrower reword is specified as a sign-off condition instead.**
+- [x] 3.3 Include the felt-judgment section (design.md Decision D5) for the tone-coherence call, separated from the mechanical coherence checks (contradiction, redundancy). **Done — see `copy-layout-signoff.md` §3.**
+- [x] 3.4 Carry forward, as a standing footnote (not a one-time mention), that the vote-loss sentence's correctness is conditioned on `PARTICIPANT_VOTE_COMPOSE_UI_WIRES_VOTE_DRAFT`'s current value (`false` as of this change), not a permanent fact about the copy. **Done — see `copy-layout-signoff.md` §4.**
+- [x] 3.5 State explicitly which real host(s) this verdict covers (design.md Decision D6), same as task 2.4. **Done — see `copy-layout-signoff.md` §5: both hosts.**
+- [x] 3.6 Close with exactly one of `Signed off` / `Withheld — <reason>` / `Signed off with conditions — <conditions>`, plus the standing disclaimer, same as Group 2. **Verdict: `Signed off with conditions` — see `copy-layout-signoff.md` §6 for the exact condition (reword `REAUTH_REQUIRED_TEXT_BASE`'s opening clause to lead with the action verb, preserving the literal "leave this page and return to it" phrase) and §7 for the disclaimer.**
+
+**Group 3 closing verdict: `Signed off with conditions`.** The condition **is now met** — see `copy-layout-signoff.md` §6a for the diff and re-run evidence. #141 (and #137/#138, which depend on this sign-off per this group's own heading) are closed; see Group 4 below.
+
+## 4. Conditional Cleanup
+
+**Depends on: Groups 2 and 3 both closing as `Signed off` or `Signed off with conditions` with conditions met. If either is `Withheld`, skip 4.1–4.2 and do only 4.3.**
+
+**Status: complete.** Group 2 closed `Signed off` (clean). Group 3 closed `Signed off with conditions`; the stated condition — rewording `REAUTH_REQUIRED_TEXT_BASE`'s opening clause per `copy-layout-signoff.md` §2/§6 — has now been implemented and verified (evidence: `copy-layout-signoff.md` §6a). #137, #138, and #141 are closed.
+
+- [x] 4.0 If either Group 2 or Group 3 closed as `Signed off with conditions`, record in this task's completion note how each stated condition was verified met — cite the specific change made (e.g., a diff, a re-inspected CSS property, a re-rendered screenshot) — before proceeding to 4.1/4.2. Do not treat "conditions met" as self-evident; the same evidence-citation discipline the sign-off template (design.md D4) already applies elsewhere applies here. **Done — see `copy-layout-signoff.md` §6a: the diff to `REAUTH_REQUIRED_TEXT_BASE`, and the full frontend test suite (283/283 passing) plus `tsc --noEmit` (zero errors) re-run against the new string.**
+- [x] 4.1 Update `ReauthRequiredTreatment.tsx`'s "STYLING IS A PLACEHOLDER" and "COPY IS NOT FINAL" header comments to reflect that sign-off has landed, citing the sign-off artifacts by filename — this is the wiring half of #137/#138's closure (the copy itself was drafted by the prior `reauth-required-client-prompt` change; this comment update, together with Group 3's sign-off, is what closes #137/#138). **Done — comments now read "STYLING IS SIGNED OFF" / "COPY IS SIGNED OFF", citing `mock-signoff.md` (#140) and `copy-layout-signoff.md` (#141) by filename.**
+- [x] 4.2 Correct `ConnectionStatusBanner.tsx`'s stale "both strings below are placeholders" comment — `unknown-reconnecting`'s copy sign-off already closed independently and predates this change; the comment currently misstates this. **Done — comment now states both strings' copy sign-off is closed, citing `copy-layout-signoff.md` (#141) for `reauth-required`.**
+- [ ] 4.3 If either Group 2 or Group 3 closed as `Withheld`, explicitly do not perform 4.1/4.2 — record in the relevant sign-off artifact that comment cleanup was intentionally withheld pending re-review, rather than leaving the decision ambiguous to a future reader. **N/A — neither group closed `Withheld`.**
+
+## 5. Spec Status Sync
+
+**Depends on: Groups 2–4.**
+
+- [x] 5.1 Before this change is archived, confirm `specs/websocket-staleness-signal/spec.md`'s delta in this change directory still accurately reflects Groups 2–3's actual final verdicts (including if a verdict changed between an earlier draft sign-off and the final one) — update the delta if needed so the synced spec text doesn't go stale relative to the real outcome. **Done — both the change's delta and the living `openspec/specs/websocket-staleness-signal/spec.md` updated to state #140/#141 are closed (clean pass and conditions-met respectively), #142/#143 remain open, and the overall pilot-readiness verdict is unchanged.**
+
+## 6. Regression Confirmation
+
+**Depends on: all prior groups.**
+
+- [x] 6.1 Run the full existing `reauth-required` / `unknown-reconnecting` test suite (digit-pattern test, the no-animation test added in 1.2, `reauthRequiredHostParity.test.tsx`, ARIA role test, persistence test, CTA tests) and confirm zero regressions from Group 1's styling change.
+- [x] 6.2 Confirm `connectionHealth.ts`, the CTA mechanism, the copy text itself, and D6's reveal-blindness (no reveal-state references in `ReauthRequiredTreatment.tsx` or its callers) are unchanged — this change touches visual presentation and sign-off documentation only.
