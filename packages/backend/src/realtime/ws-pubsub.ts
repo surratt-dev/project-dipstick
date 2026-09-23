@@ -10,6 +10,7 @@ import type {
   ParticipantJoinedPayload,
   ParticipantLeftPayload,
   ActionItemStatusUpdatedPayload,
+  FacilitatorConnectionStatusPayload,
   SessionStatus,
 } from "@dipstick/shared";
 
@@ -142,6 +143,70 @@ export async function publishActionItemStatusUpdated(
   sessionStatus: SessionStatus,
 ): Promise<void> {
   await publishWsEvent({ eventType: "action_item_status_updated", sessionId, payload, sessionStatus });
+}
+
+// facilitator-reconnect-indicator: design.md Decision 5. Wired into the SAME
+// two websocket-routes.ts call sites that already call
+// recordFacilitatorConnectionAudit for "connected"/"disconnected" (issue
+// #94) — one fact, two consumers (the existing audit write, this broadcast).
+// Mirrors publishParticipantJoined/publishParticipantLeft's shape exactly:
+// NOT a direct iteration of the local, per-pod ConnectionRegistry, which
+// would silently fail to deliver across pods in any multi-instance
+// deployment (a facilitator and a participant have no guarantee of sharing
+// a pod). Payload is deliberately minimal — `{ connected }` only, no cause,
+// no close code — so the broadcast never discloses which of the three
+// possible causes (network drop, STALE_SIGNAL_CLOSE_CODE,
+// REAUTH_GRACE_EXPIRED_CLOSE_CODE) produced a disconnect.
+export async function publishFacilitatorConnectionStatus(
+  sessionId: string,
+  payload: FacilitatorConnectionStatusPayload,
+): Promise<void> {
+  await publishWsEvent({ eventType: "facilitator_connection_status", sessionId, payload });
+}
+
+// ---------------------------------------------------------------------------
+// "Prior disconnect" shared state (design.md Decision 5's "Prior disconnect"
+// paragraph): a single Redis key per session, read-before-write at each of
+// websocket-routes.ts's two facilitator connect/disconnect call sites, so
+// any pod can tell whether the transition it just observed is actually a
+// change from the SESSION's point of view — not derivable from any one
+// pod's local ConnectionRegistry memory (a facilitator dropping from pod A
+// and reconnecting to pod B leaves pod B with no local record of the prior
+// disconnect). Bounded, single-purpose state — not a new registry, not a
+// new authorization surface.
+// ---------------------------------------------------------------------------
+
+function facilitatorConnectedKey(sessionId: string): string {
+  return `facilitator_connected:${sessionId}`;
+}
+
+/**
+ * Read-before-write. Returns true when this connect/disconnect is an actual
+ * transition worth publishing (the flag's previous value differs from
+ * `connected`) and updates the flag to `connected`; returns false — and
+ * still updates the flag — for a redundant call (e.g. a second facilitator
+ * tab connecting while the flag already reads "connected").
+ */
+export async function recordFacilitatorConnectionTransition(
+  sessionId: string,
+  connected: boolean,
+): Promise<boolean> {
+  const key = facilitatorConnectedKey(sessionId);
+  const previous = await redis.get(key);
+  const wasConnected = previous === "true";
+  await redis.set(key, connected ? "true" : "false");
+  return wasConnected !== connected;
+}
+
+/**
+ * Clears the flag when the session leaves `pre_session`/`active` status —
+ * the same lifecycle boundary that gates the broadcast itself — so it does
+ * not outlive the session it describes. Called from
+ * facilitator-sessions.ts's wrap-up-entry transition (the only status
+ * transition today that leaves this boundary from the inside).
+ */
+export async function clearFacilitatorConnectedFlag(sessionId: string): Promise<void> {
+  await redis.del(facilitatorConnectedKey(sessionId));
 }
 
 // ---------------------------------------------------------------------------

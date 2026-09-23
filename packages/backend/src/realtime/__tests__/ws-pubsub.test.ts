@@ -3,11 +3,17 @@ import type { FastifyBaseLogger } from "fastify";
 
 const mockPublish = vi.fn();
 const mockDuplicate = vi.fn();
+const mockGet = vi.fn();
+const mockSet = vi.fn();
+const mockDel = vi.fn();
 
 vi.mock("../../redis.js", () => ({
   redis: {
     publish: (...args: unknown[]) => mockPublish(...args),
     duplicate: (...args: unknown[]) => mockDuplicate(...args),
+    get: (...args: unknown[]) => mockGet(...args),
+    set: (...args: unknown[]) => mockSet(...args),
+    del: (...args: unknown[]) => mockDel(...args),
   },
 }));
 vi.mock("../../config.js", () => ({
@@ -32,6 +38,9 @@ import {
   publishTopicHistoryUpdate,
   publishParticipantJoined,
   publishParticipantLeft,
+  publishFacilitatorConnectionStatus,
+  recordFacilitatorConnectionTransition,
+  clearFacilitatorConnectedFlag,
   createWsSubscriber,
 } from "../ws-pubsub.js";
 
@@ -118,6 +127,95 @@ describe("typed publish wrappers", () => {
       sessionId: "s1",
       payload: { sessionId: "s1", userId: "u1", leftAt: "2026-01-01T00:00:00.000Z" },
     });
+  });
+
+  it("publishFacilitatorConnectionStatus wraps the payload in the correct envelope shape, carrying only { connected }", async () => {
+    await publishFacilitatorConnectionStatus("s1", { connected: false });
+    const [, body] = mockPublish.mock.calls[0] as [string, string];
+    expect(JSON.parse(body)).toEqual({
+      eventType: "facilitator_connection_status",
+      sessionId: "s1",
+      payload: { connected: false },
+    });
+  });
+});
+
+describe("recordFacilitatorConnectionTransition (facilitator-reconnect-indicator design.md Decision 5's 'Prior disconnect' paragraph)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns true and sets the flag when connecting after no prior flag existed (first-ever connect)", async () => {
+    mockGet.mockResolvedValue(null);
+    mockSet.mockResolvedValue("OK");
+
+    const changed = await recordFacilitatorConnectionTransition("s1", true);
+
+    expect(changed).toBe(true);
+    expect(mockSet).toHaveBeenCalledWith("facilitator_connected:s1", "true");
+  });
+
+  it("returns true when connecting after a prior disconnect (flag currently false)", async () => {
+    mockGet.mockResolvedValue("false");
+    mockSet.mockResolvedValue("OK");
+
+    const changed = await recordFacilitatorConnectionTransition("s1", true);
+
+    expect(changed).toBe(true);
+  });
+
+  it("returns false for a redundant connect while the flag already reads connected (e.g. a second facilitator tab)", async () => {
+    mockGet.mockResolvedValue("true");
+    mockSet.mockResolvedValue("OK");
+
+    const changed = await recordFacilitatorConnectionTransition("s1", true);
+
+    expect(changed).toBe(false);
+  });
+
+  it("returns true when disconnecting after the flag read connected", async () => {
+    mockGet.mockResolvedValue("true");
+    mockSet.mockResolvedValue("OK");
+
+    const changed = await recordFacilitatorConnectionTransition("s1", false);
+
+    expect(changed).toBe(true);
+    expect(mockSet).toHaveBeenCalledWith("facilitator_connected:s1", "false");
+  });
+
+  it("returns false for a redundant disconnect while the flag already reads not-connected", async () => {
+    mockGet.mockResolvedValue("false");
+    mockSet.mockResolvedValue("OK");
+
+    const changed = await recordFacilitatorConnectionTransition("s1", false);
+
+    expect(changed).toBe(false);
+  });
+
+  it("reads before writing — the GET is awaited before SET is called", async () => {
+    const callOrder: string[] = [];
+    mockGet.mockImplementation(async () => {
+      callOrder.push("get");
+      return "false";
+    });
+    mockSet.mockImplementation(async () => {
+      callOrder.push("set");
+      return "OK";
+    });
+
+    await recordFacilitatorConnectionTransition("s1", true);
+
+    expect(callOrder).toEqual(["get", "set"]);
+  });
+});
+
+describe("clearFacilitatorConnectedFlag", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("deletes the session's facilitator_connected flag", async () => {
+    mockDel.mockResolvedValue(1);
+
+    await clearFacilitatorConnectedFlag("s1");
+
+    expect(mockDel).toHaveBeenCalledWith("facilitator_connected:s1");
   });
 });
 

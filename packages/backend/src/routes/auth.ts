@@ -48,6 +48,71 @@ function isSeededAccountId(value: string): value is (typeof SEEDED_ACCOUNT_IDS)[
   return (SEEDED_ACCOUNT_IDS as readonly string[]).includes(value);
 }
 
+// ---------------------------------------------------------------------------
+// reauth-return-to: design.md Decision 3. `returnTo` carries the page the
+// user was on back through the OIDC state round-trip, the same pattern
+// join-link already established for `pendingJoinToken` (below). The value
+// is an internal path only — never a full URL — validated against an
+// explicit allow-list of known internal route shapes before it is ever
+// stored or redirected to.
+//
+// `:id` is pinned to this application's UUID format (the standard 8-4-4-4-12
+// hex-and-hyphen shape every sessions.id/teams.id column already uses via
+// gen_random_uuid()), not a loose "anything up to the next /, ?, or
+// end-of-string" class (per Tomás Ferreira's design review). A trailing
+// `?`-prefixed query string is tolerated — the client captures
+// `pathname + search`, so dropping a returnTo value just because it happens
+// to carry a query string would needlessly discard a valid destination.
+// ---------------------------------------------------------------------------
+const UUID_PATTERN = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+
+const RETURN_TO_ALLOW_LIST: RegExp[] = [
+  new RegExp(`^/session/${UUID_PATTERN}(?:\\?.*)?$`),
+  new RegExp(`^/team/${UUID_PATTERN}(?:\\?.*)?$`),
+];
+
+/**
+ * Character-rejection checks, run BEFORE the allow-list pattern match, on
+ * the raw decoded value (design.md Decision 3's intended runtime order).
+ * A scheme/authority component, a protocol-relative prefix, a raw CR or LF
+ * (header-injection into the eventual `Location` response header), or a
+ * backslash (normalized to `/` by some URL-parsing contexts) is rejected
+ * outright, independent of whether the rest of the value would otherwise
+ * match an allow-listed shape (CRLF/backslash checks per Tomás Ferreira's
+ * design review).
+ */
+function rejectReturnToCharacters(value: string): string | null {
+  if (/[\r\n]/.test(value)) return "contains a raw CR or LF character";
+  if (value.includes("\\")) return "contains a backslash";
+  if (value.includes("://")) return "contains a scheme/authority component (://)";
+  if (value.startsWith("//")) return "protocol-relative (leading //)";
+  return null;
+}
+
+/**
+ * Validates a supplied `returnTo` value. On rejection (either the character
+ * checks above or no allow-list match), returns null and emits a
+ * debug-level structured log noting the value and rejection reason — a
+ * discard-trace log, not an audit-tier event (per Tomás Ferreira's design
+ * review) — so repeated allow-list probing is visible to anyone who goes
+ * looking, without surfacing an error to the caller.
+ */
+export function validateReturnTo(value: string, log: FastifyBaseLogger): string | null {
+  const rejectionReason = rejectReturnToCharacters(value);
+  if (rejectionReason) {
+    log.debug({ returnTo: value, reason: rejectionReason }, "returnTo rejected: disallowed characters");
+    return null;
+  }
+  if (!RETURN_TO_ALLOW_LIST.some((pattern) => pattern.test(value))) {
+    log.debug(
+      { returnTo: value, reason: "does not match an allow-listed path shape" },
+      "returnTo rejected: no allow-list match",
+    );
+    return null;
+  }
+  return value;
+}
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // GET /auth/dev-login-options
   //
@@ -66,7 +131,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /auth/login
   app.get<{
-    Querystring: { joinToken?: string; loginHint?: string };
+    Querystring: { joinToken?: string; loginHint?: string; returnTo?: string };
   }>("/login", async (request, reply) => {
     const loginHint = request.query.loginHint;
 
@@ -96,6 +161,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const joinToken = request.query.joinToken;
     if (joinToken) {
       stateData["pendingJoinToken"] = joinToken;
+    }
+
+    const returnTo = request.query.returnTo;
+    if (returnTo !== undefined) {
+      const validatedReturnTo = validateReturnTo(returnTo, request.log);
+      if (validatedReturnTo !== null) {
+        stateData["returnTo"] = validatedReturnTo;
+      }
     }
 
     await redis.setex(
@@ -166,6 +239,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         nonce: string;
         codeVerifier: string;
         pendingJoinToken?: string;
+        returnTo?: string;
         createdAt: string;
       };
 
@@ -300,6 +374,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // redirect URLs (/join-error?joinError=...). The callback handler
       // redirects unconditionally; the user is never routed to /no-team when a
       // pendingJoinToken was present.
+      //
+      // reauth-return-to (design.md Decision 3): a stored `returnTo` value is
+      // only consulted when no pendingJoinToken redirect took precedence — a
+      // join-link flow is definitionally a different, higher-priority path
+      // (a user who wasn't a team member yet), so the two never meaningfully
+      // overlap, but the precedence is stated explicitly here regardless.
       let redirectUrl: string | null = null;
       if (stateData.pendingJoinToken) {
         const joinResult = await executeJoinFlow(
@@ -309,6 +389,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           request.ip,
         );
         redirectUrl = joinResult.redirectUrl;
+      } else if (stateData.returnTo) {
+        redirectUrl = stateData.returnTo;
       }
 
       // Task 5: Server-side redirect based on live team membership data.

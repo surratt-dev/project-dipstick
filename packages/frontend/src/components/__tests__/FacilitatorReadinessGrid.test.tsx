@@ -9,6 +9,7 @@ import {
   STALE_MARKER_TOOLTIP_TEXT,
   type ParticipantRowState,
 } from "../FacilitatorReadinessGrid.js";
+import { useConnectionHealth } from "../../realtime/connectionHealth.js";
 import { ConnectionStatusBanner } from "../ConnectionStatusBanner.js";
 import { FakeWebSocket } from "../../realtime/__tests__/fake-websocket.js";
 import { buildFourStateRowFixture } from "./facilitator-row-fixture.js";
@@ -23,6 +24,14 @@ function makeConnectSpy(): { connect: () => WebSocket; sockets: FakeWebSocket[] 
     return ws as unknown as WebSocket;
   });
   return { connect, sockets };
+}
+
+// session-timeout-continuity (design.md Decision 6): ConnectionStatusBanner
+// no longer calls useConnectionHealth itself — see the identical harness in
+// ConnectionStatusBanner.test.tsx for the full rationale.
+function ConnectionStatusBannerHarness({ connect }: { connect: () => WebSocket }) {
+  const { state, socket } = useConnectionHealth(connect);
+  return <ConnectionStatusBanner state={state} socket={socket} />;
 }
 
 afterEach(() => {
@@ -192,7 +201,7 @@ describe("FacilitatorReadinessGrid — facilitator-only gating (spec.md, task 4.
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0.9);
     const { connect, sockets } = makeConnectSpy();
-    const { container } = render(<ConnectionStatusBanner connect={connect} />);
+    const { container } = render(<ConnectionStatusBannerHarness connect={connect} />);
 
     act(() => {
       sockets[0].emitClose(STALE_SIGNAL_CLOSE_CODE);
@@ -277,13 +286,24 @@ describe("FacilitatorReadinessGrid — facilitator tooltip (proposal.md, task 4.
   });
 });
 
-describe("Shared-module cross-surface import check (design.md Decision D6, task 4.12)", () => {
-  it("ConnectionStatusBanner.tsx and FacilitatorReadinessGrid.tsx both import useConnectionHealth directly from connectionHealth.ts", () => {
+describe("Shared-module cross-surface import check (design.md Decision D6, task 4.12; session-timeout-continuity design.md Decision 6 narrows this for ConnectionStatusBanner)", () => {
+  it("FacilitatorReadinessGrid.tsx still imports useConnectionHealth directly from connectionHealth.ts", () => {
     const dir = path.dirname(fileURLToPath(import.meta.url));
-    const bannerSource = readFileSync(path.join(dir, "../ConnectionStatusBanner.tsx"), "utf-8");
     const gridSource = readFileSync(path.join(dir, "../FacilitatorReadinessGrid.tsx"), "utf-8");
 
-    expect(bannerSource).toMatch(/import\s*{[^}]*useConnectionHealth[^}]*}\s*from\s*"\.\.\/realtime\/connectionHealth\.js"/);
     expect(gridSource).toMatch(/import\s*{[^}]*useConnectionHealth[^}]*}\s*from\s*"\.\.\/realtime\/connectionHealth\.js"/);
+  });
+
+  it("ConnectionStatusBanner.tsx no longer calls useConnectionHealth itself — it receives state/socket as props from SessionConnectionHost.tsx (design.md Decision 6)", () => {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    const bannerSource = readFileSync(path.join(dir, "../ConnectionStatusBanner.tsx"), "utf-8");
+    const hostSource = readFileSync(
+      path.join(dir, "../../pages/SessionConnectionHost.tsx"),
+      "utf-8",
+    );
+
+    expect(bannerSource).not.toMatch(/import\s*{[^}]*useConnectionHealth[^}]*}\s*from/);
+    expect(bannerSource).not.toMatch(/\buseConnectionHealth\(/);
+    expect(hostSource).toMatch(/import\s*{[^}]*useConnectionHealth[^}]*}\s*from\s*"\.\.\/realtime\/connectionHealth\.js"/);
   });
 });

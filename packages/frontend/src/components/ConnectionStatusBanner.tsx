@@ -1,5 +1,5 @@
 import {
-  useConnectionHealth,
+  type ConnectionHealthState,
   assertExhaustiveConnectionHealthState,
 } from "../realtime/connectionHealth.js";
 import { ReauthRequiredTreatment } from "./ReauthRequiredTreatment.js";
@@ -7,14 +7,19 @@ import { ReauthRequiredTreatment } from "./ReauthRequiredTreatment.js";
 // ---------------------------------------------------------------------------
 // ConnectionStatusBanner — participant-facing rendered treatment
 //
-// websocket-staleness-signal: design.md Decisions D6, D8. Calls
-// useConnectionHealth directly — no wrapper, no per-surface
-// re-implementation (Decision D6; verified by task 4.12's cross-surface
-// import check once the grid-marker treatment also exists). Renders one
-// fixed string per state, with no prop or code path that varies wording by
-// cause *within* a state — this is the property task 3.2's
-// rendered-output-identity test exists to check. `"connected"` renders
-// nothing.
+// websocket-staleness-signal: design.md Decisions D6, D8. Renders one fixed
+// string per state, with no prop or code path that varies wording by cause
+// *within* a state — this is the property task 3.2's rendered-output-identity
+// test exists to check. `"connected"` renders nothing.
+//
+// session-timeout-continuity (design.md Decision 6): this component no
+// longer calls useConnectionHealth itself — `state`/`socket` are lifted up
+// to SessionConnectionHost.tsx and passed down as props, so the new
+// facilitator-reconnect indicator (a sibling consumer, not a fork) can share
+// the same live socket instead of opening a second WebSocket connection.
+// FacilitatorReadinessGrid.tsx is unaffected by this refactor — it still
+// calls useConnectionHealth directly for the facilitator's own connection,
+// since the facilitator-reconnect indicator is participant-facing only.
 //
 // COPY IS NOT FINAL. `unknown-reconnecting`'s copy sign-off is already
 // closed (per the pilot-readiness gate status notes in
@@ -27,19 +32,23 @@ import { ReauthRequiredTreatment } from "./ReauthRequiredTreatment.js";
 const UNKNOWN_RECONNECTING_TEXT = "Your view may be out of date. Refresh to continue.";
 
 export interface ConnectionStatusBannerProps {
-  connect: () => WebSocket;
+  state: ConnectionHealthState;
+  socket: WebSocket | null;
 }
 
-export function ConnectionStatusBanner({ connect }: ConnectionStatusBannerProps) {
-  const { state } = useConnectionHealth(connect);
-
+export function ConnectionStatusBanner({ state }: ConnectionStatusBannerProps) {
   switch (state) {
     case "connected":
       return null;
     case "unknown-reconnecting":
       return <div role="status">{UNKNOWN_RECONNECTING_TEXT}</div>;
     case "reauth-required":
-      return <ReauthRequiredTreatment />;
+      return (
+        <ReauthRequiredTreatment
+          role="participant"
+          returnTo={window.location.pathname + window.location.search}
+        />
+      );
     default: {
       const _exhaustive: never = state;
       return assertExhaustiveConnectionHealthState(_exhaustive);

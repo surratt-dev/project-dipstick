@@ -5,9 +5,16 @@ import { connectionRegistry, safeSend, type RegisteredConnection } from "./conne
 import { ABSOLUTE_LIFETIME_MS } from "../auth/middleware.js";
 import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
 import { evaluateTeamAccess } from "../auth/team-content-access-helper.js";
-import { createWsSubscriber, publishParticipantJoined, publishParticipantLeft } from "./ws-pubsub.js";
+import {
+  createWsSubscriber,
+  publishParticipantJoined,
+  publishParticipantLeft,
+  publishFacilitatorConnectionStatus,
+  recordFacilitatorConnectionTransition,
+} from "./ws-pubsub.js";
 import { attachWsEventDispatcher } from "./ws-event-dispatcher.js";
 import { STALE_SIGNAL_CLOSE_CODE } from "./staleness-signal.js";
+import { REAUTH_GRACE_EXPIRED_CLOSE_CODE } from "@dipstick/shared";
 import type { SessionData } from "../auth/session-store.js";
 import { scheduleReauthorizationSweep, resolveActorGlobalRole, resolveTeamIdForAudit } from "./connection-reauthorization.js";
 import {
@@ -47,17 +54,25 @@ import { emitAuditEvent } from "../auth/audit-logger.js";
 //   GET /ws/teams/:teamId/events — team-scoped event (topic_history_update)
 // ---------------------------------------------------------------------------
 
-// Both the subscription-time rejection and the scheduled absolute-lifetime
-// force-close use the SAME close code (staleness-signal.ts's
-// STALE_SIGNAL_CLOSE_CODE), not two distinct codes. This is required by
-// design.md's non-goal ("Disclosing the cause of revocation to the affected
-// connection") and tasks.md task 9.2: if "rejected as unauthorized" and
-// "force-closed at the 90-minute absolute lifetime" used different close
-// codes, a client could distinguish the two just by inspecting the close
-// event, which is exactly the surveillance-adjacent disclosure this change
-// must not introduce. See staleness-signal.ts for the full rationale.
+// The subscription-time rejection and the scheduled absolute-lifetime
+// force-close now use DIFFERENT close codes (session-timeout-continuity
+// design.md Decision 1, MODIFIED delta against websocket-session-
+// authorization's prior "same close code for both cases" requirement):
+//
+// - CLOSE_UNAUTHORIZED (STALE_SIGNAL_CLOSE_CODE) stays disclosure-blind — a
+//   rejected subscription discloses a fact about *this user's authorization*
+//   (a revocation or a never-granted access), which must not leak to the
+//   client it happens to. This close code is unchanged from before.
+// - CLOSE_FORCE_EXPIRED now aliases REAUTH_GRACE_EXPIRED_CLOSE_CODE — the
+//   90-minute absolute-lifetime cap is a fact about *elapsed wall-clock
+//   time*, identical and predictable for every session regardless of who is
+//   in it, so disclosing it leaks nothing about anyone's access. Routing it
+//   through the same disclosed code SEC-26's refresh-failure path already
+//   uses sends it to the same `reauth-required` client state and CTA,
+//   instead of leaving the client retrying forever in
+//   `unknown-reconnecting` (the bug this change fixes — see proposal.md).
 const CLOSE_UNAUTHORIZED = STALE_SIGNAL_CLOSE_CODE;
-const CLOSE_FORCE_EXPIRED = STALE_SIGNAL_CLOSE_CODE;
+const CLOSE_FORCE_EXPIRED = REAUTH_GRACE_EXPIRED_CLOSE_CODE;
 
 export async function registerWebSocketRoutes(app: FastifyInstance): Promise<void> {
   // Decision D9: Origin check MUST run before request.session is consulted.
@@ -135,6 +150,16 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
           });
         } else {
           recordFacilitatorConnectionAudit(session.userId, sessionId, "connected", request.log);
+          // facilitator-reconnect-indicator (design.md Decision 5): SAME
+          // fact as the audit write above, one call site per transition,
+          // two consumers. grant.sessionStatus is already known here — no
+          // extra query needed for the pre_session/active gate.
+          void publishFacilitatorConnectionStatusForTransition(
+            sessionId,
+            true,
+            grant.sessionStatus,
+            request.log,
+          );
         }
 
         // "close" and "error" can both fire for the same socket (e.g. an
@@ -156,6 +181,16 @@ export async function registerWebSocketRoutes(app: FastifyInstance): Promise<voi
             });
           } else if (conn.subscriberPath === "facilitator") {
             recordFacilitatorConnectionAudit(session.userId, sessionId, "disconnected", request.log);
+            // facilitator-reconnect-indicator (design.md Decision 5): SAME
+            // fact as the audit write above. No live grant available at
+            // disconnect time — publishFacilitatorConnectionStatusForTransition
+            // resolves current session status itself for the gate.
+            void publishFacilitatorConnectionStatusForTransition(
+              sessionId,
+              false,
+              undefined,
+              request.log,
+            );
           }
         };
         socket.on("close", cleanup);
@@ -265,6 +300,47 @@ async function recordFacilitatorConnectionAudit(
     });
   } catch (err) {
     log.warn({ err, sessionId, event }, "facilitator connection audit: failed to write, skipping");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// facilitator-reconnect-indicator (session-timeout-continuity design.md
+// Decision 5): wired into the SAME two call sites as
+// recordFacilitatorConnectionAudit above — one fact (the facilitator's own
+// connection just connected/disconnected), two consumers (the existing
+// audit write, this participant-facing broadcast) — never a second,
+// independently-derived detection that could drift from the audit trail.
+//
+// Gated to `pre_session`/`active` status, per the "Participants receive a
+// cause-blind signal..." requirement. `knownSessionStatus` is passed at the
+// connect call site (already available on the live grant, no extra query);
+// left undefined at the disconnect call site, where no live grant exists —
+// this function resolves current status itself in that case.
+// ---------------------------------------------------------------------------
+async function resolveSessionStatusForBroadcast(sessionId: string): Promise<string | null> {
+  const result = await db.query<{ status: string }>(
+    `SELECT status FROM sessions WHERE id = $1`,
+    [sessionId],
+  );
+  return (result.rows[0] as { status: string } | undefined)?.status ?? null;
+}
+
+async function publishFacilitatorConnectionStatusForTransition(
+  sessionId: string,
+  connected: boolean,
+  knownSessionStatus: string | undefined,
+  log: FastifyBaseLogger,
+): Promise<void> {
+  try {
+    const sessionStatus = knownSessionStatus ?? (await resolveSessionStatusForBroadcast(sessionId));
+    if (sessionStatus !== "pre_session" && sessionStatus !== "active") return;
+
+    const changed = await recordFacilitatorConnectionTransition(sessionId, connected);
+    if (changed) {
+      await publishFacilitatorConnectionStatus(sessionId, { connected });
+    }
+  } catch (err) {
+    log.warn({ err, sessionId, connected }, "facilitator_connection_status: failed to publish, skipping");
   }
 }
 

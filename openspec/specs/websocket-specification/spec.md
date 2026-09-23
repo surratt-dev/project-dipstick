@@ -26,6 +26,7 @@ This table is the authoritative, exhaustive list of every WebSocket event this a
 | `session_registration_snapshot` | Implemented |
 | `participant_joined` / `participant_left` | Implemented |
 | `action_item_status_updated` | Implemented |
+| `facilitator_connection_status` | Implemented |
 
 `actionitem.created` (see the corrected-names table below) is deliberately excluded from this registry: no FR names it directly, per design.md's original scoping decision, so it is not carried forward as a tracked future-state entry — it remains only as a historical note that the old dot-notation name maps to no event.
 

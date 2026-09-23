@@ -85,6 +85,8 @@ export async function handleIncomingMessage(
       return dispatchParticipantLeft(envelope, registry, logger);
     case "action_item_status_updated":
       return dispatchActionItemStatusUpdated(envelope, registry, logger);
+    case "facilitator_connection_status":
+      return dispatchFacilitatorConnectionStatus(envelope, registry, logger);
     default: {
       // Exhaustiveness guard — a new WsEventType added to the shared union
       // without a corresponding dispatch case fails here at runtime (and,
@@ -397,6 +399,50 @@ async function dispatchActionItemStatusUpdated(
       if (grant !== null) {
         sendClientMessage(registry, "session", envelope.sessionId, conn, {
           eventType: "action_item_status_updated",
+          payload: envelope.payload,
+        });
+      }
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// facilitator_connection_status — facilitator-reconnect-indicator (session-
+// timeout-continuity design.md Decision 5).
+//
+// Delivered to any valid session subscriber (participant OR facilitator's
+// own grant path, session_state_change's recipient breadth), EXCLUDING any
+// candidate registered under the "facilitator" subscriberPath — a
+// facilitator must never receive their own connection-status broadcast back
+// (this event exists to inform OTHER session-scoped connections). Uses
+// conn.subscriberPath (set once at registration time, websocket-routes.ts),
+// not a second live grant re-derivation, mirroring how disconnect-time
+// cleanup already reads this same field (GitHub issue #94).
+//
+// Not gated to pre_session/active here — that gate is enforced at the
+// publish call site (websocket-routes.ts), which only calls
+// publishFacilitatorConnectionStatus while the session is in one of those
+// two statuses. This dispatcher, like every other case in this switch,
+// still re-runs the per-candidate authorization check at delivery time
+// regardless of what the publisher observed.
+// ---------------------------------------------------------------------------
+async function dispatchFacilitatorConnectionStatus(
+  envelope: Extract<WsEventEnvelope, { eventType: "facilitator_connection_status" }>,
+  registry: ConnectionRegistry,
+  logger: FastifyBaseLogger,
+): Promise<void> {
+  const candidates = registry.candidates("session", envelope.sessionId);
+  if (candidates.length === 0) return;
+
+  await Promise.all(
+    candidates.map(async (conn) => {
+      if (conn.subscriberPath === "facilitator") return;
+      if (isConnectionExpired(conn, logger)) return;
+
+      const grant = await evaluateSessionSubscriberAccess(conn.userId, envelope.sessionId);
+      if (grant !== null) {
+        sendClientMessage(registry, "session", envelope.sessionId, conn, {
+          eventType: "facilitator_connection_status",
           payload: envelope.payload,
         });
       }

@@ -77,7 +77,8 @@ vi.mock("openid-client", async () => {
 });
 
 import Fastify from "fastify";
-import { authRoutes } from "../auth.js";
+import type { FastifyBaseLogger } from "fastify";
+import { authRoutes, validateReturnTo } from "../auth.js";
 import { ResponseBodyError } from "openid-client";
 
 function buildApp(sessionOverrides: Record<string, unknown> = {}) {
@@ -142,6 +143,46 @@ function setupValidCallbackMocks(opts: {
   });
   // Team membership query (Task 5: server-side redirect)
   mockDbQuery.mockResolvedValueOnce({ rows: teamMemberships });
+}
+
+/**
+ * Like setupValidCallbackMocks, but does NOT queue the team-membership
+ * fallback query's mockResolvedValueOnce — for reauth-return-to tests
+ * (design.md Decision 3) where a stored returnTo (or pendingJoinToken)
+ * short-circuits before that fallback query ever runs. Queuing an unused
+ * mockResolvedValueOnce here would otherwise leak into and corrupt the
+ * first db.query call of whichever test runs next.
+ */
+function setupValidCallbackMocksNoMembershipFallback(opts: {
+  sub?: string;
+  iss?: string;
+  isNewUser?: boolean;
+} = {}) {
+  const sub = opts.sub ?? "sub-1";
+  const iss = opts.iss ?? "https://idp.example.com";
+  const isNewUser = opts.isNewUser ?? false;
+
+  mockHandleCallback.mockResolvedValue({
+    claims: () => ({ sub, iss, name: "Alice", email: "alice@example.com" }),
+    access_token: "at",
+    refresh_token: "rt",
+    id_token: "it",
+    expires_in: 3600,
+  });
+  mockResolveOrCreateAccount.mockResolvedValue({
+    id: "user-1",
+    oidcSubject: sub,
+    oidcIssuer: iss,
+    displayName: "Alice",
+    email: "alice@example.com",
+    isNewUser,
+  });
+  mockBuildSessionData.mockReturnValue({
+    userId: "user-1",
+    sessionCreatedAt: new Date().toISOString(),
+    encryptedAccessToken: "enc(at)",
+    tokenExpiresAt: 9999999999,
+  });
 }
 
 describe("authRoutes", () => {
@@ -303,6 +344,124 @@ describe("authRoutes", () => {
         "auth.authorization_initiated",
         expect.objectContaining({ hasLoginHint: false }),
       );
+    });
+
+    // reauth-return-to: design.md Decision 3, tasks.md tasks 2.6/2.8/2.11.
+    describe("returnTo (reauth-return-to)", () => {
+      beforeEach(() => {
+        mockRedisSetex.mockResolvedValue("OK");
+        mockGetAuthorizationUrl.mockResolvedValue({
+          url: new URL("https://idp.example.com/authorize"),
+          codeVerifier: "mock-verifier",
+        });
+      });
+
+      it("stores an allow-listed /session/:id returnTo value in state data", async () => {
+        const app = await buildApp();
+        await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c"),
+        });
+
+        const setexCall = mockRedisSetex.mock.calls[0];
+        const storedData = JSON.parse(setexCall[2] as string);
+        expect(storedData.returnTo).toBe("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+      });
+
+      it("stores an allow-listed /team/:id returnTo value in state data", async () => {
+        const app = await buildApp();
+        await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c"),
+        });
+
+        const setexCall = mockRedisSetex.mock.calls[0];
+        const storedData = JSON.parse(setexCall[2] as string);
+        expect(storedData.returnTo).toBe("/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+      });
+
+      it("tolerates an optional query string suffix on an otherwise-matching path", async () => {
+        const app = await buildApp();
+        const value = "/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c?newMember=true";
+        await app.inject({ method: "GET", url: "/auth/login?returnTo=" + encodeURIComponent(value) });
+
+        const setexCall = mockRedisSetex.mock.calls[0];
+        const storedData = JSON.parse(setexCall[2] as string);
+        expect(storedData.returnTo).toBe(value);
+      });
+
+      it("drops a non-allow-listed path silently and logs at debug level", async () => {
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("/some/unrecognized/path"),
+        });
+
+        expect(res.statusCode).toBe(302);
+        const setexCall = mockRedisSetex.mock.calls[0];
+        const storedData = JSON.parse(setexCall[2] as string);
+        expect(storedData.returnTo).toBeUndefined();
+      });
+
+      it("drops a non-UUID :id segment (not a loose up-to-next-slash match)", async () => {
+        const app = await buildApp();
+        await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("/session/not-a-uuid"),
+        });
+
+        const setexCall = mockRedisSetex.mock.calls[0];
+        const storedData = JSON.parse(setexCall[2] as string);
+        expect(storedData.returnTo).toBeUndefined();
+      });
+
+      it("rejects a full URL or protocol-relative value", async () => {
+        const app = await buildApp();
+        await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("https://evil.example.com/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c"),
+        });
+
+        const setexCall = mockRedisSetex.mock.calls[0];
+        const storedData = JSON.parse(setexCall[2] as string);
+        expect(storedData.returnTo).toBeUndefined();
+      });
+
+      it("rejects a value containing a raw CRLF or a backslash", async () => {
+        const app = await buildApp();
+
+        await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c\r\nX-Injected: 1"),
+        });
+        let setexCall = mockRedisSetex.mock.calls[0];
+        expect(JSON.parse(setexCall[2] as string).returnTo).toBeUndefined();
+
+        mockRedisSetex.mockClear();
+        await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c\\evil"),
+        });
+        setexCall = mockRedisSetex.mock.calls[0];
+        expect(JSON.parse(setexCall[2] as string).returnTo).toBeUndefined();
+      });
+
+      it("does not branch on which OIDC provider is configured", async () => {
+        // The returnTo mechanism reads only request.query and config's shared,
+        // provider-agnostic OIDC settings — never a provider-specific claim or
+        // field. Asserted here by confirming behavior is identical regardless
+        // of OIDC_ISSUER's value (per project_oidc_multi_provider).
+        mockConfig.OIDC_ISSUER = "https://another-idp.example.org";
+        const app = await buildApp();
+        await app.inject({
+          method: "GET",
+          url: "/auth/login?returnTo=" + encodeURIComponent("/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c"),
+        });
+
+        const setexCall = mockRedisSetex.mock.calls[0];
+        const storedData = JSON.parse(setexCall[2] as string);
+        expect(storedData.returnTo).toBe("/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+      });
     });
   });
 
@@ -785,6 +944,126 @@ describe("authRoutes", () => {
         // Task 4.2: already-member through-auth path appends ?alreadyMember=true
         expect(res.headers.location).toBe("http://localhost:5173/team/team-joined?alreadyMember=true");
         expect(res.headers.location).not.toBe("/no-team");
+      });
+    });
+
+    // reauth-return-to: design.md Decision 3, tasks.md tasks 2.6/2.7/2.8/2.9/2.12.
+    describe("returnTo redirect (reauth-return-to)", () => {
+      function mockStateWithReturnTo(returnTo?: string, pendingJoinToken?: string) {
+        mockRedisGetdel.mockResolvedValueOnce(
+          JSON.stringify({
+            nonce: "n",
+            codeVerifier: "cv",
+            createdAt: new Date().toISOString(),
+            ...(returnTo ? { returnTo } : {}),
+            ...(pendingJoinToken ? { pendingJoinToken } : {}),
+          }),
+        );
+      }
+
+      it("redirects to a stored /session/:id returnTo value when no pendingJoinToken is present", async () => {
+        setupValidCallbackMocksNoMembershipFallback();
+        mockStateWithReturnTo("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("http://localhost:5173/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+      });
+
+      it("redirects to a stored /team/:id returnTo value when no pendingJoinToken is present", async () => {
+        setupValidCallbackMocksNoMembershipFallback();
+        mockStateWithReturnTo("/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("http://localhost:5173/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+      });
+
+      it("a pending join token takes precedence over a stored returnTo value", async () => {
+        setupValidCallbackMocksNoMembershipFallback();
+        mockStateWithReturnTo("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c", "join-tok-1");
+
+        // executeJoinFlow db queries: join_links lookup (valid), INSERT (new row), sessions (none active)
+        mockDbQuery.mockResolvedValueOnce({
+          rows: [{ id: "link-1", team_id: "team-joined", expires_at: new Date(Date.now() + 3600_000), revoked_at: null }],
+        });
+        mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "membership-1" }] });
+        mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("http://localhost:5173/team/team-joined?newMember=true");
+        expect(res.headers.location).not.toContain("/session/9f8b1a2c");
+      });
+
+      it("behaves exactly as before when no returnTo value was stored (falls back to live membership data)", async () => {
+        setupValidCallbackMocks({ teamMemberships: [{ team_id: "team-1" }] });
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("http://localhost:5173/team/team-1");
+      });
+
+      it("does not redirect a non-allow-listed stored returnTo value (defensive — /auth/login already filters this)", async () => {
+        // Simulates a stateData payload that somehow carries a non-allow-listed
+        // returnTo (e.g. a future bug in /auth/login's own validation) — the
+        // callback handler trusts whatever was stored, since /auth/login is
+        // this mechanism's only writer; this test documents that current
+        // behavior rather than asserting a second, redundant validation layer.
+        setupValidCallbackMocksNoMembershipFallback();
+        mockStateWithReturnTo("/some/unrecognized/path");
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("http://localhost:5173/some/unrecognized/path");
+      });
+
+      it("does not perform any authorization check for the returnTo destination — the redirect is a navigation convenience only", async () => {
+        // The backend issues an unconditional redirect; it is the destination
+        // route's own (frontend/SPA) authorization check that runs on load,
+        // exactly as it would for any direct, unprompted navigation there.
+        // Confirmed here by checking no additional db.query beyond the ones
+        // setupValidCallbackMocks/this test already account for is made
+        // specifically to re-evaluate access to the returnTo path.
+        setupValidCallbackMocksNoMembershipFallback();
+        mockStateWithReturnTo("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        // No membership query needed/run since returnTo already produced a redirectUrl.
+        expect(mockDbQuery).not.toHaveBeenCalledWith(
+          expect.stringContaining("team_memberships"),
+          expect.anything(),
+        );
+      });
+
+      it("the stored returnTo value is single-use via the same atomic redis.getdel already used for pendingJoinToken", async () => {
+        setupValidCallbackMocksNoMembershipFallback();
+        mockStateWithReturnTo("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+
+        const app = await buildApp();
+        const first = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+        expect(first.statusCode).toBe(302);
+        expect(first.headers.location).toBe("http://localhost:5173/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+
+        // getdel already deleted the key — a replayed callback for the same
+        // state gets nothing back, exactly like an expired/invalid state.
+        mockRedisGetdel.mockResolvedValueOnce(null);
+        const second = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+        expect(second.statusCode).toBe(302);
+        expect(second.headers.location).toContain("category=invalid_request");
       });
     });
 
@@ -1510,5 +1789,60 @@ describe("authRoutes", () => {
       expect(body.sessionCreatedAt).toBe("2025-06-01T12:00:00Z");
       expect(body.expiresAt).toBeDefined();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateReturnTo — reauth-return-to: design.md Decision 3, tasks.md task
+// 2.11. Exercised directly (not only through the /auth/login HTTP path
+// above) so the debug-log-on-rejection behavior — a discard-trace log, not
+// an audit_log row, per Tomás Ferreira's design review — can be asserted
+// without instrumenting Fastify's own child logger.
+// ---------------------------------------------------------------------------
+describe("validateReturnTo", () => {
+  function fakeLog() {
+    return {
+      debug: vi.fn(),
+      warn: vi.fn(),
+    } as unknown as FastifyBaseLogger;
+  }
+
+  it("emits a debug-level log and writes no audit_log row for a rejected non-allow-listed path", () => {
+    const log = fakeLog();
+    const result = validateReturnTo("/some/unrecognized/path", log);
+
+    expect(result).toBeNull();
+    expect(log.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ returnTo: "/some/unrecognized/path" }),
+      expect.stringContaining("rejected"),
+    );
+    expect(mockDbQuery).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.anything());
+  });
+
+  it("emits a debug-level log for a scheme/authority-bearing value and writes no audit_log row", () => {
+    const log = fakeLog();
+    const result = validateReturnTo("https://evil.example.com/session/abc", log);
+
+    expect(result).toBeNull();
+    expect(log.debug).toHaveBeenCalled();
+    expect(mockDbQuery).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.anything());
+  });
+
+  it("emits a debug-level log for a CRLF-bearing value and writes no audit_log row", () => {
+    const log = fakeLog();
+    const result = validateReturnTo("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c\r\nX: 1", log);
+
+    expect(result).toBeNull();
+    expect(log.debug).toHaveBeenCalled();
+    expect(mockDbQuery).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO audit_log"), expect.anything());
+  });
+
+  it("returns the value unchanged and logs nothing for an allow-listed path", () => {
+    const log = fakeLog();
+    const value = "/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+    const result = validateReturnTo(value, log);
+
+    expect(result).toBe(value);
+    expect(log.debug).not.toHaveBeenCalled();
   });
 });

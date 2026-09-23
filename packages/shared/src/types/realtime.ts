@@ -24,7 +24,8 @@ export type WsEventType =
   | "topic_history_update"
   | "participant_joined"
   | "participant_left"
-  | "action_item_status_updated";
+  | "action_item_status_updated"
+  | "facilitator_connection_status";
 
 /**
  * vote_readiness_update payload — pushed to the facilitator's connection when
@@ -172,6 +173,20 @@ export interface ActionItemStatusUpdatedPayload {
 }
 
 /**
+ * facilitator_connection_status payload — facilitator-reconnect-indicator:
+ * design.md Decision 5. Broadcast to every other session-scoped connection
+ * when the facilitator's own connection health transitions between
+ * "connected" and "not currently connected" (a raw network drop,
+ * `STALE_SIGNAL_CLOSE_CODE`, or `REAUTH_GRACE_EXPIRED_CLOSE_CODE` — all
+ * three collapse to the same signal here). Deliberately minimal: `connected`
+ * only, no cause, no close code, no sub-cause — the payload must never
+ * disclose which of the three causes applies.
+ */
+export interface FacilitatorConnectionStatusPayload {
+  connected: boolean;
+}
+
+/**
  * topic_history_update payload — pushed to team event-stream subscribers
  * when historical session data changes (e.g., an action item is finalized
  * during wrap-up, or a topic advances). No vote values ever appear here —
@@ -217,7 +232,9 @@ export type WsEventPayloadFor<E extends WsEventType> = E extends "vote_readiness
             ? ParticipantLeftPayload
             : E extends "action_item_status_updated"
               ? ActionItemStatusUpdatedPayload
-              : never;
+              : E extends "facilitator_connection_status"
+                ? FacilitatorConnectionStatusPayload
+                : never;
 
 /**
  * The envelope published on the single `ws:events` Redis channel
@@ -274,6 +291,11 @@ export type WsEventEnvelope =
        * `participant` branch carries no `sessionStatus` of its own.
        */
       sessionStatus: SessionStatus;
+    }
+  | {
+      eventType: "facilitator_connection_status";
+      sessionId: string;
+      payload: FacilitatorConnectionStatusPayload;
     };
 
 /**
@@ -307,4 +329,5 @@ export type WsClientMessage =
   | { eventType: "session_registration_snapshot"; payload: SessionRegistrationSnapshotPayload }
   | { eventType: "participant_joined"; payload: ParticipantJoinedPayload }
   | { eventType: "participant_left"; payload: ParticipantLeftPayload }
-  | { eventType: "action_item_status_updated"; payload: ActionItemStatusUpdatedPayload };
+  | { eventType: "action_item_status_updated"; payload: ActionItemStatusUpdatedPayload }
+  | { eventType: "facilitator_connection_status"; payload: FacilitatorConnectionStatusPayload };

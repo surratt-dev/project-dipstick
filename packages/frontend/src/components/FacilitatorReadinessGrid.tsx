@@ -76,7 +76,12 @@ export function FacilitatorReadinessGrid({ connect, rows }: FacilitatorReadiness
     case "unknown-reconnecting":
       return <GridRows rows={rows} showMarker={true} />;
     case "reauth-required":
-      return <ReauthRequiredTreatment />;
+      return (
+        <ReauthRequiredTreatment
+          role="facilitator"
+          returnTo={window.location.pathname + window.location.search}
+        />
+      );
     default: {
       const _exhaustive: never = state;
       return assertExhaustiveConnectionHealthState(_exhaustive);

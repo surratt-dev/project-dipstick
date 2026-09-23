@@ -216,4 +216,108 @@ describe.skipIf(!infraAvailable)("real Redis pub/sub hop — delivery-time revoc
       await subscriber?.quit().catch(() => undefined);
     }
   }, 15000);
+
+  // facilitator-reconnect-indicator (session-timeout-continuity design.md
+  // Decision 5, tasks.md task 4.12): the cross-pod fan-out this decision
+  // depends on — publishFacilitatorConnectionStatus's real Redis PUBLISH,
+  // through the real ws:events SUBSCRIBE/dispatch path — not only the
+  // in-process handleIncomingMessage unit tests in
+  // ws-event-dispatcher.test.ts, which never actually dequeue from Redis.
+  it("delivers facilitator_connection_status to a participant-scoped connection via the REAL Redis PUBLISH/SUBSCRIBE path, excluding a facilitator-scoped one", async () => {
+    const { db } = await import("../../db.js");
+    const { publishFacilitatorConnectionStatus, createWsSubscriber } = await import("../ws-pubsub.js");
+    const { attachWsEventDispatcher } = await import("../ws-event-dispatcher.js");
+    const { ConnectionRegistry } = await import("../connection-registry.js");
+
+    const teamId = crypto.randomUUID();
+    const facilitatorUserId = crypto.randomUUID();
+    const participantUserId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    const noopLogger = {
+      warn: () => undefined,
+      error: () => undefined,
+      info: () => undefined,
+      debug: () => undefined,
+    };
+    let subscriber: Redis | undefined;
+
+    try {
+      await db.query(
+        `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
+         VALUES ($1, $2, 'test-issuer', 'Test Facilitator', 'facilitator@example.com', 'facilitator')`,
+        [facilitatorUserId, `sub-${facilitatorUserId}`],
+      );
+      await db.query(
+        `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
+         VALUES ($1, $2, 'test-issuer', 'Test Participant', 'participant@example.com', 'engineer')`,
+        [participantUserId, `sub-${participantUserId}`],
+      );
+      await db.query(
+        `INSERT INTO teams (id, name, created_by_user_id) VALUES ($1, $2, $3)`,
+        [teamId, `Integration Test Team ${teamId}`, facilitatorUserId],
+      );
+      await db.query(
+        `INSERT INTO team_memberships (team_id, user_id, role) VALUES ($1, $2, 'participant')`,
+        [teamId, participantUserId],
+      );
+      await db.query(
+        `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token)
+         VALUES ($1, $2, $3, 'active', $4)`,
+        [sessionId, teamId, facilitatorUserId, `jtok-${sessionId.slice(0, 8)}`],
+      );
+      await db.query(
+        `INSERT INTO session_participants (session_id, user_id) VALUES ($1, $2)`,
+        [sessionId, participantUserId],
+      );
+
+      const registry = new ConnectionRegistry();
+      const participantReceived: string[] = [];
+      const facilitatorReceived: string[] = [];
+      const participantSocket = { readyState: 1, send: (data: string) => participantReceived.push(data) };
+      const facilitatorSocket = { readyState: 1, send: (data: string) => facilitatorReceived.push(data) };
+      registry.register("session", sessionId, {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double for a `ws` socket
+        socket: participantSocket as any,
+        userId: participantUserId,
+        sessionCreatedAt: Date.now(),
+        fastifySessionId: "fastify-sess-participant",
+        subscriberPath: "participant",
+      });
+      registry.register("session", sessionId, {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double for a `ws` socket
+        socket: facilitatorSocket as any,
+        userId: facilitatorUserId,
+        sessionCreatedAt: Date.now(),
+        fastifySessionId: "fastify-sess-facilitator",
+        subscriberPath: "facilitator",
+      });
+
+      subscriber = createWsSubscriber(noopLogger as Parameters<typeof createWsSubscriber>[0]);
+      attachWsEventDispatcher(
+        subscriber,
+        noopLogger as Parameters<typeof attachWsEventDispatcher>[1],
+        registry,
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      await publishFacilitatorConnectionStatus(sessionId, { connected: false });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(participantReceived).toHaveLength(1);
+      expect(JSON.parse(participantReceived[0]!)).toEqual({
+        eventType: "facilitator_connection_status",
+        payload: { connected: false },
+      });
+      // The facilitator's own connection never receives its own status back.
+      expect(facilitatorReceived).toHaveLength(0);
+    } finally {
+      await db.query(`DELETE FROM session_participants WHERE session_id = $1`, [sessionId]);
+      await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
+      await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [teamId]);
+      await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
+      await db.query(`DELETE FROM users WHERE id IN ($1, $2)`, [facilitatorUserId, participantUserId]);
+      await subscriber?.quit().catch(() => undefined);
+    }
+  }, 15000);
 });
