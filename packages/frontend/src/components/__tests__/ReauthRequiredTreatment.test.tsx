@@ -19,6 +19,27 @@ describe("ReauthRequiredTreatment — no countdown or numeric grace-period value
   });
 });
 
+describe("ReauthRequiredTreatment — no animation, transition, or elapsed-time-tied duration (design.md Decision D3, tasks.md task 1.2)", () => {
+  it("never contains animation, transition, @keyframes, or a duration property anywhere in its rendered styling", () => {
+    const { container } = render(<ReauthRequiredTreatment role="participant" />);
+    // Standing, CI-enforced check replacing a one-time manual grep, so a
+    // later unrelated change (a hover effect, an attention pulse) can't
+    // silently reintroduce a countdown-surrogate animation. Scoped to
+    // container.innerHTML because the register's styling lives entirely in
+    // the component's inline `style` object today, which React serializes
+    // into the DOM's `style` attribute — the same visibility the
+    // digit-pattern check above relies on. If styling ever moves to an
+    // external stylesheet or CSS Module, this check must be extended to
+    // inspect that file directly, since innerHTML has no visibility into
+    // rules defined there (design.md Decision D3).
+    const html = container.innerHTML;
+    expect(html).not.toMatch(/animation/i);
+    expect(html).not.toMatch(/transition/i);
+    expect(html).not.toMatch(/@keyframes/i);
+    expect(html).not.toMatch(/duration/i);
+  });
+});
+
 describe("ReauthRequiredTreatment — leaving-and-returning statement (spec.md, tasks.md task 3.5)", () => {
   it("states that continuing requires leaving and returning to the page", () => {
     const { container } = render(<ReauthRequiredTreatment role="participant" />);

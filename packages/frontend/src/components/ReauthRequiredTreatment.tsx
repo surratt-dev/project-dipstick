@@ -31,15 +31,16 @@
 // (tasks.md task 4.3) — this stops short of a full modal by construction,
 // it is a plain <div role="alert">.
 //
-// STYLING IS A PLACEHOLDER (tasks.md task 4.4): the border below is an
-// intentionally distinct-but-placeholder visual register, sufficient to
-// satisfy "visually distinct register" trivially. The final visual register
-// (color, weight, icon) is gated on Priya Nair's mock sign-off (tasks.md
-// Group 6) and is not implemented here.
+// STYLING IS SIGNED OFF. The visual register below (amber/warning color,
+// 2px border, closed-lock icon) is the real, committed register — not a
+// placeholder. Signed off, clean, by reauth-required-copy-and-visual-
+// signoff/mock-signoff.md (#140, "Signed off").
 //
-// COPY IS NOT FINAL. Pending Priya Nair's sign-off against actual layout
-// (design.md Decision D4, tasks.md task 3.1) — see the gate language in
-// tasks.md Group 6. Do not treat this wording as implementation-ready.
+// COPY IS SIGNED OFF. The text in REAUTH_REQUIRED_TEXT_BASE is signed off
+// by reauth-required-copy-and-visual-signoff/copy-layout-signoff.md (#141,
+// "Signed off with conditions" — the stated condition, rewording this
+// clause to lead with the action verb, was implemented and verified per
+// that artifact's §6a; treat as a clean pass per its own terms).
 //
 // Vote-loss sentence (design.md Decision D5, tasks.md tasks 1.1/3.6, narrowed
 // to the participant role only by session-timeout-continuity's Decision 4):
@@ -64,7 +65,7 @@
 // ---------------------------------------------------------------------------
 
 const REAUTH_REQUIRED_TEXT_BASE =
-  "Your session needs to be renewed. Continuing will take you to log in again — you'll leave this page and return to it once you're signed back in.";
+  "Your session needs to be renewed. Log in again to continue — you'll leave this page and return to it once you're signed back in.";
 
 // facilitators never vote (BRD.md §3's ritual narrative; entities-and-
 // relationships.md's Facilitator relationship list has no "casts vote"
@@ -86,9 +87,31 @@ const VOTE_LOSS_SENTENCE = " Any vote you haven't submitted yet will be lost.";
 // openspec/specs/vote-compose-recovery/spec.md's forward-pointing note).
 const PARTICIPANT_VOTE_COMPOSE_UI_WIRES_VOTE_DRAFT = false;
 
+// Visual register (tasks.md task 1.1, design.md Decision D2): amber/warning
+// direction, not red/error — reuses the existing amber precedent
+// (MemberManagement.tsx's zero-participant warning: #fff3e0 background /
+// #ffb74d border) rather than inventing new color values. Border weight is
+// 2px (kept from the prior placeholder's weight, and heavier than that
+// precedent's 1px) since this state is a forced, non-self-resolving
+// disconnect (role="alert"), not a contextual confirmation dialog.
 const REAUTH_REQUIRED_STYLE = {
-  border: "2px solid currentColor",
+  display: "flex",
+  alignItems: "flex-start",
+  gap: "0.75rem",
+  backgroundColor: "#fff3e0",
+  border: "2px solid #ffb74d",
+  borderRadius: "4px",
   padding: "0.75rem 1rem",
+};
+
+// Icon color matches the border accent above, applied via CSS `color` so the
+// inline SVG's `currentColor` fill/stroke inherit it (design.md D2: prefer
+// inline SVG with fill="currentColor" over a Unicode glyph, which can force
+// color-emoji presentation in some fonts and fight the applied color).
+const REAUTH_REQUIRED_ICON_STYLE = {
+  flexShrink: 0,
+  marginTop: "0.125rem",
+  color: "#ffb74d",
 };
 
 export interface ReauthRequiredTreatmentProps {
@@ -118,17 +141,46 @@ export function ReauthRequiredTreatment({ returnTo, role }: ReauthRequiredTreatm
 
   return (
     <div role="alert" style={REAUTH_REQUIRED_STYLE}>
-      <p>{text}</p>
-      <button
-        type="button"
-        onClick={() => {
-          window.location.href = returnTo
-            ? `/auth/login?returnTo=${encodeURIComponent(returnTo)}`
-            : "/auth/login";
-        }}
+      {/*
+        Closed-lock glyph, from design.md D2's starting allow-list — reads as
+        "your session is locked, sign in again," not as a duration or
+        countdown. Purely decorative: aria-hidden and no accessible name
+        (no <title>, aria-label, or title attribute), which also sidesteps
+        the digit-pattern test's innerHTML/attribute scan by construction —
+        there is no accessible-name text for a digit+time-unit pattern to
+        appear in.
+      */}
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden="true"
+        focusable="false"
+        style={REAUTH_REQUIRED_ICON_STYLE}
       >
-        Log in again
-      </button>
+        <path
+          d="M7 10V7a5 5 0 0 1 10 0v3"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+        <rect x="5" y="10" width="14" height="11" rx="2" fill="currentColor" />
+      </svg>
+      <div>
+        <p style={{ margin: 0 }}>{text}</p>
+        <button
+          type="button"
+          style={{ marginTop: "0.5rem" }}
+          onClick={() => {
+            window.location.href = returnTo
+              ? `/auth/login?returnTo=${encodeURIComponent(returnTo)}`
+              : "/auth/login";
+          }}
+        >
+          Log in again
+        </button>
+      </div>
     </div>
   );
 }
