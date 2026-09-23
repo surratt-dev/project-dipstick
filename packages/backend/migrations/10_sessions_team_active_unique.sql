@@ -15,10 +15,20 @@
 --
 -- Self-enforcing migration guard: rather than a manual pre-check an operator
 -- is expected to run before this migration, the guard lives in the migration
--- file itself. node-pg-migrate runs each .sql migration inside its own
--- transaction by default (this migration needs no CONCURRENTLY, so that
--- default holds), so a violation aborts the whole migration transaction and
--- fails the deploy loudly.
+-- file itself. This relies on each .sql migration file running in its own
+-- transaction, which is NOT node-pg-migrate's default: by default it wraps
+-- ALL pending migrations for a run into one single transaction
+-- (--single-transaction=true). packages/backend/package.json's db:migrate
+-- script passes --no-single-transaction specifically so each file commits
+-- independently -- required here because migration 9 adds 'draft' to the
+-- session_status enum, and Postgres forbids using a newly-added enum value
+-- in the same transaction it was added in (error 55P04, "unsafe use of new
+-- value ... New enum values must be committed before they can be used").
+-- On a fresh database, migrations 9 and 10 would otherwise run back-to-back
+-- in the same batch transaction and this migration's own guard query (which
+-- compares status to 'draft') would fail to even execute. Do not remove
+-- --no-single-transaction from db:migrate while this migration's guard
+-- references 'draft'.
 --
 -- Manual verification (tasks.md task 1.3 -- no prior precedent in this
 -- codebase for automated migration tests, so this is documented here
@@ -32,7 +42,11 @@
 -- back. This proves the guard -- not just the index -- is what closes the
 -- gap: an operator who reruns this migration file against a database with
 -- pre-existing duplicates gets a loud failure before CREATE UNIQUE INDEX is
--- ever reached, not a silent index-creation failure.
+-- ever reached, not a silent index-creation failure. Also re-verified against
+-- a genuinely fresh database (migrations 1-10 from empty, matching CI's
+-- Integration Tests job) after adding --no-single-transaction: migration
+-- completes cleanly, and the guard above still fires correctly when re-run
+-- manually against duplicate rows.
 
 DO $$
 BEGIN
