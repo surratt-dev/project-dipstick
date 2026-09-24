@@ -1,12 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { randomBytes } from "node:crypto";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { withAuditTransaction } from "../auth/audit-write-transaction.js";
+import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
 import type { SessionData } from "../auth/session-store.js";
-import type { JoinLink } from "@dipstick/shared";
-
-const DEFAULT_EXPIRY_DAYS = 7;
 
 export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/teams/:teamId/join-links
@@ -62,72 +59,22 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const token = randomBytes(32).toString("base64url");
-    const expiresAt = new Date(
-      Date.now() + DEFAULT_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
-    );
-
-    // auth-events-audit-log-coverage, design.md Decision D2 (transactional
-    // group): the join_links INSERT and its join.link_created audit_log row
-    // run in one transaction via withAuditTransaction -- a failed audit
-    // INSERT rolls back the join_links row too (Decision D3). actor_global_role
-    // comes from the already-resolved userRole/memberRole check above (no
-    // additional lookup); team_id comes from the route's own :teamId param.
-    const result = await withAuditTransaction(
-      (client) =>
-        client.query(
-          `INSERT INTO join_links (team_id, token, created_by, expires_at)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, team_id, token, created_at, expires_at`,
-          [teamId, token, session.userId, expiresAt.toISOString()],
-        ),
-      async (client, insertResult) => {
-        const insertedRow = insertResult.rows[0] as { id: string; expires_at: Date };
-        await client.query(
-          `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
-           VALUES ($1, $2, $3, 'join.link_created', $4, $5)`,
-          [
-            session.userId,
-            // actor_global_role is the actor's users.global_role value,
-            // already resolved above (userRole) -- memberRole is a
-            // team-scoped role, not a global one, and is not conflated here.
-            userRole,
-            request.ip,
-            teamId,
-            JSON.stringify({
-              linkId: insertedRow.id,
-              expiresAt: insertedRow.expires_at.toISOString(),
-            }),
-          ],
-        );
-      },
-    );
-
-    const row = result.rows[0] as {
-      id: string;
-      team_id: string;
-      token: string;
-      created_at: Date;
-      expires_at: Date;
-    };
-
-    // Engineer review Finding 3: fires only after withAuditTransaction above
-    // has already committed successfully — not at the former source
-    // position immediately after the join_links INSERT resolved.
-    emitAuditEvent(request.log, "join.link_created", {
-      userId: session.userId,
+    // join-link-redemption-wiring, design.md Decision 2: the full creation
+    // sequence (token/expiry generation, the join_links
+    // INSERT-plus-audit-transaction, and the post-commit emitAuditEvent
+    // call) is shared with get-or-create's "no active row" branch
+    // (facilitator-sessions.ts) via this one function, rather than a
+    // second, independently-written implementation. actor_global_role comes
+    // from the already-resolved userRole check above (no additional
+    // lookup); memberRole is a team-scoped role, not a global one, and is
+    // not conflated here.
+    const joinLink = await createJoinLink({
       teamId,
-      linkId: row.id,
-      expiresAt: row.expires_at.toISOString(),
+      createdByUserId: session.userId,
+      actorGlobalRole: userRole,
+      actorIp: request.ip,
+      logger: request.log,
     });
-
-    const joinLink: JoinLink = {
-      id: row.id,
-      teamId: row.team_id,
-      token: row.token,
-      createdAt: row.created_at.toISOString(),
-      expiresAt: row.expires_at.toISOString(),
-    };
 
     return reply.code(201).send(joinLink);
   });
@@ -139,9 +86,16 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
     const { token } = request.params;
     const session = request.session as unknown as SessionData;
 
-    // Validate token
+    // Validate token. join-link-redemption-wiring, design.md Decision 2's
+    // addendum: is_active is computed from the same JOIN_LINK_ACTIVE_SQL
+    // constant get-or-create's SELECT uses (facilitator-sessions.ts) --
+    // one shared definition of "active," not two independently-maintained
+    // copies. The revoked_at / expires_at columns are still selected
+    // separately so the rejection branch below can report *which* reason
+    // applies -- only the pass/fail gate itself is unified.
     const linkResult = await db.query(
-      `SELECT id, team_id, expires_at, revoked_at FROM join_links WHERE token = $1`,
+      `SELECT id, team_id, expires_at, revoked_at, (${JOIN_LINK_ACTIVE_SQL}) AS is_active
+       FROM join_links WHERE token = $1`,
       [token],
     );
 
@@ -162,22 +116,15 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
       team_id: string;
       expires_at: Date;
       revoked_at: Date | null;
+      is_active: boolean;
     };
 
-    if (link.revoked_at) {
+    if (!link.is_active) {
+      const reason = link.revoked_at ? "revoked" : "expired";
       emitAuditEvent(request.log, "join.link_rejected", {
         sourceIp: request.ip,
         linkId: link.id,
-        reason: "revoked",
-      });
-      return reply.redirect("/join-error?joinError=expired");
-    }
-
-    if (new Date(link.expires_at) < new Date()) {
-      emitAuditEvent(request.log, "join.link_rejected", {
-        sourceIp: request.ip,
-        linkId: link.id,
-        reason: "expired",
+        reason,
       });
       return reply.redirect("/join-error?joinError=expired");
     }

@@ -151,9 +151,18 @@ describe("8.1: a session_expired 401 on advance guarantees the room did not open
       destroy: vi.fn(),
       touch: vi.fn(),
     });
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{ id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "draft", join_token: "tok" }],
-    });
+    // join-link-redemption-wiring, tasks.md Task 2.5: this handler's
+    // joinToken is now sourced via get-or-create (a second db.query call,
+    // against join_links), not the sessions.join_token column -- staging an
+    // active join_links row here keeps this test on the reuse path so it
+    // continues to actually exercise get-or-create, rather than silently
+    // falling through to this file's default `{ rows: [] }` mock (which
+    // would drive the miss branch and its own actor_global_role lookup).
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "draft" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "tok" }] });
 
     const getRes = await freshApp.inject({
       method: "GET",

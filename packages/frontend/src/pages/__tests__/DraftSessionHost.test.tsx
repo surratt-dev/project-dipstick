@@ -47,14 +47,21 @@ const draftState: FacilitatorSessionStateResponse = {
 describe("DraftSessionHost", () => {
   // task 7.7 / 7.8: same view whether reached via navigation state or a bare
   // direct hit / refresh (no location.state at all here).
-  it("7.7/7.8: renders the draft control view with a non-joinable join link, sourced from facilitator-state alone", async () => {
+  // join-link-redemption-wiring, tasks.md Task 3.4: the join link is built
+  // from the backend's actual registered redemption route (/api/join/:token,
+  // not /join/:token), and the badge no longer claims the link is inert.
+  it("7.7/7.8: renders the draft control view with a redeemable join link, sourced from facilitator-state alone", async () => {
     mockFetchSequence({ jsonBody: draftState });
 
     renderHost();
 
     await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
-    expect(screen.getByTestId("draft-join-link-not-joinable").textContent).toContain("tok12345");
-    expect(screen.getByTestId("draft-join-link-badge").textContent).toMatch(/not yet joinable/i);
+    const joinLinkText = screen.getByTestId("draft-join-link-not-joinable").textContent;
+    expect(joinLinkText).toContain(`${window.location.origin}/api/join/tok12345`);
+    expect(screen.getByTestId("draft-join-link-badge").textContent).toMatch(
+      /this link works already.*won't see a waiting screen yet/i,
+    );
+    expect(screen.getByTestId("draft-join-link-badge").textContent).not.toMatch(/not yet joinable/i);
     expect(screen.queryByTestId("session-creation-picker")).not.toBeInTheDocument();
   });
 

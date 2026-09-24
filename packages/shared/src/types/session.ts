@@ -16,7 +16,6 @@ export interface Session {
   teamId: string;
   facilitatorId: string;
   status: SessionStatus;
-  joinToken: string;
   isFirstSession: boolean;
   sessionNumber: number;
   currentTopicId: string | null;

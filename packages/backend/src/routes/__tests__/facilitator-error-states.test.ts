@@ -502,14 +502,16 @@ describe("Task 10.3 / 10.6: Error State 3 — Session status transition during l
   it("returns null bannerState when session is in normal active state (no unexpected transition)", async () => {
     // Session is in 'active' state — no banner needed.
     // Facilitator is in the normal live facilitation flow.
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{
-        id: "sess-1",
-        team_id: "team-1",
-        facilitator_id: "facilitator-1",
-        status: "active",
-      }],
-    });
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "sess-1",
+          team_id: "team-1",
+          facilitator_id: "facilitator-1",
+          status: "active",
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildFacilitatorApp("facilitator-1");
     const res = await app.inject({
@@ -534,14 +536,16 @@ describe("Task 10.3 / 10.6: Error State 3 — Session status transition during l
   it("returns non-blocking banner state when session has transitioned to wrap_up", async () => {
     // Session unexpectedly moved to 'wrap_up' while the facilitator was mid-flow.
     // Response includes a banner (NOT a modal) with the current state and the action.
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{
-        id: "sess-1",
-        team_id: "team-1",
-        facilitator_id: "facilitator-1",
-        status: "wrap_up",
-      }],
-    });
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "sess-1",
+          team_id: "team-1",
+          facilitator_id: "facilitator-1",
+          status: "wrap_up",
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildFacilitatorApp("facilitator-1");
     const res = await app.inject({
@@ -587,14 +591,16 @@ describe("Task 10.3 / 10.6: Error State 3 — Session status transition during l
   });
 
   it("returns non-blocking banner state when session has transitioned to complete", async () => {
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{
-        id: "sess-1",
-        team_id: "team-1",
-        facilitator_id: "facilitator-1",
-        status: "complete",
-      }],
-    });
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "sess-1",
+          team_id: "team-1",
+          facilitator_id: "facilitator-1",
+          status: "complete",
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildFacilitatorApp("facilitator-1");
     const res = await app.inject({
@@ -634,14 +640,16 @@ describe("Task 10.3 / 10.6: Error State 3 — Session status transition during l
     // Spec: "MUST NOT display: A modal that blocks the screen or hides the session view."
     // The backend enforces this by setting displayType: 'banner' in the response.
     // Frontend implementations MUST read this field and render a persistent banner.
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{
-        id: "sess-1",
-        team_id: "team-1",
-        facilitator_id: "facilitator-1",
-        status: "abandoned",
-      }],
-    });
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "sess-1",
+          team_id: "team-1",
+          facilitator_id: "facilitator-1",
+          status: "abandoned",
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildFacilitatorApp("facilitator-1");
     const res = await app.inject({

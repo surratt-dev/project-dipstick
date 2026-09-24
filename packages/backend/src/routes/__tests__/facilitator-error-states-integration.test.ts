@@ -275,6 +275,11 @@ describe.skipIf(!infraAvailable)("facilitator error states — real Postgres/Red
     }
     for (const teamId of fx.teamIds) {
       await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [teamId]);
+      // join-link-redemption-wiring: GET .../facilitator-state now sources
+      // joinToken via get-or-create, which creates a real join_links row on
+      // a miss -- FK-referencing this team, so it must be cleaned up before
+      // the team itself is deleted.
+      await db.query(`DELETE FROM join_links WHERE team_id = $1`, [teamId]);
       await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
     }
     if (fx.userIds.length > 0) {
