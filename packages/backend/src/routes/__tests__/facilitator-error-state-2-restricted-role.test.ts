@@ -184,9 +184,9 @@ describe.skipIf(!infraAvailable)(
           [topicId, teamId],
         );
         await fixturePool.query(
-          `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token, current_topic_id)
-           VALUES ($1, $2, $3, 'active', $4, $5)`,
-          [sessionId, teamId, facilitatorId, `jtok-${sessionId.slice(0, 8)}`, topicId],
+          `INSERT INTO sessions (id, team_id, facilitator_id, status, current_topic_id)
+           VALUES ($1, $2, $3, 'active', $4)`,
+          [sessionId, teamId, facilitatorId, topicId],
         );
         await fixturePool.query(
           `INSERT INTO session_topics (session_id, topic_id, display_order, topic_name, topic_prompt, vote_type, status)

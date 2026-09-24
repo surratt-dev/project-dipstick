@@ -212,9 +212,9 @@ describe.skipIf(!infraAvailable)("facilitator error states — real Postgres/Red
     currentTopicId: string | null = null,
   ): Promise<void> {
     await db.query(
-      `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token, current_topic_id)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [id, teamId, facilitatorId, status, `jtok-${id.slice(0, 8)}`, currentTopicId],
+      `INSERT INTO sessions (id, team_id, facilitator_id, status, current_topic_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [id, teamId, facilitatorId, status, currentTopicId],
     );
   }
 

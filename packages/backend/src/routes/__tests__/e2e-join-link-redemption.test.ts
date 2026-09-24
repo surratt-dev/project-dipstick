@@ -261,54 +261,30 @@ describe.skipIf(!dbUp)("join-link-redemption-wiring — real Postgres end-to-end
   // demonstration: GET /api/join/:token has always required a real
   // join_links row -- this was true before this change too, so this test
   // would also pass against pre-fix backend code. It documents, concretely,
-  // that the dead sessions.join_token column was never a valid redemption
-  // credential, which is the reason get-or-create (exercised in the first
-  // test above) exists at all.
-  it("sessions.join_token (the dead, session-scoped column) does not resolve through the real redemption route", async () => {
+  // that a session-scoped-looking token (the shape the old, dead
+  // sessions.join_token column used -- an 8-character hex string, not a
+  // join_links row's 32-byte base64url token) is not a valid redemption
+  // credential.
+  //
+  // This test previously simulated the pre-fix state directly, by
+  // INSERTing into sessions.join_token. Now that Migration B
+  // (14_sessions_drop_join_token.sql) has run against this same database,
+  // that column no longer exists at all -- the strongest possible
+  // confirmation that it is gone, not merely unreferenced -- so that
+  // INSERT is no longer representable and this test instead confirms the
+  // same claim (a token not backed by a real join_links row is rejected)
+  // without depending on the dropped column's continued existence.
+  it("a session-scoped-looking token with no backing join_links row does not resolve through the real redemption route", async () => {
     const facilitatorId = "aaaaaaaa-0000-0000-0000-000000000004";
-    const teamId = "bbbbbbbb-0000-0000-0000-000000000003";
-    const sessionId = "cccccccc-0000-0000-0000-000000000003";
-    const deadSessionScopedToken = "deadbeefdeadbeef";
-    const { db } = mods;
+    const deadSessionScopedLookingToken = "deadbeef";
 
-    try {
-      await db.query(
-        `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
-         VALUES ($1, $2, 'test-issuer', 'E2E Facilitator 3', $3, 'facilitator')`,
-        [facilitatorId, `sub-${facilitatorId}`, `${facilitatorId}@example.com`],
-      );
-      await db.query(`INSERT INTO teams (id, name, created_by_user_id) VALUES ($1, $2, $3)`, [
-        teamId,
-        "Integration Test Team (join-link-redemption-wiring, pre-fix token check)",
-        facilitatorId,
-      ]);
-      // The original bug: sessions.join_token was populated with a
-      // session-scoped value that no route ever validated. Simulating that
-      // exact pre-fix state directly (Migration A left the column nullable
-      // and writable, so this INSERT is still valid even though production
-      // code no longer populates it) and confirming the real redemption
-      // route rejects it -- proving get-or-create's real join_links-sourced
-      // token (exercised in the 5.1 test above) is what makes redemption
-      // actually work, not this column.
-      await db.query(
-        `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token, is_first_session, session_number)
-         VALUES ($1, $2, $3, 'draft', $4, true, 1)`,
-        [sessionId, teamId, facilitatorId, deadSessionScopedToken],
-      );
+    const joinLinkApp = await buildApp(mods.joinLinkRoutes, facilitatorId);
+    const res = await joinLinkApp.inject({
+      method: "GET",
+      url: buildJoinLinkPath(deadSessionScopedLookingToken),
+    });
 
-      const joinLinkApp = await buildApp(mods.joinLinkRoutes, facilitatorId);
-      const res = await joinLinkApp.inject({
-        method: "GET",
-        url: buildJoinLinkPath(deadSessionScopedToken),
-      });
-
-      expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe("/join-error?joinError=invalid");
-    } finally {
-      await db.query(`DELETE FROM audit_log WHERE team_id = $1`, [teamId]);
-      await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
-      await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
-      await db.query(`DELETE FROM users WHERE id = $1`, [facilitatorId]);
-    }
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe("/join-error?joinError=invalid");
   });
 });

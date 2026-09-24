@@ -650,14 +650,19 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(resB.json().existingSessionId).toBe("session-winner");
   });
 
-  // task 2.18: a 23505 on an unrelated constraint must not be mistaken for the 409 case
+  // task 2.18: a 23505 on an unrelated constraint must not be mistaken for the 409 case.
+  // join-link-redemption-wiring, task 4.11: sessions_join_token_unique no
+  // longer exists after Migration B (the column and its constraint are
+  // dropped) -- teams_name_unique is a real, still-existing constraint
+  // unrelated to sessions_team_active_unique, serving the same "some other
+  // 23505" role this test exists to guard against.
   it("2.18: a 23505 unique-violation on a different constraint propagates as an unhandled 500, not a false-positive 409", async () => {
     mockActorQuery("facilitator", false);
     mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
 
     const otherViolation = Object.assign(new Error("duplicate key"), {
       code: "23505",
-      constraint: "sessions_join_token_unique",
+      constraint: "teams_name_unique",
     });
     Object.setPrototypeOf(otherViolation, DatabaseErrorProto);
 
