@@ -376,4 +376,73 @@ describe("resolveOrCreateAccount", () => {
       expect(upsertSql).toContain("global_role");
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // auth-events-audit-log-coverage, design.md Decision D4/D7
+  // ---------------------------------------------------------------------------
+  describe("previousGlobalRole / optional client parameter", () => {
+    it("previousGlobalRole is null for a brand-new user", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [makeUserRow({ is_new_user: true, previous_global_role: null } as never)],
+      });
+
+      const result = await resolveOrCreateAccount({
+        sub: "sub-new",
+        iss: "https://idp.example.com",
+      });
+
+      expect(result.isNewUser).toBe(true);
+      expect(result.previousGlobalRole).toBeNull();
+    });
+
+    it("previousGlobalRole carries the pre-UPSERT value for a returning user", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          makeUserRow({
+            is_new_user: false,
+            global_role: "engineering_manager",
+            previous_global_role: "engineer",
+          } as never),
+        ],
+      });
+
+      const result = await resolveOrCreateAccount({
+        sub: "sub-123",
+        iss: "https://idp.example.com",
+        role: "engineering_manager",
+      });
+
+      expect(result.isNewUser).toBe(false);
+      expect(result.globalRole).toBe("engineering_manager");
+      expect(result.previousGlobalRole).toBe("engineer");
+    });
+
+    it("the UPSERT statement captures the prior global_role via a CTE", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [makeUserRow({ is_new_user: false, previous_global_role: "engineer" } as never)],
+      });
+
+      await resolveOrCreateAccount({ sub: "sub-123", iss: "https://idp.example.com" });
+
+      const upsertSql = (mockQuery.mock.calls[0][0] as string).toLowerCase();
+      expect(upsertSql).toContain("with prior as");
+      expect(upsertSql).toContain("previous_global_role");
+    });
+
+    it("runs the UPSERT on the provided client instead of the pool when one is passed", async () => {
+      const mockClientQuery = vi.fn().mockResolvedValueOnce({
+        rows: [makeUserRow({ is_new_user: true, previous_global_role: null } as never)],
+      });
+      const mockClient = { query: mockClientQuery } as never;
+
+      await resolveOrCreateAccount(
+        { sub: "sub-123", iss: "https://idp.example.com" },
+        undefined,
+        mockClient,
+      );
+
+      expect(mockClientQuery).toHaveBeenCalledTimes(1);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
 });

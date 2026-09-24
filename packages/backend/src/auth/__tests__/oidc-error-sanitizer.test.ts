@@ -11,7 +11,7 @@ import {
 import { OperationProcessingError } from "oauth4webapi";
 import { ClientError } from "openid-client";
 import { sanitizeOidcError } from "../oidc-error-sanitizer.js";
-import { MissingClaimError } from "../errors.js";
+import { MissingClaimError, AuditWriteError } from "../errors.js";
 
 const CANARY = `CANARY_TOKEN_${crypto.randomUUID()}`;
 
@@ -191,6 +191,30 @@ describe("sanitizeOidcError", () => {
       // err serializer's second pass (D3) -- not something the sanitizer adds. Everything
       // else beyond the case-3 allowlist would be a real leak.
       expect(Object.keys(out).sort()).toEqual(["claim", "errorClass", "message", "stack", "type"].sort());
+    });
+  });
+
+  // auth-events-audit-log-coverage, design.md Decision D7.
+  describe("AuditWriteError", () => {
+    it("preserves errorClass/message/stack/causeClass unredacted, mirroring MissingClaimError's treatment", () => {
+      const err = new AuditWriteError(new Error("connection reset"));
+
+      const { parsed } = logAndCapture(err, noopLogger());
+      const out = parsed.err as Record<string, unknown>;
+
+      expect(out.errorClass).toBe("AuditWriteError");
+      expect(out.causeClass).toBe("Error");
+      expect(typeof out.message).toBe("string");
+      expect(typeof out.stack).toBe("string");
+      expect(Object.keys(out).sort()).toEqual(["causeClass", "errorClass", "message", "stack", "type"].sort());
+    });
+
+    it("never carries the underlying database error's own message", () => {
+      const CANARY_DB_MESSAGE = `SELECT * FROM secrets WHERE token='${CANARY}'`;
+      const err = new AuditWriteError(new Error(CANARY_DB_MESSAGE));
+
+      const { raw } = logAndCapture(err, noopLogger());
+      expect(raw).not.toContain(CANARY);
     });
   });
 

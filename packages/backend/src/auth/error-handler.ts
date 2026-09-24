@@ -1,5 +1,5 @@
 import type { AuthErrorCategory } from "@dipstick/shared";
-import { MissingClaimError } from "./errors.js";
+import { MissingClaimError, AuditWriteError } from "./errors.js";
 
 interface AuthErrorResponse {
   category: AuthErrorCategory;
@@ -15,6 +15,21 @@ export function mapAuthError(err: unknown): AuthErrorResponse {
       category: "authentication_failed",
       message:
         "Sign-in failed: the identity provider did not return a valid identity token. Please try signing in again.",
+    };
+  }
+
+  // auth-events-audit-log-coverage, design.md Decision D7: an AuditWriteError
+  // means this application's own database infrastructure failed (the audit
+  // INSERT inside the transactional group's transaction, or acquiring that
+  // transaction's connection) -- not the identity provider and not the
+  // user's credentials. Neither authentication_failed's "sign-in" framing
+  // nor provider_unavailable (which would misname the IdP as the failing
+  // party) fits honestly, so this gets its own category.
+  if (err instanceof AuditWriteError) {
+    return {
+      category: "internal_error",
+      message:
+        "We couldn't finish signing you in due to a temporary internal problem. Please try again in a few moments. If this continues, contact your IT administrator.",
     };
   }
 

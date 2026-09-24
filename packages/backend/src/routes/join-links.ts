@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { randomBytes } from "node:crypto";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
+import { withAuditTransaction } from "../auth/audit-write-transaction.js";
 import type { SessionData } from "../auth/session-store.js";
 import type { JoinLink } from "@dipstick/shared";
 
@@ -66,11 +67,40 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
       Date.now() + DEFAULT_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
     );
 
-    const result = await db.query(
-      `INSERT INTO join_links (team_id, token, created_by, expires_at)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, team_id, token, created_at, expires_at`,
-      [teamId, token, session.userId, expiresAt.toISOString()],
+    // auth-events-audit-log-coverage, design.md Decision D2 (transactional
+    // group): the join_links INSERT and its join.link_created audit_log row
+    // run in one transaction via withAuditTransaction -- a failed audit
+    // INSERT rolls back the join_links row too (Decision D3). actor_global_role
+    // comes from the already-resolved userRole/memberRole check above (no
+    // additional lookup); team_id comes from the route's own :teamId param.
+    const result = await withAuditTransaction(
+      (client) =>
+        client.query(
+          `INSERT INTO join_links (team_id, token, created_by, expires_at)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, team_id, token, created_at, expires_at`,
+          [teamId, token, session.userId, expiresAt.toISOString()],
+        ),
+      async (client, insertResult) => {
+        const insertedRow = insertResult.rows[0] as { id: string; expires_at: Date };
+        await client.query(
+          `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+           VALUES ($1, $2, $3, 'join.link_created', $4, $5)`,
+          [
+            session.userId,
+            // actor_global_role is the actor's users.global_role value,
+            // already resolved above (userRole) -- memberRole is a
+            // team-scoped role, not a global one, and is not conflated here.
+            userRole,
+            request.ip,
+            teamId,
+            JSON.stringify({
+              linkId: insertedRow.id,
+              expiresAt: insertedRow.expires_at.toISOString(),
+            }),
+          ],
+        );
+      },
     );
 
     const row = result.rows[0] as {
@@ -81,6 +111,9 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
       expires_at: Date;
     };
 
+    // Engineer review Finding 3: fires only after withAuditTransaction above
+    // has already committed successfully — not at the former source
+    // position immediately after the join_links INSERT resolved.
     emitAuditEvent(request.log, "join.link_created", {
       userId: session.userId,
       teamId,
@@ -161,16 +194,54 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
     // "facilitator", "engineering_manager"). Do NOT change this value to
     // 'engineer' — that value does not exist in membership_role and would cause
     // a database constraint error.
-    const insertResult = await db.query(
-      `INSERT INTO team_memberships (user_id, team_id, role)
-       VALUES ($1, $2, 'participant')
-       ON CONFLICT (user_id, team_id) DO NOTHING
-       RETURNING id`,
-      [session.userId, link.team_id],
+    //
+    // auth-events-audit-log-coverage, design.md Decision D5: no global_role
+    // value is in scope anywhere in this handler otherwise (only
+    // session.userId is read). This SELECT runs on the plain pool, BEFORE
+    // withAuditTransaction's db.connect()/BEGIN opens below -- it's a read
+    // with no correctness dependency on the pending team_memberships INSERT,
+    // so there's no reason to hold it on a connection a subsequent rollback
+    // would tear down before the value was ever used.
+    const actorRoleResult = await db.query(
+      `SELECT global_role FROM users WHERE id = $1`,
+      [session.userId],
+    );
+    const actorGlobalRole = (actorRoleResult.rows[0] as { global_role: string } | undefined)
+      ?.global_role;
+
+    // The team_memberships INSERT and its conditional join.link_redeemed
+    // audit_log row run in one transaction (Decision D2/D5) -- a failed
+    // audit INSERT rolls back the membership row too (Decision D3). When
+    // ON CONFLICT suppresses the insert (isAlreadyMember), the auditInsert
+    // closure no-ops and the transaction still commits, matching the
+    // existing structured-log gating exactly.
+    const insertResult = await withAuditTransaction(
+      (client) =>
+        client.query(
+          `INSERT INTO team_memberships (user_id, team_id, role)
+           VALUES ($1, $2, 'participant')
+           ON CONFLICT (user_id, team_id) DO NOTHING
+           RETURNING id`,
+          [session.userId, link.team_id],
+        ),
+      async (client, membershipResult) => {
+        if (membershipResult.rows.length === 0) {
+          return;
+        }
+        await client.query(
+          `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+           VALUES ($1, $2, $3, 'join.link_redeemed', $4, $5)`,
+          [session.userId, actorGlobalRole, request.ip, link.team_id, JSON.stringify({ linkId: link.id })],
+        );
+      },
     );
 
     const isAlreadyMember = insertResult.rows.length === 0;
 
+    // Engineer review Finding 3: fires only after withAuditTransaction above
+    // has already committed successfully, and only when a row was actually
+    // inserted — not at the former source position immediately after the
+    // INSERT resolved.
     if (!isAlreadyMember) {
       emitAuditEvent(request.log, "join.link_redeemed", {
         sourceIp: request.ip,

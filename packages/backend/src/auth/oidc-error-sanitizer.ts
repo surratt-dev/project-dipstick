@@ -6,7 +6,7 @@ import {
   ClientError,
 } from "openid-client";
 import { OperationProcessingError } from "oauth4webapi";
-import { MissingClaimError } from "./errors.js";
+import { MissingClaimError, AuditWriteError } from "./errors.js";
 
 const REDACTED = "[redacted]";
 
@@ -83,6 +83,19 @@ export function sanitizeOidcError(
       message: err.message,
       stack: err.stack,
       claim: err.claim,
+    };
+  }
+
+  // AuditWriteError: auth-events-audit-log-coverage, design.md Decision D7.
+  // message is always a fixed, static string and causeClass never carries
+  // identity-provider- or user-supplied content, so nothing here needs
+  // redaction -- mirrors MissingClaimError's existing treatment above.
+  if (err instanceof AuditWriteError) {
+    return {
+      errorClass: err.constructor.name,
+      message: err.message,
+      stack: err.stack,
+      causeClass: err.causeClass,
     };
   }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { mapAuthError } from "../error-handler.js";
-import { MissingClaimError } from "../errors.js";
+import { MissingClaimError, AuditWriteError } from "../errors.js";
 
 describe("MissingClaimError", () => {
   it("maps to authentication_failed with a generic message", () => {
@@ -21,6 +21,26 @@ describe("MissingClaimError", () => {
   it("maps iss MissingClaimError to authentication_failed", () => {
     const result = mapAuthError(new MissingClaimError("iss"));
     expect(result.category).toBe("authentication_failed");
+  });
+});
+
+// auth-events-audit-log-coverage, design.md Decision D7.
+describe("AuditWriteError", () => {
+  it("maps to internal_error, not authentication_failed", () => {
+    const result = mapAuthError(new AuditWriteError(new Error("connection reset")));
+    expect(result.category).toBe("internal_error");
+  });
+
+  it("does not use authentication_failed's 'sign-in' framing", () => {
+    const result = mapAuthError(new AuditWriteError(new Error("boom")));
+    expect(result.message).toContain("internal problem");
+    expect(result.message).not.toContain("credentials");
+  });
+
+  it("is distinguished from a db.connect() failure the same way (same underlying class)", () => {
+    const insertFailure = mapAuthError(new AuditWriteError(new Error("insert failed")));
+    const connectFailure = mapAuthError(new AuditWriteError(new Error("pool exhausted")));
+    expect(insertFailure).toEqual(connectFailure);
   });
 });
 
