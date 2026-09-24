@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { DraftSessionHost } from "../DraftSessionHost.js";
@@ -166,6 +166,171 @@ describe("DraftSessionHost", () => {
     await waitFor(() => expect(screen.getByTestId("draft-session-host-error")).toBeInTheDocument());
     expect(screen.getByTestId("draft-session-host-error").textContent).toMatch(/facilitator/i);
     expect(screen.queryByTestId("draft-control-view")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// join-link-display-copy — tasks.md §4. Copy button/banner wiring in both
+// draft-control-view and live-readiness-view.
+// ---------------------------------------------------------------------------
+const lobbyState: FacilitatorSessionStateResponse = {
+  sessionId: "sess-1",
+  teamId: "team-1",
+  currentSessionState: "lobby",
+  bannerState: null,
+  joinToken: "tok12345",
+};
+
+function setClipboard(writeText: ((text: string) => Promise<void>) | undefined) {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: writeText ? { writeText } : undefined,
+  });
+}
+
+describe("join-link-display-copy", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    setClipboard(undefined);
+  });
+
+  // 4.1
+  it("4.1: copy button present and functional in draft-status render", async () => {
+    mockFetchSequence({ jsonBody: draftState });
+    setClipboard(() => Promise.resolve());
+
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+
+    expect(screen.getByTestId("draft-join-link-copy-button")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("draft-join-link-copy-button"));
+    await waitFor(() => expect(screen.getByTestId("draft-join-link-copied-banner")).toBeInTheDocument());
+  });
+
+  // 4.2
+  it("4.2: copy button present and functional in lobby-status render", async () => {
+    mockFetchSequence({ jsonBody: lobbyState });
+    setClipboard(() => Promise.resolve());
+
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+
+    expect(screen.getByTestId("live-join-link-copy-button")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("live-join-link-copy-button"));
+    await waitFor(() => expect(screen.getByTestId("live-join-link-copied-banner")).toBeInTheDocument());
+  });
+
+  // 4.3
+  it("4.3: successful copy shows the 'Link copied' banner in both branches", async () => {
+    setClipboard(() => Promise.resolve());
+
+    mockFetchSequence({ jsonBody: draftState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("draft-join-link-copy-button"));
+    await waitFor(() =>
+      expect(screen.getByTestId("draft-join-link-copied-banner").textContent).toBe("Link copied"),
+    );
+    cleanup();
+
+    mockFetchSequence({ jsonBody: lobbyState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("live-join-link-copy-button"));
+    await waitFor(() =>
+      expect(screen.getByTestId("live-join-link-copied-banner").textContent).toBe("Link copied"),
+    );
+  });
+
+  // 4.4
+  it("4.4: navigator.clipboard undefined shows selectable text and never shows the confirmation banner, in both branches", async () => {
+    setClipboard(undefined);
+
+    mockFetchSequence({ jsonBody: draftState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("draft-join-link-copy-button"));
+    expect(screen.queryByTestId("draft-join-link-copied-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("draft-join-link")).toBeInTheDocument();
+    cleanup();
+
+    mockFetchSequence({ jsonBody: lobbyState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("live-join-link-copy-button"));
+    expect(screen.queryByTestId("live-join-link-copied-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("live-join-link")).toBeInTheDocument();
+  });
+
+  // 4.5
+  it("4.5: navigator.clipboard.writeText rejecting shows the same fallback as the undefined case, in both branches", async () => {
+    setClipboard(() => Promise.reject(new Error("permission denied")));
+
+    mockFetchSequence({ jsonBody: draftState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("draft-join-link-copy-button"));
+    expect(screen.queryByTestId("draft-join-link-copied-banner")).not.toBeInTheDocument();
+    cleanup();
+
+    mockFetchSequence({ jsonBody: lobbyState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("live-join-link-copy-button"));
+    expect(screen.queryByTestId("live-join-link-copied-banner")).not.toBeInTheDocument();
+  });
+
+  // 4.6
+  it("4.6: the copied URL matches `${origin}${buildJoinLinkPath(joinToken)}` in both branches", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    setClipboard(writeText);
+
+    mockFetchSequence({ jsonBody: draftState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("draft-join-link-copy-button"));
+    expect(writeText).toHaveBeenLastCalledWith(`${window.location.origin}/api/join/tok12345`);
+    cleanup();
+
+    mockFetchSequence({ jsonBody: lobbyState });
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("live-join-link-copy-button"));
+    expect(writeText).toHaveBeenLastCalledWith(`${window.location.origin}/api/join/tok12345`);
+  });
+
+  // 4.7
+  it("4.7: lobby-status link does not render with the draft branch's muted text color or its badge", async () => {
+    mockFetchSequence({ jsonBody: lobbyState });
+
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+
+    const liveLink = screen.getByTestId("live-join-link");
+    expect(liveLink.getAttribute("style") ?? "").not.toMatch(/#9e9e9e/);
+    expect(screen.queryByTestId("draft-join-link-badge")).not.toBeInTheDocument();
+  });
+
+  // 4.8
+  it("4.8: the 'Link copied' banner, already showing in draft status, survives the transition to lobby without resetting to idle", async () => {
+    setClipboard(() => Promise.resolve());
+    mockFetchSequence(
+      { jsonBody: draftState },
+      { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "lobby" } },
+    );
+
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("draft-join-link-copy-button"));
+    await waitFor(() => expect(screen.getByTestId("draft-join-link-copied-banner")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("open-the-room"));
+    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    expect(screen.getByTestId("live-join-link-copied-banner")).toBeInTheDocument();
+    expect(screen.getByTestId("live-join-link-copied-banner").textContent).toBe("Link copied");
   });
 });
 
