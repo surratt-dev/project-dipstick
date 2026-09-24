@@ -96,9 +96,9 @@ describe.skipIf(!dbUp)("action-items — real Postgres round-trip (task 6.3)", (
         userId,
       ]);
       await db.query(
-        `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token)
-         VALUES ($1, $2, $3, 'complete', $4)`,
-        [sessionId, teamId, userId, `jtok-${sessionId.slice(0, 8)}`],
+        `INSERT INTO sessions (id, team_id, facilitator_id, status)
+         VALUES ($1, $2, $3, 'complete')`,
+        [sessionId, teamId, userId],
       );
       await db.query(
         `INSERT INTO action_items (id, team_id, session_id, owner_id, description, status)

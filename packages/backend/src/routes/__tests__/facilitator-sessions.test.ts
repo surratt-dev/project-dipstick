@@ -60,6 +60,7 @@ import {
   facilitatorSessionRoutes,
   recordRevealTriggeredAudit,
   computeStalenessLevel,
+  getOrCreateJoinLink,
 } from "../facilitator-sessions.js";
 import { sessionRoutes } from "../sessions.js";
 
@@ -135,6 +136,132 @@ describe("computeStalenessLevel (design.md Decision 7 — fixed 1/2/3-session ma
     // compile because a second argument became required again, that's this
     // test doing its job.
     expect(computeStalenessLevel.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOrCreateJoinLink (join-link-redemption-wiring, design.md Decisions 1
+// and 3, tasks.md Task 2.4)
+// ---------------------------------------------------------------------------
+describe("getOrCreateJoinLink", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("reuses an existing active link: no new row created, and no join.link_created emission", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ token: "existing-token" }] });
+    const resolveActorGlobalRole = vi.fn();
+
+    const token = await getOrCreateJoinLink({
+      teamId: "team-1",
+      createdByUserId: "user-1",
+      actorIp: "127.0.0.1",
+      logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
+      resolveActorGlobalRole,
+    });
+
+    expect(token).toBe("existing-token");
+    expect(resolveActorGlobalRole).not.toHaveBeenCalled();
+    expect(mockDbConnect).not.toHaveBeenCalled();
+    expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "join.link_created",
+      expect.anything(),
+    );
+  });
+
+  it("the active-row SELECT deterministically prefers the most-recently-created row (ORDER BY created_at DESC LIMIT 1)", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ token: "most-recent-token" }] });
+
+    await getOrCreateJoinLink({
+      teamId: "team-1",
+      createdByUserId: "user-1",
+      actorIp: "127.0.0.1",
+      logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
+      resolveActorGlobalRole: vi.fn(),
+    });
+
+    const activeRowCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("FROM join_links"),
+    );
+    expect(activeRowCall).toBeDefined();
+    expect(activeRowCall![0] as string).toContain("ORDER BY created_at DESC LIMIT 1");
+    expect(activeRowCall![0] as string).toContain("revoked_at IS NULL AND expires_at > NOW()");
+  });
+
+  it("creates a new join_links row via the shared audited helper when no active row exists", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // no active row
+    const resolveActorGlobalRole = vi.fn().mockResolvedValue("facilitator");
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      {
+        rows: [
+          {
+            id: "link-new",
+            team_id: "team-1",
+            token: "new-token",
+            created_at: new Date("2026-01-01"),
+            expires_at: new Date("2026-01-08"),
+          },
+        ],
+      }, // INSERT INTO join_links
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const token = await getOrCreateJoinLink({
+      teamId: "team-1",
+      createdByUserId: "user-1",
+      actorIp: "127.0.0.1",
+      logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
+      resolveActorGlobalRole,
+    });
+
+    expect(token).toBe("new-token");
+    expect(resolveActorGlobalRole).toHaveBeenCalledTimes(1);
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "join.link_created",
+      expect.objectContaining({ teamId: "team-1", linkId: "link-new" }),
+    );
+  });
+
+  it("two concurrent calls that both observe no active row both succeed without a database error", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    const clientA = makeMockClient([
+      { rows: [] },
+      {
+        rows: [
+          { id: "link-a", team_id: "team-1", token: "token-a", created_at: new Date(), expires_at: new Date() },
+        ],
+      },
+    ]);
+    const clientB = makeMockClient([
+      { rows: [] },
+      {
+        rows: [
+          { id: "link-b", team_id: "team-1", token: "token-b", created_at: new Date(), expires_at: new Date() },
+        ],
+      },
+    ]);
+    mockDbConnect.mockResolvedValueOnce(clientA).mockResolvedValueOnce(clientB);
+
+    const [tokenA, tokenB] = await Promise.all([
+      getOrCreateJoinLink({
+        teamId: "team-1",
+        createdByUserId: "user-1",
+        actorIp: "127.0.0.1",
+        logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
+        resolveActorGlobalRole: vi.fn().mockResolvedValue("facilitator"),
+      }),
+      getOrCreateJoinLink({
+        teamId: "team-1",
+        createdByUserId: "user-2",
+        actorIp: "127.0.0.1",
+        logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
+        resolveActorGlobalRole: vi.fn().mockResolvedValue("facilitator"),
+      }),
+    ]);
+
+    expect(tokenA).toBe("token-a");
+    expect(tokenB).toBe("token-b");
   });
 });
 
@@ -251,6 +378,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
       { rows: [] }, // COMMIT
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildApp();
     const res = await app.inject({
@@ -295,7 +423,10 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(actorQueryCall![0] as string).toContain("removed_at IS NULL");
   });
 
-  it("returns 201 with draft status, a joinToken, and writes the draft_created audit row in the same transaction as the insert", async () => {
+  // join-link-redemption-wiring, tasks.md Task 2.2: joinToken is now sourced
+  // via get-or-create from a real join_links row, not the dead
+  // session-scoped value.
+  it("returns 201 with draft status, a joinToken sourced from get-or-create, and writes the draft_created audit row in the same transaction as the insert", async () => {
     mockActorQuery("facilitator", false);
     mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
 
@@ -306,6 +437,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
       { rows: [] }, // COMMIT
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildApp();
     const res = await app.inject({
@@ -318,7 +450,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(body.status).toBe("draft");
     expect(body.sessionId).toBe("session-draft-1");
     expect(body.teamId).toBe("team-1");
-    expect(typeof body.joinToken).toBe("string");
+    expect(body.joinToken).toBe("active-join-token");
 
     // task 2.16: audit insert happens on the same client, between BEGIN/COMMIT
     const calls = client.query.mock.calls.map((c) => c[0] as string);
@@ -334,6 +466,60 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
       "session.draft_created",
       expect.objectContaining({ teamId: "team-1", sessionId: "session-draft-1" }),
     );
+  });
+
+  // join-link-redemption-wiring, tasks.md Task 2.4: parity with
+  // facilitator-state's miss-path lookup test -- POST /draft's get-or-create
+  // call sources actor_global_role from the value already resolved earlier
+  // in this handler (the facilitator check above), issuing no additional
+  // SELECT global_role query, on either the reuse or miss path.
+  it("sources actor_global_role from the already-resolved value on both get-or-create's reuse and miss paths, issuing no additional SELECT global_role query", async () => {
+    mockActorQuery("facilitator", false);
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+
+    const sessionClient = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "session-draft-3" }] }, // INSERT sessions
+      { rows: [] }, // INSERT audit_log (draft_created)
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(sessionClient);
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // get-or-create: no active row (miss path)
+    const joinLinkClient = makeMockClient([
+      { rows: [] }, // BEGIN
+      {
+        rows: [
+          {
+            id: "link-4",
+            team_id: "team-1",
+            token: "new-join-token",
+            created_at: new Date("2026-01-01"),
+            expires_at: new Date("2026-01-08"),
+          },
+        ],
+      }, // INSERT INTO join_links
+    ]);
+    mockDbConnect.mockResolvedValueOnce(joinLinkClient);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/sessions/draft",
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().joinToken).toBe("new-join-token");
+
+    const globalRoleCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("SELECT global_role"),
+    );
+    expect(globalRoleCall).toBeUndefined();
+
+    const auditInsertCall = joinLinkClient.query.mock.calls.find(
+      (c) => typeof c[0] === "string" && c[0].includes("INSERT INTO audit_log"),
+    );
+    expect(auditInsertCall).toBeDefined();
+    expect((auditInsertCall![1] as unknown[])[1]).toBe("facilitator");
   });
 
   // task 2.14: concurrent-session 409
@@ -389,6 +575,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
       { rows: [] }, // COMMIT
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildApp();
     const res = await app.inject({
@@ -423,6 +610,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
       { rows: [] },
     ]);
     mockDbConnect.mockResolvedValueOnce(winnerClient);
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildApp();
     const resA = await app.inject({
@@ -462,14 +650,19 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(resB.json().existingSessionId).toBe("session-winner");
   });
 
-  // task 2.18: a 23505 on an unrelated constraint must not be mistaken for the 409 case
+  // task 2.18: a 23505 on an unrelated constraint must not be mistaken for the 409 case.
+  // join-link-redemption-wiring, task 4.11: sessions_join_token_unique no
+  // longer exists after Migration B (the column and its constraint are
+  // dropped) -- teams_name_unique is a real, still-existing constraint
+  // unrelated to sessions_team_active_unique, serving the same "some other
+  // 23505" role this test exists to guard against.
   it("2.18: a 23505 unique-violation on a different constraint propagates as an unhandled 500, not a false-positive 409", async () => {
     mockActorQuery("facilitator", false);
     mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
 
     const otherViolation = Object.assign(new Error("duplicate key"), {
       code: "23505",
-      constraint: "sessions_join_token_unique",
+      constraint: "teams_name_unique",
     });
     Object.setPrototypeOf(otherViolation, DatabaseErrorProto);
 
@@ -563,7 +756,11 @@ describe("POST /api/v1/teams", () => {
     expect(body.teamId).toBe("new-team-1");
     expect(body.sessionId).toBe("new-session-1");
     expect(body.status).toBe("lobby");
-    expect(typeof body.joinToken).toBe("string");
+    // join-link-redemption-wiring, design.md Decision 1's note, tasks.md
+    // Task 4.2: this endpoint's response no longer carries a joinToken
+    // field at all -- it would otherwise be a fabricated value with
+    // nothing writing it, once join_token stops being generated below.
+    expect(body.joinToken).toBeUndefined();
 
     const calls = client.query.mock.calls.map((c) => c[0] as string);
     expect(calls[0]).toContain("BEGIN");
@@ -571,9 +768,8 @@ describe("POST /api/v1/teams", () => {
     expect(calls[2]).toContain("INSERT INTO topics");
     expect(calls[2]).toContain("is_default = true");
     expect(calls[3]).toContain("INSERT INTO sessions");
-    expect(client.query.mock.calls[3]![1]).toEqual(
-      expect.arrayContaining(["new-team-1", "facilitator-1"]),
-    );
+    expect(calls[3]).not.toContain("join_token");
+    expect(client.query.mock.calls[3]![1]).toEqual(["new-team-1", "facilitator-1"]);
     // is_first_session and session_number are literal true/1 in the SQL text
     // itself (design.md D3), not bound parameters.
     expect(calls[3]).toContain("true, 1");
@@ -2203,18 +2399,22 @@ describe("Grace window behavior (Task 8.9, 8.10) — documented reference", () =
 describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("reflects the mocked session row unchanged and issues no team_memberships query", async () => {
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [
-        {
-          id: "session-1",
-          team_id: "team-1",
-          facilitator_id: "facilitator-1",
-          status: "active",
-          join_token: "join-token-abc",
-        },
-      ],
-    });
+  // join-link-redemption-wiring, tasks.md Task 2.5: joinToken is now sourced
+  // via get-or-create from a real join_links row, not sessions.join_token
+  // (dropped from this handler's SELECT in Task 2.3/4.3).
+  it("reflects the mocked session row unchanged, sources joinToken via get-or-create, and issues no team_memberships query", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: "session-1",
+            team_id: "team-1",
+            facilitator_id: "facilitator-1",
+            status: "active",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }); // get-or-create: reuse active join_links row
 
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
@@ -2228,12 +2428,98 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
     expect(body.teamId).toBe("team-1");
     expect(body.currentSessionState).toBe("active");
     expect(body.bannerState).toBeNull();
-    expect(body.joinToken).toBe("join-token-abc");
+    expect(body.joinToken).toBe("active-join-token");
 
     const teamMembershipsCall = mockDbQuery.mock.calls.find((call) =>
       (call[0] as string).includes("team_memberships"),
     );
     expect(teamMembershipsCall).toBeUndefined();
+  });
+
+  // join-link-redemption-wiring, tasks.md Task 2.3/2.4: the miss-path
+  // actor_global_role SELECT (SELECT global_role FROM users WHERE id = $1)
+  // fires only when get-or-create is about to create a new join_links row,
+  // never on the common reuse path exercised above.
+  it("issues no SELECT global_role query when an active join_links row already exists (reuse path)", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: "session-1",
+            team_id: "team-1",
+            facilitator_id: "facilitator-1",
+            status: "active",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] });
+
+    const app = await buildApp("facilitator-1");
+    await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/team-1/sessions/session-1/facilitator-state",
+    });
+
+    const globalRoleCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("SELECT global_role"),
+    );
+    expect(globalRoleCall).toBeUndefined();
+  });
+
+  // join-link-redemption-wiring, tasks.md Task 2.3/2.4: on a miss, this
+  // handler resolves actor_global_role via a fresh SELECT (no such value is
+  // otherwise in scope here), then invokes the shared createJoinLink helper.
+  it("on a miss, resolves actor_global_role via a fresh SELECT and creates a new join_links row via the shared audited helper", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: "session-1",
+            team_id: "team-1",
+            facilitator_id: "facilitator-1",
+            status: "active",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }) // get-or-create: no active row
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }); // miss-path actor_global_role lookup
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      {
+        rows: [
+          {
+            id: "link-1",
+            team_id: "team-1",
+            token: "new-join-token",
+            created_at: new Date("2026-01-01"),
+            expires_at: new Date("2026-01-08"),
+          },
+        ],
+      }, // INSERT INTO join_links
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/team-1/sessions/session-1/facilitator-state",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().joinToken).toBe("new-join-token");
+
+    const globalRoleCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("SELECT global_role"),
+    );
+    expect(globalRoleCall).toBeDefined();
+    expect((globalRoleCall as unknown[])[1]).toEqual(["facilitator-1"]);
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "join.link_created",
+      expect.objectContaining({ teamId: "team-1", linkId: "link-1" }),
+    );
   });
 });
 

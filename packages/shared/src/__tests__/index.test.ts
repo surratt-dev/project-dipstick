@@ -124,7 +124,6 @@ describe("Session types", () => {
       teamId: "t1",
       facilitatorId: "u1",
       status: "lobby",
-      joinToken: "tok",
       isFirstSession: true,
       sessionNumber: 1,
       currentTopicId: null,

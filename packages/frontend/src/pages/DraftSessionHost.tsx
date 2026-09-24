@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
-import type { FacilitatorSessionStateResponse } from "@dipstick/shared";
+import { buildJoinLinkPath, type FacilitatorSessionStateResponse } from "@dipstick/shared";
 import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
 import { detectSessionExpiry } from "../http/sessionExpiry.js";
 
@@ -180,9 +180,11 @@ export function DraftSessionHost() {
 
       <div style={{ marginTop: "1rem" }}>
         <div style={{ fontSize: "0.875rem", fontWeight: 600, color: "#757575" }}>JOIN LINK</div>
-        <p data-testid="draft-join-link-not-joinable" style={{ color: "#9e9e9e" }}>
-          {`${window.location.origin}/join/${data.joinToken}`}{" "}
-          <span data-testid="draft-join-link-badge">(not yet joinable)</span>
+        <p data-testid="draft-join-link" style={{ color: "#9e9e9e" }}>
+          {`${window.location.origin}${buildJoinLinkPath(data.joinToken)}`}{" "}
+          <span data-testid="draft-join-link-badge">
+            This link works already — anyone who opens it before you open the room won't see a waiting screen yet.
+          </span>
         </p>
       </div>
 

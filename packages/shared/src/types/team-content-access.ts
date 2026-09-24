@@ -216,10 +216,11 @@ export interface FacilitatorSessionStateResponse {
    */
   bannerState: SessionStatusBannerState | null;
   /**
-   * sessions.join_token, for the draft control view's not-yet-joinable join
-   * link (session-creation-existing-team design.md D6). Present regardless
-   * of currentSessionState -- the same fetch backs the host component on
-   * every entry path (create-flow navigation, refresh, bookmark, or the
+   * A real, redeemable join_links token for the session's team, sourced via
+   * get-or-create (join-link-redemption-wiring, design.md Decision 1) --
+   * not sessions.join_token, which has been removed. Present regardless of
+   * currentSessionState -- the same fetch backs the host component on every
+   * entry path (create-flow navigation, refresh, bookmark, or the
    * 409-resume affordance), so this field is always populated rather than
    * only on the draft branch.
    */

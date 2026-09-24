@@ -49,6 +49,21 @@ export interface JoinLink {
   createdAt: string;
 }
 
+/**
+ * The backend's registered join-redemption route path for a given token.
+ * join-link-redemption-wiring: this is the ONE place the "/api/join/:token"
+ * path is written -- both `DraftSessionHost.tsx` (which renders it into the
+ * link a facilitator copies) and this change's end-to-end verification test
+ * (which follows that exact path against a running backend) import this
+ * function rather than each independently hard-coding the path string. Two
+ * independently-typed copies of this path is exactly how the original bug
+ * (a frontend link built against an unregistered "/join/:token" path)
+ * shipped undetected.
+ */
+export function buildJoinLinkPath(token: string): string {
+  return `/api/join/${token}`;
+}
+
 export type AuthErrorCategory =
   | "provider_unavailable"
   | "authentication_failed"

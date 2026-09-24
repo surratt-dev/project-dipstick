@@ -281,7 +281,11 @@ describe("joinLinkRoutes", () => {
       );
     });
 
-    it("should redirect to /join-error?joinError=expired when link is revoked (Task 6.4 / 11.7)", async () => {
+    // Task 2.6: is_active is now a computed column built from the shared
+    // JOIN_LINK_ACTIVE_SQL constant (join-link-creation.ts), gating this
+    // branch; revoked_at/expires_at are still read separately below only to
+    // pick *which* rejection reason to report.
+    it("should redirect to /join-error?joinError=expired when link is revoked (Task 6.4 / 11.7 / 2.6)", async () => {
       mockDbQuery.mockResolvedValueOnce({
         rows: [
           {
@@ -289,6 +293,7 @@ describe("joinLinkRoutes", () => {
             team_id: "team-1",
             expires_at: new Date(Date.now() + 86400000),
             revoked_at: new Date(),
+            is_active: false,
           },
         ],
       });
@@ -302,9 +307,14 @@ describe("joinLinkRoutes", () => {
       expect(res.statusCode).toBe(302);
       expect(res.headers.location).toBe("/join-error?joinError=expired");
       expect(res.headers.location).not.toContain("/auth/error");
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "join.link_rejected",
+        expect.objectContaining({ reason: "revoked" }),
+      );
     });
 
-    it("should redirect to /join-error?joinError=expired when link is expired (Task 6.4 / 11.7)", async () => {
+    it("should redirect to /join-error?joinError=expired when link is expired (Task 6.4 / 11.7 / 2.6)", async () => {
       mockDbQuery.mockResolvedValueOnce({
         rows: [
           {
@@ -312,6 +322,7 @@ describe("joinLinkRoutes", () => {
             team_id: "team-1",
             expires_at: new Date(Date.now() - 86400000), // expired yesterday
             revoked_at: null,
+            is_active: false,
           },
         ],
       });
@@ -325,6 +336,11 @@ describe("joinLinkRoutes", () => {
       expect(res.statusCode).toBe(302);
       expect(res.headers.location).toBe("/join-error?joinError=expired");
       expect(res.headers.location).not.toContain("/auth/error");
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "join.link_rejected",
+        expect.objectContaining({ reason: "expired" }),
+      );
     });
 
     it("should redirect to login when user is not authenticated", async () => {
@@ -335,6 +351,7 @@ describe("joinLinkRoutes", () => {
             team_id: "team-1",
             expires_at: new Date(Date.now() + 86400000),
             revoked_at: null,
+            is_active: true,
           },
         ],
       });
@@ -358,6 +375,7 @@ describe("joinLinkRoutes", () => {
               team_id: "team-1",
               expires_at: new Date(Date.now() + 86400000),
               revoked_at: null,
+              is_active: true,
             },
           ],
         })
@@ -399,6 +417,7 @@ describe("joinLinkRoutes", () => {
               team_id: "team-1",
               expires_at: new Date(Date.now() + 86400000),
               revoked_at: null,
+              is_active: true,
             },
           ],
         })
@@ -422,7 +441,7 @@ describe("joinLinkRoutes", () => {
     it("6.3: actor_global_role comes from a SELECT on the plain pool, using session.userId", async () => {
       mockDbQuery
         .mockResolvedValueOnce({
-          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null }],
+          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null, is_active: true }],
         })
         .mockResolvedValueOnce({ rows: [{ global_role: "engineering_manager" }] })
         .mockResolvedValueOnce({ rows: [] });
@@ -450,7 +469,7 @@ describe("joinLinkRoutes", () => {
     it("6.4: idempotent re-join (ON CONFLICT suppresses the insert) produces no audit row and no structured log", async () => {
       mockDbQuery
         .mockResolvedValueOnce({
-          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null }],
+          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null, is_active: true }],
         })
         .mockResolvedValueOnce({ rows: [{ global_role: "engineer" }] })
         .mockResolvedValueOnce({ rows: [] });
@@ -480,7 +499,7 @@ describe("joinLinkRoutes", () => {
     it("6.5: a failed audit INSERT rolls back the team_memberships insert, and join.link_redeemed never fires", async () => {
       mockDbQuery
         .mockResolvedValueOnce({
-          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null }],
+          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null, is_active: true }],
         })
         .mockResolvedValueOnce({ rows: [{ global_role: "engineer" }] });
       const failingClient = {
@@ -517,7 +536,7 @@ describe("joinLinkRoutes", () => {
     it("6.7: a failed db.connect() surfaces as a plain 500", async () => {
       mockDbQuery
         .mockResolvedValueOnce({
-          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null }],
+          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null, is_active: true }],
         })
         .mockResolvedValueOnce({ rows: [{ global_role: "engineer" }] });
       mockDbConnect.mockRejectedValueOnce(new Error("pool exhausted"));

@@ -212,9 +212,9 @@ describe.skipIf(!infraAvailable)("facilitator error states — real Postgres/Red
     currentTopicId: string | null = null,
   ): Promise<void> {
     await db.query(
-      `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token, current_topic_id)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [id, teamId, facilitatorId, status, `jtok-${id.slice(0, 8)}`, currentTopicId],
+      `INSERT INTO sessions (id, team_id, facilitator_id, status, current_topic_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [id, teamId, facilitatorId, status, currentTopicId],
     );
   }
 
@@ -275,6 +275,11 @@ describe.skipIf(!infraAvailable)("facilitator error states — real Postgres/Red
     }
     for (const teamId of fx.teamIds) {
       await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [teamId]);
+      // join-link-redemption-wiring: GET .../facilitator-state now sources
+      // joinToken via get-or-create, which creates a real join_links row on
+      // a miss -- FK-referencing this team, so it must be cleaned up before
+      // the team itself is deleted.
+      await db.query(`DELETE FROM join_links WHERE team_id = $1`, [teamId]);
       await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
     }
     if (fx.userIds.length > 0) {

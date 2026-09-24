@@ -136,9 +136,9 @@ describe.skipIf(!infraAvailable)("real Redis pub/sub hop — delivery-time revoc
         [teamId, participantUserId],
       );
       await db.query(
-        `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token)
-         VALUES ($1, $2, $3, 'active', $4)`,
-        [sessionId, teamId, facilitatorUserId, `jtok-${sessionId.slice(0, 8)}`],
+        `INSERT INTO sessions (id, team_id, facilitator_id, status)
+         VALUES ($1, $2, $3, 'active')`,
+        [sessionId, teamId, facilitatorUserId],
       );
       await db.query(
         `INSERT INTO session_participants (session_id, user_id) VALUES ($1, $2)`,
@@ -261,9 +261,9 @@ describe.skipIf(!infraAvailable)("real Redis pub/sub hop — delivery-time revoc
         [teamId, participantUserId],
       );
       await db.query(
-        `INSERT INTO sessions (id, team_id, facilitator_id, status, join_token)
-         VALUES ($1, $2, $3, 'active', $4)`,
-        [sessionId, teamId, facilitatorUserId, `jtok-${sessionId.slice(0, 8)}`],
+        `INSERT INTO sessions (id, team_id, facilitator_id, status)
+         VALUES ($1, $2, $3, 'active')`,
+        [sessionId, teamId, facilitatorUserId],
       );
       await db.query(
         `INSERT INTO session_participants (session_id, user_id) VALUES ($1, $2)`,

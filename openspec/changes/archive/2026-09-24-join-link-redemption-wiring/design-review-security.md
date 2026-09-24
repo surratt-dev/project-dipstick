@@ -1,0 +1,74 @@
+# Security Review — `join-link-redemption-wiring`
+
+**Reviewer:** Tomás Ferreira, Senior Application Security Analyst
+**Reviewed:** `design.md`, `proposal.md`, `specs/join-link/spec.md` and `specs/session-creation/spec.md` deltas (as of this review)
+**Scope of this review:** authentication/redemption flows, data access boundaries, audit logging, threat-model impact. I do not have opinions on the ritual, the domain model, or `SessionLobbyPage`'s routing/UX — see Verification Item 4 below for why that boundary still holds here.
+
+This is the follow-up to Finding 1 in `join-link-display-copy`'s security review (`openspec/changes/archive/.../design-review-security.md` on the `join-link-display-copy` branch, since it's not yet archived on this branch): the token `DraftSessionHost.tsx` displayed was built from `sessions.join_token` — "not meaningful," per its own code comment, validated nowhere — at a path (`/join/:token`) no route serves. I flagged that as either a dead value (if vestigial) or "a second, parallel, unaudited, low-entropy bearer-credential scheme" (if someone thought it was live), and asked that it be resolved before implementation, not carried forward as an unstated assumption. This change is that resolution. I re-verified the four items I was asked to check directly against the current design and the code it describes, and found two additional gaps in the process (Findings 1 and 2 below).
+
+---
+
+## Finding 1 (Blocking): `actor_global_role` has no sourcing story at the `facilitator-state` get-or-create call site
+
+The `join-link` spec's "Join link creation and redemption are durably recorded" requirement (`openspec/specs/join-link/spec.md:174-225`) is explicit and enumerates, per call site, where `actor_global_role` comes from — because it is *not* uniformly already in scope. Two of its three enumerated call sites reuse an already-resolved value; the third (`join-links.ts`'s direct-path `GET /api/join/:token`) has to issue a fresh `SELECT global_role FROM users WHERE id = $1` specifically because "no such value is in scope anywhere in the handler."
+
+This change adds a fourth call site to the same audited creation function — get-or-create's "no active row" branch, called from `GET .../facilitator-state` (`design.md` Decision 1, Decision 2; `tasks.md` Task 2.1/2.3) — and neither `design.md`, the `join-link` spec delta, nor `tasks.md` says where `actor_global_role` comes from there.
+
+I checked whether it's already in scope, the way it is at `POST /draft` (which resolves `global_role` earlier in that handler for its own `session.draft_denied_membership_conflict` / `session.draft_created` audit rows — confirmed at `facilitator-sessions.ts:274` and following, so get-or-create's create-branch can just reuse it there, no gap). `GET .../facilitator-state` (`facilitator-sessions.ts:1912-1999`) has no equivalent lookup anywhere in the handler — it checks `sr.facilitator_id !== userSession.userId` and returns. I also checked whether the session object itself carries the value: it doesn't. `auth.ts:642`'s own comment states this plainly — *"the local session carries no globalRole field"* — which is exactly why `executeJoinFlow` had to be given `actorGlobalRole` as a new required parameter rather than reading it off the session, per the existing spec language at line 182.
+
+So: the shared creation helper (Decision 2) presumably requires `actorGlobalRole` as a parameter (matching its existing signature pattern), and the one caller that has it in scope for free (`POST /draft`) will work by construction — but the second caller (`facilitator-state`, which is the specific path Decision 1 added *because* it "self-heals" a link that expires while a facilitator is sitting on the page, i.e., the path most likely to actually hit the create branch in practice) has nothing to pass. Left unresolved, this becomes one of two things at implementation time: a compile error someone fixes ad hoc with whatever's convenient (risking a wrong or placeholder value landing in a spec-governed audit field), or — if the helper's parameter is loosely typed — a silently wrong `actor_global_role` on any `join_links`/`join.link_created` row created via this path. Either way, that's exactly the kind of audit-field integrity question this spec was written to close off by enumeration, and this call site isn't in the enumeration.
+
+**What I want:** an explicit fourth bullet in the `join-link` spec delta (or in the base spec's requirement, since it's the thing being extended) stating how `actor_global_role` is resolved when the shared creation function is invoked from `facilitator-state`'s get-or-create branch — almost certainly a `SELECT global_role FROM users WHERE id = $1` using `userSession.userId`, matching the existing direct-path precedent — plus a task in `tasks.md` §2 calling it out explicitly, the same way Task 1.1 calls out `actor_global_role` resolution as part of what's being extracted.
+
+---
+
+## Finding 2 (Non-blocking, but should be closed before Commit 1 merges): the `sessions.join_token` footprint enumeration misses a test whose mock shape changes in Commit 1, not Migration B
+
+Decision 6's "full footprint," and the five files listed under it, are scoped to *"become invalid SQL... the moment the column is actually dropped."* That framing is correct for those five, but I grepped the whole tree for `join_token` rather than trusting the enumerated list, and found a sixth hit not on it: `packages/backend/src/routes/__tests__/http-session-expiry-no-partial-execution.test.ts:155`:
+
+```
+mockDbQuery.mockResolvedValueOnce({
+  rows: [{ id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "draft", join_token: "tok" }],
+});
+```
+
+This isn't raw SQL, so Decision 6's "invalid SQL" framing correctly excludes it from the Migration B list — but it's a mocked single-row response standing in for `facilitator-state`'s current one-query `SELECT id, team_id, facilitator_id, status, join_token FROM sessions ...` (`facilitator-sessions.ts:1919-1930`), which the design changes to source `joinToken` from get-or-create instead (Task 2.3) — a different query shape (at minimum an added `SELECT` against `join_links`, possibly an `INSERT`+audit transaction on a miss), landing in **Commit 1**, not Migration B. A test that mocks exactly one `db.query` call and asserts the response still reads `currentSessionState: "draft"` after a reauth (this is `#146`'s session-expiry-continuity regression test, i.e., a security-relevant test, not an incidental one) will either fail loudly once get-or-create's second query call has nothing queued for it, or — worse — pass in a way that doesn't actually exercise get-or-create at all, quietly losing coverage on exactly the reauth path Decision 1 was designed to keep working.
+
+Either outcome is fine *if someone is looking for it*; right now nothing in `design.md`, `proposal.md`'s Impact section, or `tasks.md` names this file, so it isn't scheduled to be looked at. I'd add it to Task 2.3 or 2.4's scope explicitly, landing in Commit 1 alongside the other `facilitator-state` changes — it has no dependency on the column being dropped, the same reasoning `design.md` already uses to explain why `DraftSessionHost.test.tsx` belongs in Commit 1 rather than Commit 2.
+
+---
+
+## Verification of the four items I was asked to check
+
+### 1. Get-or-create audit trail: does reuse fire `join.link_created`?
+
+Confirmed correct as designed. The shared audited creation function (Decision 2) is only invoked on the "no active row" branch — reuse returns the existing row directly and never calls it. Since `join.link_created`'s emission (both the `audit_log` row and the structured `emitAuditEvent` call) lives entirely inside that function, a reuse produces neither. The spec delta's own scenario ("Existing active link is reused, not duplicated") states "no new `join_links` row is created" but doesn't say "no audit row is written" in as many words — I'd make that explicit as a stated assertion (not just an inference from "the function wasn't called"), since it's exactly the kind of thing a future refactor could break by, say, moving the audit emission outside the creation function without noticing it's now on the wrong side of the reuse/create branch. One sentence in the spec scenario would close that.
+
+### 2. Concurrent get-or-create race: does it create an auditability gap?
+
+`design.md`'s reasoning holds, and I don't think it creates the gap the prompt was worried about. Walking through it: both racing inserts go through the *same* shared audited creation function (Decision 2's whole point), so both produce their own `join.link_created` audit row — the race produces two audited creations, not one audited and one silent. And critically, redemption's audit trail doesn't depend on "which link is the team's canonical one" — `join.link_redeemed`'s `metadata` includes `linkId` (per the base spec's existing requirement, `openspec/specs/join-link/spec.md:185`) identifying the *specific* row that was actually redeemed, regardless of how many active rows exist for the team at that moment. So "two valid links, unclear which one a redemption came from" doesn't materialize — the audit log always answers that question per-redemption, independent of how many active links exist. The scenario is spec-legal today anyway (manual "generate new link" twice produces the identical shape), so this isn't a new class of state the audit log has to newly cope with.
+
+### 3. Does removing `sessions.join_token` close the parallel bearer-credential scheme cleanly, with no residual exposure during the two-commit window?
+
+Yes, from Commit 1 onward — I verified this rather than took the design's word for it. After Commit 1: both draft-creation INSERT sites stop writing anything meaningful into responses derived from it (the column itself still gets a value from old-code pods only, per the rolling-deploy analysis), `facilitator-state`'s response is repointed to source `joinToken` from `join_links` (Task 2.3), and — per the original Finding 1 — nothing anywhere in the backend outside `facilitator-sessions.ts` ever validated `sessions.join_token` in the first place. So once Commit 1 is fully rolled out, the column is write-only dead data with no code path reading it back to a client; Migration B (the actual `DROP COLUMN`) is schema hygiene at that point, not a security boundary in itself, and Decision 6's reasoning for why it's still worth doing (removing the "attractive nuisance" for the next person who touches this code without context) is sound.
+
+The one caveat, which is inherent to any rolling deploy and not a new exposure this change introduces: during the rollout window itself, any request still landing on an old-code pod gets exactly today's status quo (the same non-functional link, the same non-validated token) — not a regression, just the pre-existing bug persisting a little longer on a shrinking fraction of traffic until the rollout completes. Worth one line in the Risks section for completeness, but I'm not blocking on it.
+
+### 4. Is the #164 lobby-landing stopgap a security matter, or does my original UX-scope boundary hold?
+
+It holds. I re-verified the actual failure mode Decision 5 is naming: an Engineer who redeems the link while the session is `lobby` completes a fully authorized, fully audited team join (the same `join_links` redemption path, unchanged by this decision) and lands on a UI that doesn't yet reflect the live session — a routing/continuity problem, not an authorization or data-exposure one. No unauthorized party gains access to anything; the person who joined was always entitled to join. That's the same distinction I drew in my original review's own stated scope ("I do not have opinions on... the `SessionLobbyPage` routing gap"), and nothing about how #166 resolves this changes that — Decision 5 doesn't touch authorization, it touches what happens after authorization has already succeeded correctly. I have no objection to shipping with the `draft`-stage badge as the sole mitigation, on the condition `design.md` already states itself: #164 gets scoped and scheduled promptly, not left indefinitely on the badge's back.
+
+---
+
+## What's solid
+
+- **The audited-creation extraction is the right call, and the spec correctly promotes it from "should" to "SHALL."** A second, independently written `INSERT`-plus-audit-transaction implementation at the new call site is exactly how these two systems would drift again on the guarantees the "durably recorded" requirement depends on (`AuditWriteError` semantics, transactional coupling, `linkId`/`expiresAt` metadata shape). Extracting one function both call is the correct structural answer, not a refactor nicety, and I've verified the base spec's requirement it plugs into is real and already in the codebase, not aspirational.
+- **The race-condition decision not to add a DB constraint is well-reasoned and I verified the precedent comparison holds.** `sessions_team_active_unique` protects a real, violated-elsewhere invariant; `join_links` already tolerates concurrent valid rows by design (confirmed against the existing "Facilitator generates additional join link" scenario). Reaching for the same lock here would be solving a problem the spec doesn't have.
+- **The two-migration split for `sessions.join_token`'s removal is the correct response to an actual rolling-deploy hazard, and it was checked against the real deployment model rather than assumed.** `NOT NULL` column drops under concurrent old/new pods are a real class of outage; splitting into "relax constraint" then "drop column" once fully rolled out is the standard safe pattern, and I have no changes to suggest here.
+- **Verification via the actual frontend-constructed URL (Decision 7) is exactly the fix my original finding asked for.** A test that seeds a known-good token against `GET /api/join/:token` directly would have passed against the original bug and told nobody anything was wrong. Driving the test through the rendered component closes that gap for both halves (token and path) with one test, which is the point.
+
+---
+
+## Recommendation
+
+Resolve Finding 1 before implementation — it's a small addition (one `SELECT`, matching an already-established pattern in this exact codebase) but it's a spec-mandated audit field with no current story at one of two new call sites, and I'd rather see it named in the spec than patched in ad hoc during implementation. Finding 2 should be added to `tasks.md`'s scope for Commit 1 so it doesn't surface as a surprise CI failure (or worse, a silently-passing test) partway through. Neither should require re-litigating Decisions 1–7 as written; both are gaps in what the design checked, not disagreements with what it decided. Items 1–4 I was asked to verify all hold up.
