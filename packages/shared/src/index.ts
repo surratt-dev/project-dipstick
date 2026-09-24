@@ -50,6 +50,7 @@ export type {
   DevLoginOption,
   DevLoginOptionsResponse,
 } from "./types/auth.js";
+export { buildJoinLinkPath } from "./types/auth.js";
 export type {
   TeamAccessGrant,
   SessionSubscriberGrant,

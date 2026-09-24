@@ -12,6 +12,7 @@ import {
 } from "../realtime/ws-pubsub.js";
 import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
+import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
 import type {
   RevealFailureResponse,
   RevealAlreadyRevealedResponse,
@@ -159,6 +160,51 @@ export async function fetchPreSessionActionItems(teamId: string): Promise<StartS
 }
 
 // ---------------------------------------------------------------------------
+// getOrCreateJoinLink — join-link-redemption-wiring, design.md Decisions 1
+// and 3, tasks.md Task 2.1.
+//
+// Reuses a team's most-recently-created active join_links row (the shared
+// JOIN_LINK_ACTIVE_SQL predicate from join-link-creation.ts), or creates one
+// via the shared audited createJoinLink helper on a miss. A concurrent race
+// on the miss branch (two callers both observing no active row) is accepted
+// as ordinary, spec-legal state (Decision 3) -- not database-constrained.
+//
+// resolveActorGlobalRole is a callback rather than a plain value so it is
+// paid only on the miss path: POST /draft already has global_role in scope
+// and passes a closure that just returns it; facilitator-state has no such
+// value in scope and passes a closure that issues a fresh SELECT, run only
+// when a new join_links row is about to be created.
+// ---------------------------------------------------------------------------
+export async function getOrCreateJoinLink(params: {
+  teamId: string;
+  createdByUserId: string;
+  actorIp: string;
+  logger: FastifyBaseLogger;
+  resolveActorGlobalRole: () => Promise<string>;
+}): Promise<string> {
+  const activeResult = await db.query<{ token: string }>(
+    `SELECT token FROM join_links
+     WHERE team_id = $1 AND ${JOIN_LINK_ACTIVE_SQL}
+     ORDER BY created_at DESC LIMIT 1`,
+    [params.teamId],
+  );
+
+  if (activeResult.rows.length > 0) {
+    return (activeResult.rows[0] as { token: string }).token;
+  }
+
+  const actorGlobalRole = await params.resolveActorGlobalRole();
+  const joinLink = await createJoinLink({
+    teamId: params.teamId,
+    createdByUserId: params.createdByUserId,
+    actorGlobalRole,
+    actorIp: params.actorIp,
+    logger: params.logger,
+  });
+  return joinLink.token;
+}
+
+// ---------------------------------------------------------------------------
 // Facilitator session lifecycle routes
 //
 // Decision 3 (enforce-access-control-on-team-content):
@@ -299,9 +345,12 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     }
 
     // Create the draft session
-    // join_token is required but not meaningful for draft sessions
-    const joinToken = crypto.randomUUID().replace(/-/g, "").substring(0, 8);
-
+    // join-link-redemption-wiring, task 4.2: join_token is no longer
+    // generated or inserted here -- Migration A (task 4.1) has already
+    // relaxed the column's NOT NULL constraint, and the response's
+    // joinToken is sourced from the real join_links table via get-or-create
+    // below, not this dead session-scoped column.
+    //
     // Decision D1/D3: the INSERT and its session.draft_created audit_log row
     // are one transaction. A sessions_team_active_unique violation (Decision
     // D3's partial unique index) rolls back and becomes a 409 -- matched on
@@ -315,15 +364,15 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
 
       const sessionResult = await client.query<{ id: string }>(
         `INSERT INTO sessions
-           (team_id, facilitator_id, status, join_token, is_first_session, session_number)
-         VALUES ($1, $2, 'draft', $3, false,
+           (team_id, facilitator_id, status, is_first_session, session_number)
+         VALUES ($1, $2, 'draft', false,
            COALESCE(
              (SELECT MAX(session_number) + 1 FROM sessions WHERE team_id = $1),
              1
            )
          )
          RETURNING id`,
-        [teamId, session.userId, joinToken],
+        [teamId, session.userId],
       );
 
       draftSessionId = (sessionResult.rows[0] as { id: string }).id;
@@ -379,6 +428,19 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       actorIp: request.ip,
       teamId,
       sessionId: draftSessionId,
+    });
+
+    // join-link-redemption-wiring, design.md Decision 1, tasks.md Task 2.2:
+    // the response's joinToken is now a real, redeemable join_links token,
+    // sourced via get-or-create -- not the dead session-scoped value above.
+    // actor_global_role is the global_role value already resolved and
+    // confirmed "facilitator" earlier in this handler; no additional lookup.
+    const joinToken = await getOrCreateJoinLink({
+      teamId,
+      createdByUserId: session.userId,
+      actorIp: request.ip,
+      logger: request.log,
+      resolveActorGlobalRole: async () => global_role,
     });
 
     return reply.code(201).send({
@@ -509,8 +571,6 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       return reply.code(409).send(body);
     }
 
-    const joinToken = crypto.randomUUID().replace(/-/g, "").substring(0, 8);
-
     const client = await db.connect();
     let teamId: string;
     let newSessionId: string;
@@ -557,10 +617,10 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
 
       const sessionResult = await client.query<{ id: string }>(
         `INSERT INTO sessions
-           (team_id, facilitator_id, status, join_token, is_first_session, session_number)
-         VALUES ($1, $2, 'lobby', $3, true, 1)
+           (team_id, facilitator_id, status, is_first_session, session_number)
+         VALUES ($1, $2, 'lobby', true, 1)
          RETURNING id`,
-        [teamId, session.userId, joinToken],
+        [teamId, session.userId],
       );
       newSessionId = (sessionResult.rows[0] as { id: string }).id;
 
@@ -603,11 +663,16 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       sessionId: newSessionId,
     });
 
+    // join-link-redemption-wiring, design.md Decision 1's note: no joinToken
+    // field here (deliberately, not an oversight) -- this endpoint creates a
+    // lobby-status session with no control view that needs to display a
+    // join link. Verified unconsumed by the frontend (SessionCreationPage's
+    // new-team handler reads only { teamId, sessionId }, and DraftSessionHost
+    // independently re-fetches facilitator-state for its own joinToken).
     return reply.code(201).send({
       teamId,
       sessionId: newSessionId,
       status: "lobby",
-      joinToken,
     });
   });
 
@@ -1916,14 +1981,15 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     const { teamId, sessionId } = request.params;
 
     // Query session state and verify the requester is the session facilitator.
+    // join-link-redemption-wiring, tasks.md Task 2.3/4.3: join_token is no
+    // longer selected here -- joinToken is sourced via get-or-create below.
     const sessionResult = await db.query<{
       id: string;
       team_id: string;
       facilitator_id: string;
       status: string;
-      join_token: string;
     }>(
-      `SELECT id, team_id, facilitator_id, status, join_token
+      `SELECT id, team_id, facilitator_id, status
        FROM sessions
        WHERE id = $1 AND team_id = $2`,
       [sessionId, teamId],
@@ -1944,7 +2010,6 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       team_id: string;
       facilitator_id: string;
       status: string;
-      join_token: string;
     };
 
     // Only the facilitator who owns this session may query its facilitator state.
@@ -1987,12 +2052,34 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
         }
       : null;
 
+    // join-link-redemption-wiring, design.md Decision 2 (blocking gap closed
+    // per engineer/security review): this handler has no global_role value
+    // in scope anywhere else -- it authorizes purely on
+    // sr.facilitator_id === userSession.userId above. resolveActorGlobalRole
+    // issues a fresh SELECT, but only on get-or-create's miss path (i.e.
+    // only when a new join_links row is about to be created), matching the
+    // "re-read global_role live" convention already used elsewhere in this
+    // file (e.g. /advance, /start).
+    const joinToken = await getOrCreateJoinLink({
+      teamId,
+      createdByUserId: userSession.userId,
+      actorIp: request.ip,
+      logger: request.log,
+      resolveActorGlobalRole: async () => {
+        const actorResult = await db.query<{ global_role: string }>(
+          `SELECT global_role FROM users WHERE id = $1`,
+          [userSession.userId],
+        );
+        return (actorResult.rows[0] as { global_role: string }).global_role;
+      },
+    });
+
     const response: FacilitatorSessionStateResponse = {
       sessionId,
       teamId,
       currentSessionState: sr.status as SessionStatus,
       bannerState,
-      joinToken: sr.join_token,
+      joinToken,
     };
 
     return reply.send(response);

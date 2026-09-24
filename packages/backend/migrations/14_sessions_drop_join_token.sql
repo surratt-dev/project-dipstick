@@ -1,0 +1,21 @@
+-- Migration 14: Drop sessions.join_token (Migration B)
+--
+-- join-link-redemption-wiring, design.md Decision 6. Second of two
+-- migrations that remove sessions.join_token entirely. Migration A
+-- (13_sessions_join_token_nullable.sql) already relaxed the NOT NULL
+-- constraint and shipped in the same release as the code that stopped
+-- referencing this column; this migration only runs once that release is
+-- confirmed fully rolled out (zero pods remaining on pre-#166 code), per
+-- the rolling-deploy analysis in design.md Decision 6.
+--
+-- Dropping the column also drops sessions_join_token_unique and
+-- idx_sessions_join_token automatically -- no separate DROP
+-- CONSTRAINT/DROP INDEX statement is needed.
+--
+-- Rollback: re-adding the column loses no data worth recovering (it was
+-- never meaningfully populated -- see design.md's Migration Plan closing
+-- note); a rollback would be `ALTER TABLE sessions ADD COLUMN join_token
+-- text` (nullable, since no value has ever been required by the
+-- application since Migration A).
+
+ALTER TABLE sessions DROP COLUMN join_token;
