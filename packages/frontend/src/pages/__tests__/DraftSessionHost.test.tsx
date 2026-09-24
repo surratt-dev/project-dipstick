@@ -56,7 +56,7 @@ describe("DraftSessionHost", () => {
     renderHost();
 
     await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
-    const joinLinkText = screen.getByTestId("draft-join-link-not-joinable").textContent;
+    const joinLinkText = screen.getByTestId("draft-join-link").textContent;
     expect(joinLinkText).toContain(`${window.location.origin}/api/join/tok12345`);
     expect(screen.getByTestId("draft-join-link-badge").textContent).toMatch(
       /this link works already.*won't see a waiting screen yet/i,
