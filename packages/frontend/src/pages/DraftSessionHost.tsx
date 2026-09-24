@@ -31,6 +31,10 @@ import { detectSessionExpiry } from "../http/sessionExpiry.js";
 interface NavigationState {
   teamName?: string;
   lastSessionAt?: string | null;
+  // inline-team-creation, tasks.md 5.6/5.7: set only by SessionCreationPage's
+  // new-team submit navigation. Scoped to that one navigation so the
+  // existing-team landing copy is never altered by this flag's absence.
+  newTeamCreated?: boolean;
 }
 
 type LoadState =
@@ -46,6 +50,7 @@ export function DraftSessionHost() {
   const navState = location.state as NavigationState | null;
   const teamNameHint = navState?.teamName;
   const lastSessionAtHint = navState?.lastSessionAt;
+  const newTeamCreated = navState?.newTeamCreated ?? false;
 
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [advanceState, setAdvanceState] = useState<AdvanceState>({ phase: "idle" });
@@ -146,6 +151,15 @@ export function DraftSessionHost() {
         style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}
       >
         <h1>{teamLabel}</h1>
+        {/* task 5.7, design.md D2: new-team-specific acknowledgment, scoped
+            to the navigation that just created this team -- does not alter
+            the existing-team flow's landing copy, which never sets
+            newTeamCreated. */}
+        {newTeamCreated && (
+          <p data-testid="new-team-landing-acknowledgment">
+            Team created. Default topics assigned.
+          </p>
+        )}
         <p>The room is open. Session status: {data.currentSessionState}.</p>
       </div>
     );

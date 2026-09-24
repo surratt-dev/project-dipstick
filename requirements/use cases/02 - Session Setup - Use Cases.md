@@ -98,13 +98,17 @@
 9. The application assigns the default topic set to the new team.
 10. The application displays the session room, including the join link and the participant readiness view (initially empty).
 
+**Addendum (draft-skip decision):**
+
+11. Unlike the existing-team flow (see "Create Session for Existing Team," Addendum: draft-landing decision), this flow does not pass through `draft` status. A brand-new team has no prior team context for the Facilitator to review before opening the room, so the review-gate rationale that motivates the existing-team flow's draft/lobby split does not apply here. The application lands the Facilitator directly in `lobby` (step 10 above), with an inline name-echo confirmation on the submit control ("Create team '<name>' and open session room") taking the place of the draft gate as the point where the irreversible action — team creation — is confirmed before it happens.
+
 ## Alternate Flows
 - **Team name already exists:** The application displays an inline validation error and prompts the Facilitator to enter a different name. No team or session is created until a unique name is provided.
 - **Facilitator submits an empty team name:** The application displays a validation error and does not proceed.
 - **Session or team creation fails due to a system error:** The application displays an error message. No team or session record is created. The Facilitator can retry.
 
 ## Postconditions
-- **Success:** A new team record exists with the provided name and the default topic set assigned. A session record exists for that team, associated with the Facilitator, in a "waiting for participants" state. A unique join link has been generated.
+- **Success:** A new team record exists with the provided name and the default topic set assigned. A session record exists for that team, associated with the Facilitator, in `lobby` status (not `draft` — see Main Flow Addendum: draft-skip decision). A unique join link has been generated and is immediately usable. The Facilitator lands on the participant readiness view, with an on-screen acknowledgment that the team was created and its default topics were assigned.
 - **Failure:** No team or session record is created. The application state is unchanged.
 
 ---

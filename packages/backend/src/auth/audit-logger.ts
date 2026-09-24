@@ -278,7 +278,24 @@ export type AuditEventName =
   // for a successful draft creation -- team.manager_established is the
   // direct precedent (an access-grant-establishing event audited in the same
   // transaction as the row it authorizes). metadata: { session_id }.
-  | "session.draft_created";
+  | "session.draft_created"
+  // team.creation_denied_role: inline-team-creation, design.md D3 (security
+  // review F1). Fired by POST /api/v1/teams when the caller's
+  // users.global_role is not 'facilitator' -- the endpoint's first check,
+  // ahead of any name-dependent check (D8). Written synchronously as a plain
+  // INSERT INTO audit_log immediately before the 403 response, matching
+  // session.draft_denied_membership_conflict's established convention: a
+  // security-relevant rejection gets its own audit row. No team/session id
+  // exists yet at this point. metadata: none beyond the standard
+  // actor/actor_global_role/actor_ip fields.
+  | "team.creation_denied_role"
+  // team.created_with_session: inline-team-creation, design.md D3. Written
+  // in the same transaction as the new team's INSERT INTO teams and its
+  // first session's INSERT INTO sessions -- team.manager_established and
+  // session.draft_created are the direct precedent (an access/existence
+  // -establishing event audited in the same transaction as the rows it
+  // covers). metadata: { team_id, session_id }.
+  | "team.created_with_session";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

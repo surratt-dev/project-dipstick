@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { SessionCreationPage } from "../SessionCreationPage.js";
-import type { EligibleTeamsResponse, SessionAlreadyExistsResponse } from "@dipstick/shared";
+import type { EligibleTeamsResponse, SessionAlreadyExistsResponse, TeamNameCollisionResponse } from "@dipstick/shared";
 import type * as ReactRouterDom from "react-router-dom";
 
 // ---------------------------------------------------------------------------
@@ -204,6 +204,183 @@ describe("SessionCreationPage — confirm screen", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(fetchMock.mock.calls[2]![0]).toBe("/api/v1/teams/eligible-for-session");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SessionCreationPage — new-team screen (inline-team-creation, tasks.md
+// task 7.2)
+// ---------------------------------------------------------------------------
+describe("SessionCreationPage — new-team screen", () => {
+  async function goToNewTeamScreen(listBody: EligibleTeamsResponse = { eligibleTeams: [], callerHasTeamMemberships: false }) {
+    mockFetchSequence({ jsonBody: listBody });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-create-new-team"));
+    await waitFor(() => expect(screen.getByTestId("session-creation-new-team")).toBeInTheDocument());
+  }
+
+  it("navigates from the picker to the new-team screen without a full page navigation", async () => {
+    await goToNewTeamScreen();
+    expect(screen.queryByTestId("session-creation-picker")).not.toBeInTheDocument();
+  });
+
+  it("happy path: submits POST /api/v1/teams and navigates to the new session's live view with newTeamCreated state", async () => {
+    await goToNewTeamScreen();
+
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: () => Promise.resolve({ teamId: "new-team-1", sessionId: "new-sess-1" }),
+    } as unknown as Response);
+
+    await userEvent.type(screen.getByTestId("new-team-name-input"), "Platform Team");
+    await userEvent.click(screen.getByTestId("new-team-submit"));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/teams",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ name: "Platform Team" }),
+        }),
+      ),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/team/new-team-1/session/new-sess-1",
+      expect.objectContaining({
+        replace: true,
+        state: { teamName: "Platform Team", lastSessionAt: null, newTeamCreated: true },
+      }),
+    );
+  });
+
+  it("the submit control's name-echo label updates live as the Facilitator types", async () => {
+    await goToNewTeamScreen();
+
+    expect(screen.getByTestId("new-team-submit").textContent).not.toContain("'");
+
+    await userEvent.type(screen.getByTestId("new-team-name-input"), "Platform Team");
+
+    expect(screen.getByTestId("new-team-submit").textContent).toBe("Create team 'Platform Team' and open session room");
+  });
+
+  it("empty-name submission shows an inline validation error and fires no request", async () => {
+    await goToNewTeamScreen();
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const callsBefore = fetchMock.mock.calls.length;
+
+    await userEvent.click(screen.getByTestId("new-team-submit"));
+
+    expect(screen.getByTestId("new-team-error-empty-name")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("whitespace-only name submission is treated as empty", async () => {
+    await goToNewTeamScreen();
+
+    await userEvent.type(screen.getByTestId("new-team-name-input"), "   ");
+    await userEvent.click(screen.getByTestId("new-team-submit"));
+
+    expect(screen.getByTestId("new-team-error-empty-name")).toBeInTheDocument();
+  });
+
+  it("a 409 name-collision response shows an inline, named error identifying the submitted name", async () => {
+    await goToNewTeamScreen();
+
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const collisionBody: TeamNameCollisionResponse = {
+      errorState: "team_name_collision",
+      providedName: "Platform Team",
+    };
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve(collisionBody),
+    } as unknown as Response);
+
+    await userEvent.type(screen.getByTestId("new-team-name-input"), "Platform Team");
+    await userEvent.click(screen.getByTestId("new-team-submit"));
+
+    await waitFor(() => expect(screen.getByTestId("new-team-error-name-collision")).toBeInTheDocument());
+    expect(screen.getByTestId("new-team-error-name-collision").textContent).toContain("Platform Team");
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it("back-navigation from the new-team screen fires no request and clears newTeamError, returning to the picker", async () => {
+    await goToNewTeamScreen();
+
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({}),
+    } as unknown as Response);
+
+    await userEvent.click(screen.getByTestId("new-team-submit")); // empty name -> local validation error, no request
+    expect(screen.getByTestId("new-team-error-empty-name")).toBeInTheDocument();
+
+    const callsBeforeBack = fetchMock.mock.calls.length;
+    await userEvent.click(screen.getByTestId("new-team-back-to-picker"));
+
+    expect(screen.getByTestId("session-creation-picker")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBe(callsBeforeBack); // back-navigation itself fired nothing
+
+    // Returning to the new-team screen shows no leftover error state.
+    await userEvent.click(screen.getByTestId("picker-create-new-team"));
+    await waitFor(() => expect(screen.getByTestId("session-creation-new-team")).toBeInTheDocument());
+    expect(screen.queryByTestId("new-team-error-empty-name")).not.toBeInTheDocument();
+  });
+
+  it("design.md D2: confirmError from a prior existing-team confirm-screen rejection does not leak onto the new-team screen", async () => {
+    const listBody: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+      callerHasTeamMemberships: false,
+    };
+    const fetchMock = mockFetchSequence(
+      { jsonBody: listBody },
+      { ok: false, status: 403, jsonBody: { error: { message: "cross-team" } } },
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+    await waitFor(() => expect(screen.getByTestId("confirm-error-membership-conflict")).toBeInTheDocument());
+
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(listBody) } as unknown as Response);
+    await userEvent.click(screen.getByTestId("confirm-back-to-picker"));
+    await waitFor(() => expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-create-new-team"));
+
+    await waitFor(() => expect(screen.getByTestId("session-creation-new-team")).toBeInTheDocument());
+    expect(screen.queryByTestId("confirm-error-membership-conflict")).not.toBeInTheDocument();
+  });
+});
+
+describe("SessionCreationPage — empty-state copy invites new-team creation (task 6.1/6.2)", () => {
+  it("6.1: the zero-home-team empty state invites new-team creation, and the affordance remains reachable", async () => {
+    const body: EligibleTeamsResponse = { eligibleTeams: [], callerHasTeamMemberships: false };
+    mockFetchSequence({ jsonBody: body });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+    expect(screen.getByTestId("picker-empty-state").textContent).toMatch(/create one to get started/i);
+    expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument();
+  });
+
+  it("6.1: the zero-eligible-targets empty state also invites new-team creation", async () => {
+    const body: EligibleTeamsResponse = { eligibleTeams: [], callerHasTeamMemberships: true };
+    mockFetchSequence({ jsonBody: body });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+    expect(screen.getByTestId("picker-empty-state").textContent).toMatch(/create one to get started/i);
+    expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument();
   });
 });
 

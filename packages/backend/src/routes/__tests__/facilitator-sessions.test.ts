@@ -516,6 +516,351 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/v1/teams  (inline-team-creation)
+//
+// design.md D3 (transaction shape), D4 (normalized uniqueness + 23505
+// handling), D6 (no team_memberships row), D8 (check ordering). tasks.md
+// task 7.1.
+// ---------------------------------------------------------------------------
+describe("POST /api/v1/teams", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function mockActorRoleQuery(globalRole: string) {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: globalRole }] });
+  }
+
+  function mockCollisionPrecheck(collides: boolean) {
+    mockDbQuery.mockResolvedValueOnce({ rows: collides ? [{ id: "existing-team" }] : [] });
+  }
+
+  function successTransactionClient() {
+    return makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "new-team-1" }] }, // INSERT teams
+      { rows: [] }, // INSERT topics (copy)
+      { rows: [{ id: "new-session-1" }] }, // INSERT sessions
+      { rows: [] }, // INSERT audit_log
+      { rows: [] }, // COMMIT
+    ]);
+  }
+
+  it("7.1 success path: creates a team, copies default topics, creates a lobby session with is_first_session true, and returns 201", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+
+    const client = successTransactionClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Platform Team" },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.teamId).toBe("new-team-1");
+    expect(body.sessionId).toBe("new-session-1");
+    expect(body.status).toBe("lobby");
+    expect(typeof body.joinToken).toBe("string");
+
+    const calls = client.query.mock.calls.map((c) => c[0] as string);
+    expect(calls[0]).toContain("BEGIN");
+    expect(calls[1]).toContain("INSERT INTO teams");
+    expect(calls[2]).toContain("INSERT INTO topics");
+    expect(calls[2]).toContain("is_default = true");
+    expect(calls[3]).toContain("INSERT INTO sessions");
+    expect(client.query.mock.calls[3]![1]).toEqual(
+      expect.arrayContaining(["new-team-1", "facilitator-1"]),
+    );
+    // is_first_session and session_number are literal true/1 in the SQL text
+    // itself (design.md D3), not bound parameters.
+    expect(calls[3]).toContain("true, 1");
+    expect(calls[4]).toContain("INSERT INTO audit_log");
+    expect(client.query.mock.calls[4]![1]).toContain("team.created_with_session");
+    expect(calls[5]).toContain("COMMIT");
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "team.created_with_session",
+      expect.objectContaining({ teamId: "new-team-1", sessionId: "new-session-1" }),
+    );
+  });
+
+  // Security-critical (design.md D6): a facilitator who creates a team must
+  // NOT become a member of it -- that would manufacture a
+  // same-team-facilitator conflict the first time this person tries to
+  // facilitate the team they just created. This assertion protects that
+  // facilitator-neutrality invariant and must not be weakened or dropped in
+  // a future refactor without that being a visible, deliberate decision
+  // (security review Finding F2).
+  it("7.1 (security-critical, design.md D6): no team_memberships row is inserted for the creating facilitator", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+
+    const client = successTransactionClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Platform Team" },
+    });
+
+    const allCalls = [...client.query.mock.calls, ...mockDbQuery.mock.calls];
+    const membershipInsert = allCalls.find((c) => (c[0] as string).includes("INSERT INTO team_memberships"));
+    expect(membershipInsert).toBeUndefined();
+  });
+
+  it("7.1: non-facilitator caller is rejected with 403 and writes the team.creation_denied_role audit row", async () => {
+    mockActorRoleQuery("engineer");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // INSERT audit_log (denial)
+
+    const app = await buildApp("engineer-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Platform Team" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockDbConnect).not.toHaveBeenCalled(); // no transaction opened, no team created
+
+    const auditCall = mockDbQuery.mock.calls.find((call) => (call[0] as string).includes("INSERT INTO audit_log"));
+    expect(auditCall).toBeDefined();
+    expect(auditCall![1]).toContain("team.creation_denied_role");
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "team.creation_denied_role",
+      expect.objectContaining({ actorGlobalRole: "engineer" }),
+    );
+  });
+
+  // design.md D8, spec's "a non-facilitator caller cannot probe name
+  // existence" scenario: check order puts role authorization ahead of any
+  // name-dependent check, so the 403 response is identical whether or not
+  // the submitted name happens to collide with an existing team.
+  it("7.1/D8: non-facilitator rejection is byte-identical whether the submitted name collides or not, and never reaches the uniqueness check", async () => {
+    mockActorRoleQuery("engineer");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // INSERT audit_log (denial)
+    const appA = await buildApp("engineer-1");
+    const resFreshName = await appA.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "A Totally Fresh Name" },
+    });
+
+    vi.clearAllMocks();
+
+    mockActorRoleQuery("engineer");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // INSERT audit_log (denial)
+    const appB = await buildApp("engineer-1");
+    const resCollidingName = await appB.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Already Taken Team" },
+    });
+
+    expect(resCollidingName.statusCode).toBe(resFreshName.statusCode);
+    // correlationId is a fresh crypto.randomUUID() per request by design and
+    // is excluded from the equality check on that basis alone; every other
+    // field -- category, message -- must be identical.
+    const { error: errFresh, ...restFresh } = resFreshName.json();
+    const { error: errColliding, ...restColliding } = resCollidingName.json();
+    expect(restColliding).toEqual(restFresh);
+    expect(errColliding.category).toBe(errFresh.category);
+    expect(errColliding.message).toBe(errFresh.message);
+    // Only the actor-role query and the denial audit insert ran -- the
+    // normalized-uniqueness precheck (a third db.query call) was never
+    // reached for either request.
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("7.1: empty (or whitespace-only) team name is rejected with a validation error, before any uniqueness check", async () => {
+    mockActorRoleQuery("facilitator");
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "   " },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(mockDbQuery).toHaveBeenCalledTimes(1); // actor query only
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("7.1: exact-duplicate name is rejected 409 via the normalized pre-check, with a typed TeamNameCollisionResponse", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(true);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Platform Team" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.errorState).toBe("team_name_collision");
+    expect(body.providedName).toBe("Platform Team");
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("7.1: case/whitespace-variant duplicate name is rejected 409 via the normalized pre-check", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(true);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "  platform team  " },
+    });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.errorState).toBe("team_name_collision");
+    // providedName echoes the trimmed (not lowercased) submission.
+    expect(body.providedName).toBe("platform team");
+  });
+
+  // design.md D4, engineer review Finding 1: an exact-duplicate name can
+  // race past the app-level pre-check (both concurrent requests see no
+  // existing row) and only get caught by the database's teams_name_unique
+  // constraint on the INSERT itself.
+  it("7.1/D4 Finding 1: concurrent identical-name race is caught by teams_name_unique on the INSERT (exact-match constraint path)", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false); // pre-check race window: no row yet
+
+    const violation = Object.assign(new Error("duplicate key"), {
+      code: "23505",
+      constraint: "teams_name_unique",
+    });
+    Object.setPrototypeOf(violation, DatabaseErrorProto);
+
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("BEGIN")) return Promise.resolve({ rows: [] });
+      if (sql.includes("INSERT INTO teams")) return Promise.reject(violation);
+      if (sql.includes("ROLLBACK")) return Promise.resolve({ rows: [] });
+      return Promise.resolve({ rows: [] });
+    });
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Platform Team" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().errorState).toBe("team_name_collision");
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("ROLLBACK"));
+  });
+
+  // design.md D4: only one of two concurrent requests for normalized-
+  // duplicate (differently cased/whitespaced) names succeeds -- the loser's
+  // INSERT hits teams_name_unique_normalized, reported via the SAME
+  // err.code === "23505" check (not a constraint-name match), per Finding 1.
+  it("7.1/D4: concurrent case/whitespace-variant race is caught by teams_name_unique_normalized on the INSERT, translated to the same typed response", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+
+    const violation = Object.assign(new Error("duplicate key"), {
+      code: "23505",
+      constraint: "teams_name_unique_normalized",
+    });
+    Object.setPrototypeOf(violation, DatabaseErrorProto);
+
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("BEGIN")) return Promise.resolve({ rows: [] });
+      if (sql.includes("INSERT INTO teams")) return Promise.reject(violation);
+      if (sql.includes("ROLLBACK")) return Promise.resolve({ rows: [] });
+      return Promise.resolve({ rows: [] });
+    });
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "platform team" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().errorState).toBe("team_name_collision");
+  });
+
+  it("7.1: transaction-rollback-on-failure -- a non-23505 error during the transaction rolls back and propagates as 500, creating nothing", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("BEGIN")) return Promise.resolve({ rows: [] });
+      if (sql.includes("INSERT INTO teams")) return Promise.resolve({ rows: [{ id: "new-team-1" }] });
+      if (sql.includes("INSERT INTO topics")) return Promise.reject(new Error("connection reset"));
+      if (sql.includes("ROLLBACK")) return Promise.resolve({ rows: [] });
+      return Promise.resolve({ rows: [] });
+    });
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Platform Team" },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("ROLLBACK"));
+    expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "team.created_with_session",
+      expect.anything(),
+    );
+  });
+
+  it("a 23505 on a statement other than the teams INSERT is not mistaken for a name collision", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+
+    const otherViolation = Object.assign(new Error("duplicate key"), {
+      code: "23505",
+      constraint: "topics_team_order",
+    });
+    Object.setPrototypeOf(otherViolation, DatabaseErrorProto);
+
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("BEGIN")) return Promise.resolve({ rows: [] });
+      if (sql.includes("INSERT INTO teams")) return Promise.resolve({ rows: [{ id: "new-team-1" }] });
+      if (sql.includes("INSERT INTO topics")) return Promise.reject(otherViolation);
+      if (sql.includes("ROLLBACK")) return Promise.resolve({ rows: [] });
+      return Promise.resolve({ rows: [] });
+    });
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams",
+      payload: { name: "Platform Team" },
+    });
+
+    expect(res.statusCode).toBe(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/v1/teams/:teamId/sessions/:sessionId/advance (Task 8.3)
 // ---------------------------------------------------------------------------
 describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {

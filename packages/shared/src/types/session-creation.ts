@@ -44,3 +44,19 @@ export interface SessionAlreadyExistsResponse {
   existingSessionStatus: SessionStatus;
   teamId: string;
 }
+
+// ---------------------------------------------------------------------------
+// inline-team-creation response shapes (design.md D2/D4).
+// ---------------------------------------------------------------------------
+
+/**
+ * 409 response body for POST /api/v1/teams when the submitted team name
+ * collides with an existing team's name, normalized (lowercased, trimmed).
+ * Returned regardless of whether the exact-match constraint or the
+ * normalized-match constraint is the one that reports the violation
+ * (design.md D4) -- the caller-visible outcome does not depend on that.
+ */
+export interface TeamNameCollisionResponse {
+  errorState: "team_name_collision";
+  providedName: string;
+}

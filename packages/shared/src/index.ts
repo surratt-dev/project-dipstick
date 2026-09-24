@@ -26,6 +26,7 @@ export type {
   EligibleTeam,
   EligibleTeamsResponse,
   SessionAlreadyExistsResponse,
+  TeamNameCollisionResponse,
 } from "./types/session-creation.js";
 export type { Vote, VoteType } from "./types/vote.js";
 export type { Topic, TopicStatus } from "./types/topic.js";

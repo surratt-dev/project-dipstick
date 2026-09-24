@@ -108,6 +108,44 @@ describe("DraftSessionHost", () => {
     expect(screen.getByTestId("open-the-room")).not.toBeDisabled();
   });
 
+  // inline-team-creation, tasks.md 5.7/7.2: the landing-acknowledgment copy
+  // is named as its own assertion, distinct from the existing-team flow.
+  it("inline-team-creation 5.7: a new-team creation navigation shows the landing acknowledgment on the live readiness view", async () => {
+    mockFetchSequence({
+      jsonBody: { sessionId: "sess-1", teamId: "team-1", currentSessionState: "lobby", bannerState: null, joinToken: "tok12345" },
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: "/team/team-1/session/sess-1",
+            state: { teamName: "Platform Team", lastSessionAt: null, newTeamCreated: true },
+          },
+        ]}
+      >
+        <Routes>
+          <Route path="/team/:teamId/session/:sessionId" element={<DraftSessionHost />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    expect(screen.getByTestId("new-team-landing-acknowledgment")).toBeInTheDocument();
+    expect(screen.getByTestId("new-team-landing-acknowledgment").textContent).toMatch(/default topics assigned/i);
+  });
+
+  it("inline-team-creation 5.7: the existing-team flow's landing view never shows the new-team acknowledgment", async () => {
+    mockFetchSequence({
+      jsonBody: { sessionId: "sess-1", teamId: "team-1", currentSessionState: "lobby", bannerState: null, joinToken: "tok12345" },
+    });
+
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    expect(screen.queryByTestId("new-team-landing-acknowledgment")).not.toBeInTheDocument();
+  });
+
   // task 7.12
   it("7.12: a non-facilitator caller sees the facilitator-state endpoint's existing 403, not the control view", async () => {
     mockFetchSequence({
