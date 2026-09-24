@@ -2,19 +2,19 @@
 
 ### Requirement: Join link and copy control render in both `draft` and `lobby`-and-later states
 
-`DraftSessionHost` SHALL render the join link together with an adjacent copy button in both its `draft-control-view` and `live-readiness-view` branches. The control is not withheld during `draft` status: a Facilitator MAY copy the link before the room is opened, to support staging a share message in advance. The underlying URL is identical in both states (`${window.location.origin}/join/${joinToken}`); only the "not yet joinable" badge distinguishes `draft` from `lobby`-and-later, and that badge — not the presence of the copy button — is what signals whether the link can be used yet.
+`DraftSessionHost` SHALL render the join link together with an adjacent copy button in both its `draft-control-view` and `live-readiness-view` branches. The control is not withheld during `draft` status: a Facilitator MAY copy the link before the room is opened, to support staging a share message in advance. The underlying URL is identical in both states (`${window.location.origin}${buildJoinLinkPath(joinToken)}`, i.e. `${window.location.origin}/api/join/${joinToken}` — the backend's actual registered redemption route, resolved by `join-link-redemption-wiring` (#166) after this spec was originally drafted). Only the `draft`-status badge (`data-testid="draft-join-link-badge"`) distinguishes `draft` from `lobby`-and-later; per `session-creation`'s requirement, that badge no longer describes the link as "not yet joinable" (also resolved by #166) — so the badge's presence, not the copy button's presence, is what signals the difference between the two states.
 
 #### Scenario: Facilitator sees a copy button while session is in draft status
 - **WHEN** a Facilitator is viewing `DraftSessionHost` for a session with `status = 'draft'`
-- **THEN** the join link is displayed with the existing "not yet joinable" badge, and a copy button is present adjacent to it
+- **THEN** the join link is displayed with the existing `draft-join-link-badge`, and a copy button is present adjacent to it
 
 #### Scenario: Facilitator sees a copy button once the session is open
 - **WHEN** a Facilitator is viewing `DraftSessionHost` for a session with `status = 'lobby'` (or any later non-terminal status)
-- **THEN** the join link is displayed without the "not yet joinable" badge, and a copy button is present adjacent to it
+- **THEN** the join link is displayed without the `draft`-status badge, and a copy button is present adjacent to it
 
 #### Scenario: Copied URL is identical across draft and lobby status
 - **WHEN** a Facilitator copies the join link during `draft` status and again after the session advances to `lobby`
-- **THEN** both copies place the same URL (`${window.location.origin}/join/${joinToken}`) on the clipboard
+- **THEN** both copies place the same URL (`${window.location.origin}${buildJoinLinkPath(joinToken)}`) on the clipboard
 
 #### Scenario: Control persists for the full waiting window
 - **WHEN** a session remains in `lobby` status while participants join over several minutes
@@ -59,11 +59,11 @@ When the Clipboard API is unavailable (feature-detection fails) or a `navigator.
 
 ### Requirement: Joinable-state link uses full-emphasis styling, not the not-yet-joinable muted treatment
 
-While the join link is joinable (`lobby`-and-later), it SHALL render using full-emphasis body text color. The muted/de-emphasized styling (`color: #9e9e9e`, small label) that `draft`'s "not yet joinable" treatment uses today SHALL remain reserved for signaling non-joinability and SHALL NOT be the default styling for the link once it is usable.
+While the join link is joinable (`lobby`-and-later), it SHALL render using full-emphasis body text color. The muted/de-emphasized styling (`color: #9e9e9e`, small label) that `draft`'s link treatment uses today SHALL remain reserved for the `draft` state and SHALL NOT be the default styling for the link once it is usable.
 
-#### Scenario: Link is de-emphasized while not yet joinable
+#### Scenario: Link is de-emphasized during draft status
 - **WHEN** a session is in `draft` status
-- **THEN** the join link renders using the existing muted/de-emphasized styling alongside the "not yet joinable" badge
+- **THEN** the join link renders using the existing muted/de-emphasized styling alongside the `draft-join-link-badge`
 
 #### Scenario: Link is full-emphasis once joinable
 - **WHEN** a session is in `lobby` status (or later)

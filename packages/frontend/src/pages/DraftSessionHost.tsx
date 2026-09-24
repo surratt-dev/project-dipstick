@@ -3,6 +3,7 @@ import { useLocation, useParams } from "react-router-dom";
 import { buildJoinLinkPath, type FacilitatorSessionStateResponse } from "@dipstick/shared";
 import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
 import { detectSessionExpiry } from "../http/sessionExpiry.js";
+import { useCopyToClipboard } from "../hooks/useCopyToClipboard.js";
 
 // ---------------------------------------------------------------------------
 // DraftSessionHost — the real, refresh-safe route from design.md Decision D6
@@ -58,6 +59,11 @@ export function DraftSessionHost() {
   // role="facilitator" on this page — gated on canFacilitateSessions before
   // rendering at all, no derivation needed.
   const [reauthRequired, setReauthRequired] = useState<{ returnTo: string } | null>(null);
+  // join-link-display-copy design.md D1: invoked once at this level so both
+  // branches (draft-control-view, live-readiness-view) share one status --
+  // the "Link copied" banner and its timer survive the draft->lobby
+  // transition performed in place by openTheRoom() (design.md D4).
+  const { copy, status: copyStatus } = useCopyToClipboard();
 
   const loadFacilitatorState = useCallback(async () => {
     if (!teamId || !sessionId) return;
@@ -143,6 +149,37 @@ export function DraftSessionHost() {
 
   const { data } = loadState;
   const teamLabel = teamNameHint ?? `Team ${teamId}`;
+  // join-link-display-copy design.md D1: computed exactly once and passed
+  // into whichever branch renders, never rebuilt separately per branch.
+  const joinUrl = `${window.location.origin}${buildJoinLinkPath(data.joinToken)}`;
+
+  // join-link-display-copy design.md D4: shared banner/fallback rendering
+  // for both branches -- only the badge (draft-only) differs between them.
+  function renderCopyControl(testidPrefix: string) {
+    return (
+      <>
+        <button type="button" data-testid={`${testidPrefix}-copy-button`} onClick={() => void copy(joinUrl)}>
+          Copy link
+        </button>
+        {copyStatus === "copied" && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid={`${testidPrefix}-copied-banner`}
+            style={{
+              marginTop: "0.5rem",
+              padding: "0.75rem 1rem",
+              backgroundColor: "#e8f5e9",
+              border: "1px solid #a5d6a7",
+              borderRadius: "4px",
+            }}
+          >
+            Link copied
+          </div>
+        )}
+      </>
+    );
+  }
 
   if (data.currentSessionState !== "draft") {
     return (
@@ -161,6 +198,14 @@ export function DraftSessionHost() {
           </p>
         )}
         <p>The room is open. Session status: {data.currentSessionState}.</p>
+
+        <div style={{ marginTop: "1rem" }}>
+          <div style={{ fontSize: "0.875rem", fontWeight: 600, color: "#757575" }}>JOIN LINK</div>
+          {/* design.md D5: full-emphasis body text once joinable -- no muted
+              color, no badge (badge is draft-only, per spec.md). */}
+          <p data-testid="live-join-link">{joinUrl}</p>
+          {renderCopyControl("live-join-link")}
+        </div>
       </div>
     );
   }
@@ -181,11 +226,12 @@ export function DraftSessionHost() {
       <div style={{ marginTop: "1rem" }}>
         <div style={{ fontSize: "0.875rem", fontWeight: 600, color: "#757575" }}>JOIN LINK</div>
         <p data-testid="draft-join-link" style={{ color: "#9e9e9e" }}>
-          {`${window.location.origin}${buildJoinLinkPath(data.joinToken)}`}{" "}
+          {joinUrl}{" "}
           <span data-testid="draft-join-link-badge">
             This link works already — anyone who opens it before you open the room won't see a waiting screen yet.
           </span>
         </p>
+        {renderCopyControl("draft-join-link")}
       </div>
 
       {advanceState.phase === "failed" && (
