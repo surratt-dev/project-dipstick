@@ -27,7 +27,17 @@ import type {
   SessionAlreadyExistsResponse,
   EligibleTeam,
   EligibleTeamsResponse,
+  TeamNameCollisionResponse,
 } from "@dipstick/shared";
+
+// ---------------------------------------------------------------------------
+// TeamNameCollisionSignal — internal marker thrown from inside the
+// POST /api/v1/teams transaction (below) to distinguish "the teams INSERT
+// itself hit a 23505" from any other DB error during the same transaction,
+// without rolling back twice or inspecting err.constraint (design.md D4,
+// engineer review Finding 1 -- see that handler's inline comment).
+// ---------------------------------------------------------------------------
+class TeamNameCollisionSignal extends Error {}
 
 // ---------------------------------------------------------------------------
 // recordRevealTriggeredAudit — SEC-13/SEC-14 audit write for the reveal
@@ -375,6 +385,228 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       sessionId: draftSessionId,
       teamId,
       status: "draft",
+      joinToken,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/teams  (inline-team-creation)
+  //
+  // Creates a new team, assigns it the canonical default topic set
+  // (default-topic-provisioning), and creates that team's first session --
+  // all in a single transaction (design.md D3).
+  //
+  // Route file placement (design.md D3, engineer review Finding 2):
+  // implemented here, alongside POST /draft, not in teams.ts -- teams.ts is
+  // the existing TEAM-005/TEAM-006 admin/role-management route file, an
+  // unrelated domain (team administration, not team creation).
+  // facilitator-sessions.ts already owns every other piece of machinery this
+  // transaction extends: the POST /draft handler this is a sibling of, the
+  // audit-write-in-transaction pattern, the DatabaseError/err.constraint
+  // import, and GET /eligible-for-session.
+  //
+  // Check order, fixed and spec-level (design.md D8, spec's check-ordering
+  // requirement): authenticate (global middleware) -> authorize role
+  // (facilitator) -> validate name non-empty -> check normalized
+  // uniqueness. This bounds the endpoint's enumeration surface to "an
+  // already-authenticated facilitator can learn whether a normalized name
+  // is taken" -- do not reorder behind a shared "validate the request body"
+  // helper or equivalent refactor; a non-facilitator caller must receive an
+  // identical 403 regardless of whether the submitted name collides with an
+  // existing team (spec's "a non-facilitator caller cannot probe name
+  // existence" scenario).
+  //
+  // is_first_session = true / session_number = 1 are named, explicit
+  // literals for this flow (design.md D3), not inherited from POST /draft's
+  // hardcoded false -- a team just created in this same transaction can
+  // only ever have zero prior sessions. status = 'lobby', not 'draft'
+  // (design.md D2): a brand-new team has no prior context for the
+  // facilitator to review before opening the room.
+  //
+  // No team_memberships row is inserted for the creating facilitator
+  // anywhere in this handler (design.md D6 -- facilitator-neutrality, a
+  // SECURITY-relevant invariant, not a style choice). teams.created_by_user_id
+  // is set, but that is not membership: inserting one here would manufacture
+  // a same-team-facilitator conflict the first time this person tries to
+  // facilitate the team they just created. See this invariant's regression
+  // test in facilitator-sessions.test.ts, which carries its own inline
+  // comment marking it security-critical per design.md D6.
+  // -------------------------------------------------------------------------
+  app.post<{
+    Body: { name?: string };
+  }>("/api/v1/teams", async (request, reply) => {
+    const session = request.session as unknown as SessionData;
+
+    const actorResult = await db.query<{ global_role: string }>(
+      `SELECT global_role FROM users WHERE id = $1`,
+      [session.userId],
+    );
+
+    if (actorResult.rows.length === 0) {
+      return reply.code(401).send({
+        error: {
+          category: "session_expired" as const,
+          message: "User not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const { global_role: globalRole } = actorResult.rows[0] as { global_role: string };
+
+    // Check order (design.md D8): role authorization is the first
+    // name-independent check, run before name validation or uniqueness.
+    if (globalRole !== "facilitator") {
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation)
+         VALUES ($1, $2, $3, $4)`,
+        [session.userId, globalRole, request.ip, "team.creation_denied_role"],
+      );
+
+      emitAuditEvent(request.log, "team.creation_denied_role", {
+        actorUserId: session.userId,
+        actorGlobalRole: globalRole,
+        actorIp: request.ip,
+      });
+
+      return reply.code(403).send({
+        error: {
+          category: "forbidden" as const,
+          message: "Only a facilitator can create a team.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const rawName = request.body?.name;
+    const trimmedName = typeof rawName === "string" ? rawName.trim() : "";
+
+    if (trimmedName.length === 0) {
+      return reply.code(400).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "Team name is required.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    // Normalized-name pre-check (design.md D4): fast, clear inline error
+    // for the common case. Not the sole enforcement -- the
+    // teams_name_unique_normalized functional index (migration 12) is the
+    // authoritative backstop against the concurrent-duplicate race this
+    // pre-check alone cannot close (see the 23505 handling below).
+    const collisionPrecheck = await db.query<{ id: string }>(
+      `SELECT id FROM teams WHERE lower(btrim(name)) = lower(btrim($1))`,
+      [trimmedName],
+    );
+    if (collisionPrecheck.rows.length > 0) {
+      const body: TeamNameCollisionResponse = {
+        errorState: "team_name_collision",
+        providedName: trimmedName,
+      };
+      return reply.code(409).send(body);
+    }
+
+    const joinToken = crypto.randomUUID().replace(/-/g, "").substring(0, 8);
+
+    const client = await db.connect();
+    let teamId: string;
+    let newSessionId: string;
+    try {
+      await client.query("BEGIN");
+
+      let teamResult;
+      try {
+        teamResult = await client.query<{ id: string }>(
+          `INSERT INTO teams (name, created_by_user_id) VALUES ($1, $2) RETURNING id`,
+          [trimmedName, session.userId],
+        );
+      } catch (err) {
+        // design.md D4, engineer review Finding 1: both teams_name_unique
+        // and teams_name_unique_normalized are live on this INSERT. An
+        // exact-duplicate name violates both simultaneously, and Postgres
+        // does not guarantee which constraint's violation is reported first
+        // for a concurrent exact-duplicate race -- so any 23505 here is
+        // treated as the same collision, regardless of which named
+        // constraint fired. Scoped to this specific INSERT (via the
+        // TeamNameCollisionSignal marker, rethrown below) rather than a
+        // blanket "any 23505 anywhere in this transaction" catch, so a
+        // 23505 from a later, unrelated statement is not mistaken for a
+        // name collision.
+        if (err instanceof DatabaseError && err.code === "23505") {
+          throw new TeamNameCollisionSignal();
+        }
+        throw err;
+      }
+      teamId = (teamResult.rows[0] as { id: string }).id;
+
+      // default-topic-provisioning: a real, independent row copy from the
+      // sentinel __default_topics__ team's is_default rows -- not a
+      // reference (design.md D5). display_order is preserved. No "locked"
+      // column or flag is written here or anywhere else in this step.
+      await client.query(
+        `INSERT INTO topics
+           (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
+         SELECT $1, name, prompt, vote_type, display_order, is_default, first_session_description
+         FROM topics
+         WHERE team_id = '00000000-0000-0000-0000-000000000001' AND is_default = true`,
+        [teamId],
+      );
+
+      const sessionResult = await client.query<{ id: string }>(
+        `INSERT INTO sessions
+           (team_id, facilitator_id, status, join_token, is_first_session, session_number)
+         VALUES ($1, $2, 'lobby', $3, true, 1)
+         RETURNING id`,
+        [teamId, session.userId, joinToken],
+      );
+      newSessionId = (sessionResult.rows[0] as { id: string }).id;
+
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          globalRole,
+          request.ip,
+          "team.created_with_session",
+          teamId,
+          JSON.stringify({ team_id: teamId, session_id: newSessionId }),
+        ],
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+
+      if (err instanceof TeamNameCollisionSignal) {
+        const body: TeamNameCollisionResponse = {
+          errorState: "team_name_collision",
+          providedName: trimmedName,
+        };
+        return reply.code(409).send(body);
+      }
+
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    emitAuditEvent(request.log, "team.created_with_session", {
+      actorUserId: session.userId,
+      actorGlobalRole: globalRole,
+      actorIp: request.ip,
+      teamId,
+      sessionId: newSessionId,
+    });
+
+    return reply.code(201).send({
+      teamId,
+      sessionId: newSessionId,
+      status: "lobby",
       joinToken,
     });
   });
