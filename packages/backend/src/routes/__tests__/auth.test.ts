@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type * as OpenidClientModule from "openid-client";
 import type * as ErrorHandlerModule from "../../auth/error-handler.js";
+import type * as OidcErrorSanitizerModule from "../../auth/oidc-error-sanitizer.js";
 
 const mockDbQuery = vi.fn();
+const mockDbConnect = vi.fn();
 const mockRedisSetex = vi.fn();
 const mockRedisGetdel = vi.fn();
 const mockEmitAuditEvent = vi.fn();
@@ -14,9 +16,13 @@ const mockBuildSessionData = vi.fn();
 const mockGetDecryptedTokens = vi.fn();
 const mockMapAuthError = vi.fn();
 const mockSanitizeOidcError = vi.fn();
+const mockWriteFailOpenAuditRow = vi.fn();
 
 vi.mock("../../db.js", () => ({
-  db: { query: (...args: unknown[]) => mockDbQuery(...args) },
+  db: {
+    query: (...args: unknown[]) => mockDbQuery(...args),
+    connect: () => mockDbConnect(),
+  },
 }));
 vi.mock("../../redis.js", () => ({
   redis: {
@@ -66,6 +72,17 @@ vi.mock("../../auth/error-handler.js", () => ({
 }));
 vi.mock("../../auth/oidc-error-sanitizer.js", () => ({
   sanitizeOidcError: (...args: unknown[]) => mockSanitizeOidcError(...args),
+}));
+// auth-events-audit-log-coverage: the fail-open group's write path
+// (auth.success/auth.session_created/auth.idp_logout_failed) is mocked at
+// its module boundary here -- its own DB-timeout/DB-error/failure-signal
+// behavior is unit-tested in fail-open-audit-write.test.ts. Route-level
+// tests in this file assert the WIRING (that it's called with the right
+// operation/actorGlobalRole/teamId/metadata), not its internal db.query
+// mechanics, which would otherwise collide positionally with this file's
+// many mockDbQuery.mockResolvedValueOnce chains for membership/join queries.
+vi.mock("../../auth/fail-open-audit-write.js", () => ({
+  writeFailOpenAuditRow: (...args: unknown[]) => mockWriteFailOpenAuditRow(...args),
 }));
 vi.mock("openid-client", async () => {
   const actual = await vi.importActual<typeof OpenidClientModule>("openid-client");
@@ -185,6 +202,45 @@ function setupValidCallbackMocksNoMembershipFallback(opts: {
   });
 }
 
+// ---------------------------------------------------------------------------
+// auth-events-audit-log-coverage, tasks.md 1.5 (Architect review Finding 2;
+// Engineer review Finding 4): GET /auth/callback now opens a
+// withAuditTransaction-backed db.connect() for resolveOrCreateAccount's
+// transaction (task 3.1), and — when a pendingJoinToken is present — a
+// SECOND, separate one for executeJoinFlow's transaction (task 6.2),
+// sequential, never concurrent, in the same request. mockDbConnect must
+// return a distinct mock client instance on each call, not the same
+// object/mock shared across both — otherwise both transactions' query
+// sequences land in one shared client.query.mock.calls array, silently
+// breaking any positional assertion.
+// ---------------------------------------------------------------------------
+function makeMockClient(queryResponses: Array<{ rows: unknown[] }> = []) {
+  let callIndex = 0;
+  const mockClientQuery = vi.fn((..._args: unknown[]) => {
+    const resp = queryResponses[callIndex] ?? { rows: [] };
+    callIndex++;
+    return Promise.resolve(resp);
+  });
+  return { query: mockClientQuery, release: vi.fn() };
+}
+
+/**
+ * Queues the two sequential db.connect() resolutions a pendingJoinToken
+ * /auth/callback request produces: the first, for resolveOrCreateAccount's
+ * transaction, is a generic client (resolveOrCreateAccount is fully mocked
+ * in this file and ignores whatever client it's given); the second, for
+ * executeJoinFlow's transaction, responds to its BEGIN with the default and
+ * to its `INSERT INTO team_memberships ... RETURNING id` with
+ * `membershipInsertRows` (empty = ON CONFLICT-suppressed / already a member;
+ * non-empty = a new membership row).
+ */
+function queueJoinFlowDbConnects(membershipInsertRows: unknown[]) {
+  mockDbConnect.mockResolvedValueOnce(makeMockClient());
+  mockDbConnect.mockResolvedValueOnce(
+    makeMockClient([{ rows: [] }, { rows: membershipInsertRows }]),
+  );
+}
+
 describe("authRoutes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -201,6 +257,14 @@ describe("authRoutes", () => {
     // specific db.query calls still override individual calls with
     // mockResolvedValueOnce, which takes priority over this default.
     mockDbQuery.mockResolvedValue({ rows: [] });
+    // auth-events-audit-log-coverage, tasks.md 1.5: default db.connect() so
+    // every withAuditTransaction call (resolveOrCreateAccount's transaction,
+    // and — for tests that don't care about its specific responses —
+    // executeJoinFlow's) gets a working client instead of undefined. Tests
+    // that need a specific team_memberships INSERT outcome override via
+    // queueJoinFlowDbConnects, which takes priority over this default.
+    mockDbConnect.mockImplementation(() => Promise.resolve(makeMockClient()));
+    mockWriteFailOpenAuditRow.mockResolvedValue(undefined);
   });
 
   describe("GET /auth/dev-login-options", () => {
@@ -544,6 +608,74 @@ describe("authRoutes", () => {
       expect(mockDestroy).not.toHaveBeenCalled();
     });
 
+    // auth-events-audit-log-coverage, design.md Decision D2, tasks 2.1/2.2/2.3.
+    it("wires the fail-open durable write for auth.session_created and auth.success, using the already-resolved globalRole (no extra lookup)", async () => {
+      mockRedisGetdel.mockResolvedValue(
+        JSON.stringify({ nonce: "n", codeVerifier: "cv", createdAt: new Date().toISOString() }),
+      );
+      mockHandleCallback.mockResolvedValue({
+        claims: () => ({ sub: "sub-1", iss: "https://idp.example.com" }),
+        access_token: "at",
+        expires_in: 3600,
+      });
+      mockResolveOrCreateAccount.mockResolvedValue({
+        id: "user-1",
+        oidcSubject: "sub-1",
+        oidcIssuer: "https://idp.example.com",
+        displayName: "Alice",
+        email: "alice@example.com",
+        isNewUser: false,
+        globalRole: "engineer",
+      });
+      mockBuildSessionData.mockReturnValue({
+        userId: "user-1",
+        sessionCreatedAt: new Date().toISOString(),
+        encryptedAccessToken: "enc(at)",
+        tokenExpiresAt: 9999999999,
+      });
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ team_id: "team-1" }] });
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/auth/callback?state=valid&code=abc",
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(mockWriteFailOpenAuditRow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "auth.session_created",
+          userId: "user-1",
+          actorGlobalRole: "engineer",
+          teamId: null,
+          metadata: expect.objectContaining({ authSessionId: "sess-1" }),
+        }),
+      );
+      expect(mockWriteFailOpenAuditRow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "auth.success",
+          userId: "user-1",
+          actorGlobalRole: "engineer",
+          teamId: null,
+          metadata: expect.objectContaining({
+            oidcSubject: "sub-1",
+            oidcIssuer: "https://idp.example.com",
+            isFirstAccess: false,
+          }),
+        }),
+      );
+      expect(mockWriteFailOpenAuditRow).toHaveBeenCalledTimes(2);
+
+      // task 9.5: no resolveActorGlobalRole SELECT is issued for either
+      // event -- actor_global_role comes directly from the value already
+      // resolved by resolveOrCreateAccount earlier in the same handler.
+      expect(
+        mockDbQuery.mock.calls.some(
+          (c) => typeof c[0] === "string" && c[0].includes("SELECT global_role"),
+        ),
+      ).toBe(false);
+    });
+
     it("should redirect to error on callback failure", async () => {
       mockRedisGetdel.mockResolvedValue(
         JSON.stringify({ nonce: "n", codeVerifier: "cv", createdAt: new Date().toISOString() }),
@@ -748,6 +880,199 @@ describe("authRoutes", () => {
       expect((successCall![2] as Record<string, unknown>).correlationId).toBe(correlationId);
     });
 
+    // -------------------------------------------------------------------------
+    // auth-events-audit-log-coverage, design.md Decisions D2/D3/D7, tasks 3.4-3.6.
+    // -------------------------------------------------------------------------
+    describe("transactional group: auth.first_access_created / auth.role_claim_mapped (tasks 3.4-3.6)", () => {
+      function setupPreCommitMocks(opts: { isNewUser: boolean; globalRole?: string }) {
+        mockRedisGetdel.mockResolvedValue(
+          JSON.stringify({ nonce: "n", codeVerifier: "cv", createdAt: new Date().toISOString() }),
+        );
+        mockHandleCallback.mockResolvedValue({
+          claims: () => ({ sub: "sub-1", iss: "https://idp.example.com" }),
+          access_token: "at",
+          expires_in: 3600,
+        });
+        mockResolveOrCreateAccount.mockResolvedValue({
+          id: "user-1",
+          oidcSubject: "sub-1",
+          oidcIssuer: "https://idp.example.com",
+          displayName: "Alice",
+          email: "alice@example.com",
+          isNewUser: opts.isNewUser,
+          globalRole: opts.globalRole ?? "engineer",
+          previousGlobalRole: opts.isNewUser ? null : "engineer",
+        });
+        mockBuildSessionData.mockReturnValue({
+          userId: "user-1",
+          sessionCreatedAt: new Date().toISOString(),
+          encryptedAccessToken: "enc(at)",
+          tokenExpiresAt: 9999999999,
+        });
+      }
+
+      /** A client whose audit_log INSERT always rejects; BEGIN/SET LOCAL succeed, ROLLBACK succeeds. */
+      function makeFailingAuditInsertClient() {
+        const query = vi.fn((sql: string) => {
+          if (typeof sql === "string" && sql.includes("INSERT INTO audit_log")) {
+            return Promise.reject(new Error("constraint violation"));
+          }
+          return Promise.resolve({ rows: [] });
+        });
+        return { query, release: vi.fn() };
+      }
+
+      it("3.4: a failed audit INSERT rolls back the transaction (COMMIT never runs) and the structured log never fires", async () => {
+        setupPreCommitMocks({ isNewUser: true });
+        const failingClient = makeFailingAuditInsertClient();
+        mockDbConnect.mockResolvedValueOnce(failingClient);
+        mockMapAuthError.mockReturnValue({ category: "internal_error", message: "internal problem" });
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "GET",
+          url: "/auth/callback?state=valid&code=abc",
+        });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toContain("category=internal_error");
+
+        const calls = failingClient.query.mock.calls.map((c) => c[0]);
+        expect(calls).toContain("ROLLBACK");
+        expect(calls).not.toContain("COMMIT");
+
+        expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
+          expect.anything(),
+          "auth.first_access_created",
+          expect.anything(),
+        );
+      });
+
+      it("3.5: the AuditWriteError from a rolled-back audit INSERT is classified internal_error, not authentication_failed, with unredacted diagnostic detail", async () => {
+        setupPreCommitMocks({ isNewUser: false, globalRole: "engineering_manager" });
+        const failingClient = makeFailingAuditInsertClient();
+        mockDbConnect.mockResolvedValueOnce(failingClient);
+
+        // Use the REAL mapAuthError/sanitizeOidcError for this test so the
+        // assertion proves the actual classification, not a mocked stand-in.
+        const actualErrorHandler = await vi.importActual<typeof ErrorHandlerModule>(
+          "../../auth/error-handler.js",
+        );
+        mockMapAuthError.mockImplementation(actualErrorHandler.mapAuthError);
+        const actualSanitizer = await vi.importActual<typeof OidcErrorSanitizerModule>(
+          "../../auth/oidc-error-sanitizer.js",
+        );
+        mockSanitizeOidcError.mockImplementation(actualSanitizer.sanitizeOidcError);
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "GET",
+          url: "/auth/callback?state=valid&code=abc",
+        });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toContain("category=internal_error");
+        expect(decodeURIComponent(res.headers.location as string)).toContain("temporary internal problem");
+        expect(decodeURIComponent(res.headers.location as string)).not.toContain("sign-in");
+
+        expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
+          expect.anything(),
+          "auth.role_claim_mapped",
+          expect.anything(),
+        );
+      });
+
+      // task 9.1/9.4: the durable audit_log row's metadata carries previousRole
+      // (Decision D4) in addition to the fields already asserted on the
+      // structured log above.
+      it("the auth.role_claim_mapped audit_log row's metadata includes previousRole", async () => {
+        setupPreCommitMocks({ isNewUser: false, globalRole: "engineering_manager" });
+        const client = { query: vi.fn().mockResolvedValue({ rows: [] }), release: vi.fn() };
+        mockDbConnect.mockResolvedValueOnce(client);
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "GET",
+          url: "/auth/callback?state=valid&code=abc",
+        });
+
+        expect(res.statusCode).toBe(302);
+        const auditInsertCall = client.query.mock.calls.find(
+          (c) => typeof c[0] === "string" && c[0].includes("'auth.role_claim_mapped'"),
+        );
+        expect(auditInsertCall).toBeDefined();
+        // task 9.1: full row shape -- actor_user_id, actor_global_role,
+        // actor_ip, team_id NULL (literal in the SQL, not a bound param), metadata.
+        expect(auditInsertCall![0]).toContain("NULL");
+        const params = auditInsertCall![1] as unknown[];
+        expect(params[0]).toBe("user-1");
+        expect(params[1]).toBe("engineering_manager");
+        expect(typeof params[2]).toBe("string"); // actor_ip
+        const metadata = JSON.parse(params[3] as string);
+        expect(metadata).toMatchObject({
+          oidcSubject: "sub-1",
+          globalRole: "engineering_manager",
+          previousRole: "engineer",
+          correlationId: expect.any(String),
+        });
+      });
+
+      // task 9.1: the auth.first_access_created row has no previousRole
+      // expectation -- isNewUser/the operation name itself already
+      // communicate "no prior account" (design.md's stated scenario).
+      it("the auth.first_access_created audit_log row's metadata has no previousRole field", async () => {
+        setupPreCommitMocks({ isNewUser: true });
+        const client = { query: vi.fn().mockResolvedValue({ rows: [] }), release: vi.fn() };
+        mockDbConnect.mockResolvedValueOnce(client);
+
+        const app = await buildApp();
+        await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        const auditInsertCall = client.query.mock.calls.find(
+          (c) => typeof c[0] === "string" && c[0].includes("'auth.first_access_created'"),
+        );
+        expect(auditInsertCall).toBeDefined();
+        // task 9.1: full row shape.
+        expect(auditInsertCall![0]).toContain("NULL");
+        const params = auditInsertCall![1] as unknown[];
+        expect(params[0]).toBe("user-1");
+        expect(params[1]).toBe("engineer");
+        expect(typeof params[2]).toBe("string");
+        const metadata = JSON.parse(params[3] as string);
+        expect(metadata).toMatchObject({
+          oidcSubject: "sub-1",
+          oidcIssuer: "https://idp.example.com",
+          globalRole: "engineer",
+          correlationId: expect.any(String),
+        });
+        expect(metadata).not.toHaveProperty("previousRole");
+      });
+
+      it("3.6: a failed db.connect() (pool exhaustion) is also classified internal_error, not authentication_failed", async () => {
+        setupPreCommitMocks({ isNewUser: true });
+        mockDbConnect.mockRejectedValueOnce(new Error("pool exhausted"));
+
+        const actualErrorHandler = await vi.importActual<typeof ErrorHandlerModule>(
+          "../../auth/error-handler.js",
+        );
+        mockMapAuthError.mockImplementation(actualErrorHandler.mapAuthError);
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "GET",
+          url: "/auth/callback?state=valid&code=abc",
+        });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toContain("category=internal_error");
+        expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
+          expect.anything(),
+          "auth.first_access_created",
+          expect.anything(),
+        );
+      });
+    });
+
     // Task 12: Missing claims rejection
 
     describe("missing claims rejection (Task 12)", () => {
@@ -936,9 +1261,11 @@ describe("authRoutes", () => {
             revoked_at: null,
           }],
         });
-        // 2. INSERT INTO team_memberships — ON CONFLICT, no new row (already a member)
-        mockDbQuery.mockResolvedValueOnce({ rows: [] });
-        // 3. Sessions query — no active session
+        // INSERT INTO team_memberships now runs on executeJoinFlow's
+        // withAuditTransaction client, not the plain pool — ON CONFLICT, no
+        // new row (already a member).
+        queueJoinFlowDbConnects([]);
+        // 2. Sessions query — no active session
         mockDbQuery.mockResolvedValueOnce({ rows: [] });
         // Join flow always sets redirectUrl so no membership query runs
 
@@ -995,11 +1322,13 @@ describe("authRoutes", () => {
         setupValidCallbackMocksNoMembershipFallback();
         mockStateWithReturnTo("/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c", "join-tok-1");
 
-        // executeJoinFlow db queries: join_links lookup (valid), INSERT (new row), sessions (none active)
+        // executeJoinFlow db queries: join_links lookup (valid), then the
+        // team_memberships INSERT (new row) on its withAuditTransaction
+        // client, then the plain-pool sessions query (none active).
         mockDbQuery.mockResolvedValueOnce({
           rows: [{ id: "link-1", team_id: "team-joined", expires_at: new Date(Date.now() + 3600_000), revoked_at: null }],
         });
-        mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "membership-1" }] });
+        queueJoinFlowDbConnects([{ id: "membership-1" }]);
         mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
         const app = await buildApp();
@@ -1198,6 +1527,10 @@ describe("authRoutes", () => {
       );
       expect(rejectedCall).toBeDefined();
       expect(rejectedCall![2]).toMatchObject({ reason: "expired" });
+      // Decision D6/task 7.1: executeJoinFlow's join.link_rejected emissions
+      // carry userId -- already resolved as a parameter at this point,
+      // unlike join-links.ts's pre-session-check branches.
+      expect(rejectedCall![2]).toMatchObject({ userId: "user-1" });
       expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
         expect.anything(),
         "join.link_redeemed",
@@ -1320,6 +1653,8 @@ describe("authRoutes", () => {
       );
       expect(rejectedCall).toBeDefined();
       expect(rejectedCall![2]).toMatchObject({ reason: "not_found" });
+      // task 7.1: userId included on this call site too.
+      expect(rejectedCall![2]).toMatchObject({ userId: "user-1" });
     });
 
     // -------------------------------------------------------------------------
@@ -1364,8 +1699,8 @@ describe("authRoutes", () => {
           revoked_at: null,
         }],
       });
-      // 2. INSERT — new row inserted (new member)
-      mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "membership-1" }] });
+      // 2. INSERT — new row inserted (new member), on the transaction client
+      queueJoinFlowDbConnects([{ id: "membership-1" }]);
       // 3. Sessions query — no active session
       mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
@@ -1428,8 +1763,8 @@ describe("authRoutes", () => {
           revoked_at: null,
         }],
       });
-      // 2. INSERT — ON CONFLICT, no new row (already a member)
-      mockDbQuery.mockResolvedValueOnce({ rows: [] });
+      // 2. INSERT — ON CONFLICT, no new row (already a member), on the transaction client
+      queueJoinFlowDbConnects([]);
       // 3. Sessions query — no active session
       mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
@@ -1540,8 +1875,8 @@ describe("authRoutes", () => {
             revoked_at: null,
           }],
         })
-        .mockResolvedValueOnce({ rows: [{ id: "membership-1" }] }) // new member
         .mockResolvedValueOnce({ rows: [] }); // no active session
+      queueJoinFlowDbConnects([{ id: "membership-1" }]); // new member, on the transaction client
 
       const app = await buildApp();
       await app.inject({
@@ -1603,8 +1938,14 @@ describe("authRoutes", () => {
             revoked_at: null,
           }],
         })
-        .mockResolvedValueOnce({ rows: [{ id: "membership-1" }] }) // new member
         .mockResolvedValueOnce({ rows: [] }); // no active session
+
+      // INSERT INTO team_memberships now runs on executeJoinFlow's
+      // withAuditTransaction client, not the plain pool — capture that
+      // client directly so its query calls can be inspected below.
+      mockDbConnect.mockResolvedValueOnce(makeMockClient()); // resolveOrCreateAccount's transaction
+      const joinFlowClient = makeMockClient([{ rows: [] }, { rows: [{ id: "membership-1" }] }]);
+      mockDbConnect.mockResolvedValueOnce(joinFlowClient);
 
       const app = await buildApp();
       await app.inject({
@@ -1612,8 +1953,8 @@ describe("authRoutes", () => {
         url: "/auth/callback?state=valid&code=abc",
       });
 
-      // Find the INSERT INTO team_memberships call
-      const insertCall = mockDbQuery.mock.calls.find(
+      // Find the INSERT INTO team_memberships call on the transaction client
+      const insertCall = joinFlowClient.query.mock.calls.find(
         (call) =>
           typeof call[0] === "string" &&
           call[0].includes("INSERT INTO team_memberships"),
@@ -1624,6 +1965,150 @@ describe("authRoutes", () => {
       // as a literal. Either way the SQL text must contain 'participant'.
       const sql = insertCall![0] as string;
       expect(sql).toContain("participant");
+    });
+
+    // -------------------------------------------------------------------------
+    // auth-events-audit-log-coverage, design.md Decision D5, tasks 6.3/6.5-6.7.
+    // -------------------------------------------------------------------------
+    describe("executeJoinFlow's join.link_redeemed transaction (tasks 6.3, 6.5-6.7)", () => {
+      function setupJoinFlowPreamble(pendingJoinToken: string) {
+        mockRedisGetdel.mockResolvedValue(
+          JSON.stringify({ nonce: "n", codeVerifier: "cv", pendingJoinToken, createdAt: new Date().toISOString() }),
+        );
+        mockHandleCallback.mockResolvedValue({
+          claims: () => ({ sub: "sub-1", iss: "https://idp.example.com" }),
+          access_token: "at",
+          expires_in: 3600,
+        });
+        mockResolveOrCreateAccount.mockResolvedValue({
+          id: "user-1",
+          oidcSubject: "sub-1",
+          oidcIssuer: "https://idp.example.com",
+          displayName: "Alice",
+          email: "alice@example.com",
+          isNewUser: false,
+          globalRole: "engineer",
+          previousGlobalRole: "engineer",
+        });
+        mockBuildSessionData.mockReturnValue({
+          userId: "user-1",
+          sessionCreatedAt: new Date().toISOString(),
+          encryptedAccessToken: "enc(at)",
+          tokenExpiresAt: 9999999999,
+        });
+        mockDbQuery.mockResolvedValueOnce({
+          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 3_600_000), revoked_at: null }],
+        });
+      }
+
+      it("6.3: actorGlobalRole is threaded from the already-resolved user.globalRole — no additional lookup", async () => {
+        setupJoinFlowPreamble("valid-tok");
+        mockDbConnect.mockResolvedValueOnce(makeMockClient()); // resolveOrCreateAccount's transaction
+        const joinFlowClient = makeMockClient([{ rows: [] }, { rows: [{ id: "membership-1" }] }]);
+        mockDbConnect.mockResolvedValueOnce(joinFlowClient);
+        mockDbQuery.mockResolvedValueOnce({ rows: [] }); // sessions query, no active session
+
+        const app = await buildApp();
+        await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        const auditInsertCall = joinFlowClient.query.mock.calls.find(
+          (c) => typeof c[0] === "string" && c[0].includes("INSERT INTO audit_log"),
+        );
+        expect(auditInsertCall).toBeDefined();
+        // task 9.1: full row shape -- actor_user_id, actor_global_role,
+        // actor_ip, team_id, metadata.linkId.
+        const params = auditInsertCall![1] as unknown[];
+        expect(params[0]).toBe("user-1");
+        expect(params[1]).toBe("engineer"); // actor_global_role, threaded from the parameter
+        expect(typeof params[2]).toBe("string"); // actor_ip
+        expect(params[3]).toBe("team-1"); // team_id, populated (Decision D5)
+        expect(JSON.parse(params[4] as string)).toEqual({ linkId: "link-1" });
+        // No SELECT global_role query was issued anywhere in this request —
+        // the value came from the parameter, not a lookup.
+        expect(mockDbQuery.mock.calls.some((c) => String(c[0]).includes("SELECT global_role"))).toBe(false);
+      });
+
+      it("6.5: a failed audit INSERT rolls back the team_memberships insert, and the structured log never fires", async () => {
+        setupJoinFlowPreamble("valid-tok");
+        mockDbConnect.mockResolvedValueOnce(makeMockClient()); // resolveOrCreateAccount's transaction
+        const failingClient = {
+          query: vi.fn((sql: string) => {
+            if (typeof sql === "string" && sql.includes("INSERT INTO audit_log")) {
+              return Promise.reject(new Error("constraint violation"));
+            }
+            // INSERT INTO team_memberships ... RETURNING id -- simulate a new row
+            if (typeof sql === "string" && sql.includes("INSERT INTO team_memberships")) {
+              return Promise.resolve({ rows: [{ id: "membership-1" }] });
+            }
+            return Promise.resolve({ rows: [] });
+          }),
+          release: vi.fn(),
+        };
+        mockDbConnect.mockResolvedValueOnce(failingClient);
+        mockMapAuthError.mockReturnValue({ category: "internal_error", message: "internal problem" });
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toContain("category=internal_error");
+
+        const calls = failingClient.query.mock.calls.map((c) => c[0]);
+        expect(calls).toContain("ROLLBACK");
+        expect(calls).not.toContain("COMMIT");
+        expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
+          expect.anything(),
+          "join.link_redeemed",
+          expect.anything(),
+        );
+      });
+
+      it("6.6: the rolled-back AuditWriteError is classified internal_error via GET /auth/callback's catch block (unlike join-links.ts's direct path)", async () => {
+        setupJoinFlowPreamble("valid-tok");
+        mockDbConnect.mockResolvedValueOnce(makeMockClient());
+        const failingClient = {
+          query: vi.fn((sql: string) => {
+            if (typeof sql === "string" && sql.includes("INSERT INTO audit_log")) {
+              return Promise.reject(new Error("constraint violation"));
+            }
+            if (typeof sql === "string" && sql.includes("INSERT INTO team_memberships")) {
+              return Promise.resolve({ rows: [{ id: "membership-1" }] });
+            }
+            return Promise.resolve({ rows: [] });
+          }),
+          release: vi.fn(),
+        };
+        mockDbConnect.mockResolvedValueOnce(failingClient);
+
+        const actualErrorHandler = await vi.importActual<typeof ErrorHandlerModule>(
+          "../../auth/error-handler.js",
+        );
+        mockMapAuthError.mockImplementation(actualErrorHandler.mapAuthError);
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toContain("category=internal_error");
+        expect(res.headers.location).not.toContain("category=authentication_failed");
+      });
+
+      it("6.7: a failed db.connect() for executeJoinFlow's transaction is also classified internal_error", async () => {
+        setupJoinFlowPreamble("valid-tok");
+        mockDbConnect.mockResolvedValueOnce(makeMockClient()); // resolveOrCreateAccount's transaction succeeds
+        mockDbConnect.mockRejectedValueOnce(new Error("pool exhausted")); // executeJoinFlow's transaction fails to connect
+
+        const actualErrorHandler = await vi.importActual<typeof ErrorHandlerModule>(
+          "../../auth/error-handler.js",
+        );
+        mockMapAuthError.mockImplementation(actualErrorHandler.mapAuthError);
+
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toContain("category=internal_error");
+      });
     });
   });
 
@@ -1751,6 +2236,34 @@ describe("authRoutes", () => {
         expect.anything(),
         "auth.idp_logout_failed",
         expect.objectContaining({ userId: "user-1", sessionId: "sess-1" }),
+      );
+
+      // auth-events-audit-log-coverage, design.md Decision D6/task 4.2: the
+      // structured log also carries sourceIp now, matching the sibling
+      // auth.session_invalidated emission in the same handler.
+      const idpLogoutFailedCall = mockEmitAuditEvent.mock.calls.find(
+        (c: unknown[]) => c[1] === "auth.idp_logout_failed",
+      );
+      expect((idpLogoutFailedCall![2] as Record<string, unknown>).sourceIp).toEqual(
+        expect.any(String),
+      );
+
+      // task 4.1: the fail-open durable write path is invoked with the
+      // correct operation/teamId/metadata shape -- actorGlobalRole is
+      // resolved via resolveActorGlobalRole since the local session carries
+      // no globalRole field.
+      expect(mockWriteFailOpenAuditRow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: "auth.idp_logout_failed",
+          userId: "user-1",
+          teamId: null,
+          metadata: expect.objectContaining({ authSessionId: "sess-1" }),
+          failureAuditFields: expect.objectContaining({
+            userId: "user-1",
+            authSessionId: "sess-1",
+            operation: "auth.idp_logout_failed",
+          }),
+        }),
       );
     });
   });

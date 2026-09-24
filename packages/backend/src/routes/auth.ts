@@ -10,6 +10,7 @@ import {
   getEndSessionUrl,
 } from "../auth/oidc-client.js";
 import { resolveOrCreateAccount } from "../auth/account-resolver.js";
+import type { ResolvedUser } from "../auth/account-resolver.js";
 import { buildSessionData, getDecryptedTokens } from "../auth/session-store.js";
 import type { SessionData } from "../auth/session-store.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
@@ -17,6 +18,9 @@ import { mapAuthError } from "../auth/error-handler.js";
 import { MissingClaimError } from "../auth/errors.js";
 import { sanitizeOidcError } from "../auth/oidc-error-sanitizer.js";
 import { writeSessionInvalidatedAuditRow } from "../auth/session-invalidation-audit.js";
+import { writeFailOpenAuditRow } from "../auth/fail-open-audit-write.js";
+import { withAuditTransaction } from "../auth/audit-write-transaction.js";
+import { resolveActorGlobalRole } from "../realtime/connection-reauthorization.js";
 import type { AuthSession, DevLoginOption, DevLoginOptionsResponse } from "@dipstick/shared";
 
 const STATE_TTL_SECONDS = 600; // 10 minutes
@@ -281,24 +285,75 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // configured role claim (OIDC_ROLE_CLAIM) for global_role mapping.
       // Pass the logger so it can emit warnings on rejected claim values
       // (rejected claim values must not appear in audit records).
-      const user = await resolveOrCreateAccount(
-        {
-          sub: claims.sub,
-          iss: claims.iss,
-          name: claims.name as string | undefined,
-          email: claims.email as string | undefined,
-          ...Object.fromEntries(
-            Object.entries(claims).filter(
-              ([k]) => !["sub", "iss", "name", "email"].includes(k),
-            ),
+      //
+      // auth-events-audit-log-coverage, design.md Decision D2/D3/D7: this
+      // resolution and its accompanying auth.first_access_created /
+      // auth.role_claim_mapped audit_log row (when the firing condition is
+      // met) run in one Postgres transaction via withAuditTransaction. A
+      // failed audit INSERT or a failed db.connect() rolls back the UPSERT
+      // too and rethrows as AuditWriteError, which the catch block below
+      // classifies as internal_error (Decision D7) rather than
+      // authentication_failed's default text.
+      const resolvedClaims = {
+        sub: claims.sub,
+        iss: claims.iss,
+        name: claims.name as string | undefined,
+        email: claims.email as string | undefined,
+        ...Object.fromEntries(
+          Object.entries(claims).filter(
+            ([k]) => !["sub", "iss", "name", "email"].includes(k),
           ),
+        ),
+      };
+
+      const user: ResolvedUser = await withAuditTransaction(
+        (client) => resolveOrCreateAccount(resolvedClaims, request.log, client),
+        async (client, resolvedUser) => {
+          if (resolvedUser.isNewUser) {
+            await client.query(
+              `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+               VALUES ($1, $2, $3, 'auth.first_access_created', NULL, $4)`,
+              [
+                resolvedUser.id,
+                resolvedUser.globalRole,
+                request.ip,
+                JSON.stringify({
+                  oidcSubject: resolvedUser.oidcSubject,
+                  oidcIssuer: resolvedUser.oidcIssuer,
+                  globalRole: resolvedUser.globalRole,
+                  correlationId,
+                }),
+              ],
+            );
+          } else if (resolvedUser.globalRole !== "engineer") {
+            await client.query(
+              `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+               VALUES ($1, $2, $3, 'auth.role_claim_mapped', NULL, $4)`,
+              [
+                resolvedUser.id,
+                resolvedUser.globalRole,
+                request.ip,
+                JSON.stringify({
+                  oidcSubject: resolvedUser.oidcSubject,
+                  globalRole: resolvedUser.globalRole,
+                  previousRole: resolvedUser.previousGlobalRole,
+                  correlationId,
+                }),
+              ],
+            );
+          }
+          // else: neither firing condition is met — no audit_log row, matching
+          // the existing structured-log gating exactly.
         },
-        request.log,
       );
 
-      // Task 7: Emit first_access_created with sourceIp and correlationId,
-      // matching the complete event shape used by every other security-relevant
-      // audit event in the system.
+      // Task 7 / Engineer review Finding 3: these structured-log emissions
+      // must fire only after withAuditTransaction above has already committed
+      // successfully — not at their former source position immediately after
+      // resolveOrCreateAccount returned. Moving them here (post-commit) is
+      // deliberate: leaving them at the old position would let a rolled-back
+      // transaction still produce a structured log claiming the event
+      // happened, for a write that was just undone.
       if (user.isNewUser) {
         emitAuditEvent(request.log, "auth.first_access_created", {
           userId: user.id,
@@ -359,6 +414,27 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         correlationId,
       });
 
+      // auth-events-audit-log-coverage, design.md Decision D2 (fail-open
+      // group): no Postgres write occurs anywhere else in this call path, so
+      // this uses the bounded-timeout fail-open write path rather than a
+      // transaction. actorGlobalRole comes directly from user.globalRole —
+      // already resolved above — skipping a resolveActorGlobalRole SELECT
+      // entirely for this event.
+      await writeFailOpenAuditRow({
+        operation: "auth.session_created",
+        userId: user.id,
+        actorGlobalRole: user.globalRole,
+        actorIp: request.ip,
+        teamId: null,
+        metadata: { authSessionId: request.session.sessionId, correlationId },
+        log: request.log,
+        failureAuditFields: {
+          userId: user.id,
+          authSessionId: request.session.sessionId,
+          operation: "auth.session_created",
+        },
+      });
+
       emitAuditEvent(request.log, "auth.success", {
         userId: user.id,
         oidcSubject: user.oidcSubject,
@@ -366,6 +442,22 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         isFirstAccess: user.isNewUser,
         sourceIp: request.ip,
         correlationId,
+      });
+
+      await writeFailOpenAuditRow({
+        operation: "auth.success",
+        userId: user.id,
+        actorGlobalRole: user.globalRole,
+        actorIp: request.ip,
+        teamId: null,
+        metadata: {
+          oidcSubject: user.oidcSubject,
+          oidcIssuer: user.oidcIssuer,
+          isFirstAccess: user.isNewUser,
+          correlationId,
+        },
+        log: request.log,
+        failureAuditFields: { userId: user.id, operation: "auth.success" },
       });
 
       // Handle pending join token.
@@ -387,6 +479,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           stateData.pendingJoinToken,
           request.log,
           request.ip,
+          user.globalRole,
         );
         redirectUrl = joinResult.redirectUrl;
       } else if (stateData.returnTo) {
@@ -534,7 +627,29 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         emitAuditEvent(request.log, "auth.idp_logout_failed", {
           userId,
           sessionId,
+          // Decision D6: sourceIp, already in scope, matching the sibling
+          // auth.session_invalidated emission a few lines above.
+          sourceIp: request.ip,
         });
+
+        // auth-events-audit-log-coverage, design.md Decision D2 (fail-open
+        // group): the local session carries no globalRole field (unlike
+        // auth.success/session_created, which already have it in scope), so
+        // this resolves it via the shared resolveActorGlobalRole lookup,
+        // matching auth.session_invalidated's existing need in this same
+        // handler.
+        const actorGlobalRole = await resolveActorGlobalRole(userId);
+        await writeFailOpenAuditRow({
+          operation: "auth.idp_logout_failed",
+          userId,
+          actorGlobalRole,
+          actorIp: request.ip,
+          teamId: null,
+          metadata: { authSessionId: sessionId },
+          log: request.log,
+          failureAuditFields: { userId, authSessionId: sessionId, operation: "auth.idp_logout_failed" },
+        });
+
         return reply.send({ redirectUrl: "/" });
       }
     }
@@ -630,6 +745,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 // future call site is a type error — callers cannot silently drop it and
 // produce audit events without a real IP.
 //
+// actorGlobalRole (auth-events-audit-log-coverage, design.md Decision D5):
+// required, threaded from the caller's already-resolved user.globalRole
+// (GET /auth/callback, resolved moments earlier for auth.success's
+// emission) — a parameter pass, not a lookup. executeJoinFlow itself does
+// not know the joining user's global_role otherwise.
+//
 // Return type is Promise<{ redirectUrl: string }> (never null). The function
 // owns all redirect URL construction — both success destinations and failure
 // destinations — so the callback handler can redirect unconditionally to
@@ -639,6 +760,7 @@ async function executeJoinFlow(
   token: string,
   logger: FastifyBaseLogger,
   sourceIp: string,
+  actorGlobalRole: string,
 ): Promise<{ redirectUrl: string }> {
   // Validate join link
   const linkResult = await db.query(
@@ -648,6 +770,7 @@ async function executeJoinFlow(
 
   if (linkResult.rows.length === 0) {
     emitAuditEvent(logger, "join.link_rejected", {
+      userId,
       sourceIp,
       linkId: null,
       reason: "not_found",
@@ -664,6 +787,7 @@ async function executeJoinFlow(
 
   if (link.revoked_at || new Date(link.expires_at) < new Date()) {
     emitAuditEvent(logger, "join.link_rejected", {
+      userId,
       sourceIp,
       linkId: link.id,
       reason: link.revoked_at ? "revoked" : "expired",
@@ -671,7 +795,10 @@ async function executeJoinFlow(
     return { redirectUrl: "/join-error?joinError=expired" };
   }
 
-  // Add user to team (idempotent).
+  // Add user to team (idempotent), and — when a new row is actually
+  // inserted — the join.link_redeemed audit_log row, in the same
+  // transaction (auth-events-audit-log-coverage, design.md Decision D2/D5).
+  //
   // "participant" is the membership_role enum value corresponding to what the
   // use case calls "Engineer." The membership_role enum is distinct from the
   // global user_role enum on the users table. Do NOT change this value to
@@ -682,16 +809,33 @@ async function executeJoinFlow(
   // conflict-suppressed no-op (rows.length === 0, user was already a member).
   // The distinction drives the outcome signal appended to the redirect URL and
   // gates the join.link_redeemed audit event.
-  const insertResult = await db.query(
-    `INSERT INTO team_memberships (user_id, team_id, role)
-     VALUES ($1, $2, 'participant')
-     ON CONFLICT (user_id, team_id) DO NOTHING
-     RETURNING id`,
-    [userId, link.team_id],
+  const insertResult = await withAuditTransaction(
+    (client) =>
+      client.query(
+        `INSERT INTO team_memberships (user_id, team_id, role)
+         VALUES ($1, $2, 'participant')
+         ON CONFLICT (user_id, team_id) DO NOTHING
+         RETURNING id`,
+        [userId, link.team_id],
+      ),
+    async (client, membershipResult) => {
+      if (membershipResult.rows.length === 0) {
+        // Idempotent re-join — ON CONFLICT suppressed the insert. No audit
+        // row, matching the existing structured-log gating exactly.
+        return;
+      }
+      await client.query(
+        `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, 'join.link_redeemed', $4, $5)`,
+        [userId, actorGlobalRole, sourceIp, link.team_id, JSON.stringify({ linkId: link.id })],
+      );
+    },
   );
 
-  // Emit audit event only when a new row was actually inserted — not for
-  // existing-member cases where ON CONFLICT suppressed the insert.
+  // Engineer review Finding 3: this structured-log emission fires only after
+  // withAuditTransaction above has already committed successfully, and only
+  // when a new row was actually inserted — not at the former source position
+  // immediately after the INSERT resolved.
   if (insertResult.rows.length > 0) {
     emitAuditEvent(logger, "join.link_redeemed", {
       userId,

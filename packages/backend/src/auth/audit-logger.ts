@@ -3,9 +3,20 @@ import type { FastifyBaseLogger } from "fastify";
 export type AuditEventName =
   | "auth.authorization_initiated"
   | "auth.callback_received"
+  // auth.success: auth-events-audit-log-coverage, design.md Decision D2 (the
+  // fail-open group). Also produces a durable audit_log row via
+  // writeFailOpenAuditRow (fail-open-audit-write.ts) -- see design.md's
+  // "Login and session-creation events are durably recorded" requirement.
   | "auth.success"
   | "auth.failure"
+  // auth.first_access_created: auth-events-audit-log-coverage, design.md
+  // Decision D2 (the transactional group). Also produces a durable audit_log
+  // row, written in the same transaction as resolveOrCreateAccount's UPSERT,
+  // via withAuditTransaction (audit-write-transaction.ts).
   | "auth.first_access_created"
+  // auth.session_created: auth-events-audit-log-coverage, design.md Decision
+  // D2 (the fail-open group, same as auth.success). Also produces a durable
+  // audit_log row via writeFailOpenAuditRow.
   | "auth.session_created"
   | "auth.session_invalidated"
   | "auth.token_refresh_success"
@@ -18,6 +29,10 @@ export type AuditEventName =
   // IdP-side SSO session (the user's local session ended, but the IdP was
   // never notified) queryable rather than only discoverable by grepping error
   // logs for shape.
+  //
+  // auth-events-audit-log-coverage, design.md Decision D2 (the fail-open
+  // group): also produces a durable audit_log row via writeFailOpenAuditRow
+  // (fail-open-audit-write.ts).
   | "auth.idp_logout_failed"
   // auth.audit_write_failed: http-auth-audit-log-coverage, design.md Decision
   // D5. Fired by session-invalidation-audit.ts's writeSessionInvalidatedAuditRow
@@ -33,8 +48,23 @@ export type AuditEventName =
   // sites (three in middleware.ts's onRequest hook, one in auth.ts's
   // /auth/logout) mints or has access to one today. metadata: { userId,
   // authSessionId, reason, failureMode: "error" | "timeout", sourceIp }.
+  //
+  // auth-events-audit-log-coverage extends this same event to three more
+  // fail-open-group emissions (auth.success, auth.session_created,
+  // auth.idp_logout_failed), via writeFailOpenAuditRow
+  // (fail-open-audit-write.ts) instead of session-invalidation-audit.ts's
+  // writeSessionInvalidatedAuditRow.
   | "auth.audit_write_failed"
+  // join.link_created: auth-events-audit-log-coverage, design.md Decision D2
+  // (the transactional group). Also produces a durable audit_log row,
+  // written in the same transaction as the join_links INSERT, via
+  // withAuditTransaction (audit-write-transaction.ts).
   | "join.link_created"
+  // join.link_redeemed: auth-events-audit-log-coverage, design.md Decision
+  // D2/D5 (the transactional group, both call sites -- join-links.ts's
+  // direct path and auth.ts's executeJoinFlow through-auth path). Also
+  // produces a durable audit_log row, written in the same transaction as the
+  // team_memberships INSERT, via withAuditTransaction.
   | "join.link_redeemed"
   | "join.link_rejected"
   // team.role_changed is the structured-log counterpart to the role_change_audit
@@ -88,6 +118,12 @@ export type AuditEventName =
   // auth.role_claim_mapped is emitted when a returning user's global_role changes
   // due to an updated IdP role claim (Decision 2, establish-manager-team-relationship).
   // Not emitted for new users (auth.first_access_created covers those).
+  //
+  // auth-events-audit-log-coverage, design.md Decision D2/D4 (the
+  // transactional group): also produces a durable audit_log row, written in
+  // the same transaction as resolveOrCreateAccount's UPSERT, via
+  // withAuditTransaction -- including a previousRole metadata field
+  // (Decision D4).
   | "auth.role_claim_mapped"
   // em.* events are the structured-log counterparts to audit_log DB rows written
   // by Phase 3 EM read-only access endpoints (SESSION-007/008, TREND-001/002,

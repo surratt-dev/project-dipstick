@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import { db } from "../db.js";
 import { config } from "../config.js";
 
@@ -21,6 +22,13 @@ export interface ResolvedUser {
   email: string;
   globalRole: string;
   isNewUser: boolean;
+  /**
+   * auth-events-audit-log-coverage, design.md Decision D4: the account's
+   * global_role value on record immediately before this authentication's
+   * UPSERT applied, captured in the same statement as the UPSERT. `null`
+   * when `isNewUser` is true -- there is no prior row.
+   */
+  previousGlobalRole: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +96,7 @@ function mapRoleClaimToGlobalRole(
 export async function resolveOrCreateAccount(
   claims: IdTokenClaims,
   logger?: { warn: (msg: string, fields?: Record<string, unknown>) => void },
+  client?: PoolClient,
 ): Promise<ResolvedUser> {
   // Task 1 — column type verification: display_name and email are both
   // TEXT (unconstrained) in migration 2_create_tables.sql. Neither is
@@ -118,8 +127,17 @@ export async function resolveOrCreateAccount(
   // global_role is included in the upsert and updated on every sign-in so that
   // IdP role changes (e.g., EM promoted/removed) are reflected at the user's
   // next authentication (Decision 2, establish-manager-team-relationship).
-  const result = await db.query(
-    `INSERT INTO users (oidc_subject, oidc_issuer, display_name, email, global_role)
+  // auth-events-audit-log-coverage, design.md Decision D4: the `prior` CTE
+  // captures the pre-update global_role value in the same statement, before
+  // the UPDATE applies -- no extra round trip, since it's computed in the
+  // same statement already running. `previous_global_role` is NULL for a
+  // brand-new user (no prior row to have selected).
+  const queryExecutor = client ?? db;
+  const result = await queryExecutor.query(
+    `WITH prior AS (
+       SELECT global_role FROM users WHERE oidc_subject = $1 AND oidc_issuer = $2
+     )
+     INSERT INTO users (oidc_subject, oidc_issuer, display_name, email, global_role)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (oidc_subject, oidc_issuer)
      DO UPDATE SET
@@ -127,7 +145,9 @@ export async function resolveOrCreateAccount(
        email = EXCLUDED.email,
        global_role = EXCLUDED.global_role,
        updated_at = NOW()
-     RETURNING id, oidc_subject, oidc_issuer, display_name, email, global_role, (xmax = 0) AS is_new_user`,
+     RETURNING id, oidc_subject, oidc_issuer, display_name, email, global_role,
+               (xmax = 0) AS is_new_user,
+               (SELECT global_role FROM prior) AS previous_global_role`,
     [claims.sub, claims.iss, displayName, email, globalRole],
   );
 
@@ -139,6 +159,7 @@ export async function resolveOrCreateAccount(
     email: string;
     global_role: string;
     is_new_user: boolean;
+    previous_global_role: string | null;
   };
 
   return {
@@ -149,5 +170,6 @@ export async function resolveOrCreateAccount(
     email: row.email,
     globalRole: row.global_role,
     isNewUser: row.is_new_user,
+    previousGlobalRole: row.is_new_user ? null : row.previous_global_role,
   };
 }

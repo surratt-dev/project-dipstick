@@ -9,7 +9,13 @@ export function AuthErrorPage() {
   const correlationId = searchParams.get("correlationId");
 
   const isRetryable =
-    category === "provider_unavailable" || category === "invalid_request";
+    category === "provider_unavailable" ||
+    category === "invalid_request" ||
+    // internal_error: auth-events-audit-log-coverage, design.md Decision D7.
+    // This application's own database infrastructure failing (not the IdP,
+    // not the user's credentials) is a transient condition worth retrying,
+    // the same as provider_unavailable.
+    category === "internal_error";
 
   return (
     <div

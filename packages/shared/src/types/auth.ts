@@ -53,7 +53,14 @@ export type AuthErrorCategory =
   | "provider_unavailable"
   | "authentication_failed"
   | "session_expired"
-  | "invalid_request";
+  | "invalid_request"
+  // internal_error: auth-events-audit-log-coverage, design.md Decision D7.
+  // Distinguishes a failure in this application's own database
+  // infrastructure (an AuditWriteError -- a failed audit_log INSERT inside
+  // the transactional group's transaction, or a failed db.connect() before
+  // it) from an actual sign-in/IdP problem. Treated as retryable, the same
+  // as provider_unavailable.
+  | "internal_error";
 
 export interface AuthError {
   error: {

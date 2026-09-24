@@ -270,6 +270,7 @@ describe("Auth types", () => {
     expectTypeOf<"authentication_failed">().toMatchTypeOf<AuthErrorCategory>();
     expectTypeOf<"session_expired">().toMatchTypeOf<AuthErrorCategory>();
     expectTypeOf<"invalid_request">().toMatchTypeOf<AuthErrorCategory>();
+    expectTypeOf<"internal_error">().toMatchTypeOf<AuthErrorCategory>();
   });
 
   it("AuthSession interface has correct shape", () => {
