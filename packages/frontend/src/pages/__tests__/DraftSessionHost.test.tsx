@@ -170,6 +170,118 @@ describe("DraftSessionHost", () => {
 });
 
 // ---------------------------------------------------------------------------
+// session-lobby-routing-gap — tasks.md §2/§3/§4. Start Session control,
+// navigate link, and lobby-state copy alignment with SessionLobbyPage.
+// ---------------------------------------------------------------------------
+describe("session-lobby-routing-gap: Start Session control (tasks.md §2)", () => {
+  // 2.1/2.2/2.3, test 2.5
+  it("2.5: facilitator starts the session from DraftSessionHost and the view updates in place to pre_session", async () => {
+    const fetchMock = mockFetchSequence(
+      { jsonBody: lobbyState },
+      { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "pre_session" } },
+    );
+
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("start-session-button")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("start-session-button"));
+
+    await waitFor(() => expect(screen.queryByTestId("live-readiness-lobby")).not.toBeInTheDocument());
+    expect(screen.getByTestId("live-readiness-navigate")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/v1/sessions/sess-1/start",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  // 2.4, test 2.6
+  it("2.6: Start Session failure shows inline retry and does not advance local state", async () => {
+    mockFetchSequence(
+      { jsonBody: lobbyState },
+      { ok: false, status: 500, jsonBody: { error: { message: "Couldn't start the session." } } },
+    );
+
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("start-session-button")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("start-session-button"));
+
+    await waitFor(() => expect(screen.getByTestId("start-session-error")).toBeInTheDocument());
+    expect(screen.getByTestId("live-readiness-lobby")).toBeInTheDocument();
+    expect(screen.getByTestId("start-session-button")).not.toBeDisabled();
+  });
+});
+
+describe("session-lobby-routing-gap: navigate link to the review (tasks.md §3)", () => {
+  // 3.2
+  it("3.2: the navigate link appears once currentSessionState reaches pre_session", async () => {
+    mockFetchSequence({
+      jsonBody: { sessionId: "sess-1", teamId: "team-1", currentSessionState: "pre_session", bannerState: null, joinToken: "tok12345" },
+    });
+
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("live-session-navigate-link")).toBeInTheDocument());
+  });
+
+  it("the navigate link also appears for active and wrap_up, but not for complete or abandoned", async () => {
+    for (const state of ["active", "wrap_up"] as const) {
+      mockFetchSequence({
+        jsonBody: { sessionId: "sess-1", teamId: "team-1", currentSessionState: state, bannerState: null, joinToken: "tok12345" },
+      });
+      renderHost();
+      await waitFor(() => expect(screen.getByTestId("live-session-navigate-link")).toBeInTheDocument());
+      cleanup();
+    }
+
+    for (const state of ["complete", "abandoned"] as const) {
+      mockFetchSequence({
+        jsonBody: { sessionId: "sess-1", teamId: "team-1", currentSessionState: state, bannerState: null, joinToken: "tok12345" },
+      });
+      renderHost();
+      await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+      expect(screen.queryByTestId("live-session-navigate-link")).not.toBeInTheDocument();
+      cleanup();
+    }
+  });
+
+  // 3.3
+  it("3.3: activating the navigate link routes to /session/:sessionId", async () => {
+    mockFetchSequence({
+      jsonBody: { sessionId: "sess-1", teamId: "team-1", currentSessionState: "pre_session", bannerState: null, joinToken: "tok12345" },
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/team/team-1/session/sess-1"]}>
+        <Routes>
+          <Route path="/team/:teamId/session/:sessionId" element={<DraftSessionHost />} />
+          <Route path="/session/:sessionId" element={<div data-testid="session-page-stub">Session page</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("live-session-navigate-link")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("live-session-navigate-link"));
+
+    await waitFor(() => expect(screen.getByTestId("session-page-stub")).toBeInTheDocument());
+  });
+});
+
+describe("session-lobby-routing-gap: copy alignment (tasks.md §4)", () => {
+  // 4.3
+  it("4.3: heading and control label text read as the same product as SessionLobbyPage's lobby branch", async () => {
+    mockFetchSequence({ jsonBody: lobbyState });
+
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("live-readiness-lobby")).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: /session lobby/i })).toBeInTheDocument();
+    expect(screen.getByTestId("start-session-button")).toHaveTextContent("Start Session");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // join-link-display-copy — tasks.md §4. Copy button/banner wiring in both
 // draft-control-view and live-readiness-view.
 // ---------------------------------------------------------------------------

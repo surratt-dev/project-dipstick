@@ -1786,6 +1786,68 @@ describe("authRoutes", () => {
     });
 
     // -------------------------------------------------------------------------
+    // session-lobby-routing-gap, design.md D6/tasks.md 5.6 — the through-OIDC
+    // join path has no dedicated test today for the status-check behavior
+    // resolveJoinLandingPath replaced; this exercises it directly rather than
+    // assuming 5.4's join-links.ts coverage also covers this file.
+    // -------------------------------------------------------------------------
+
+    it("session-lobby-routing-gap 5.6: through-auth join redirects to /session/:sessionId when the most recent session is lobby", async () => {
+      mockRedisGetdel.mockResolvedValue(
+        JSON.stringify({
+          nonce: "n",
+          codeVerifier: "cv",
+          pendingJoinToken: "valid-tok",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      mockHandleCallback.mockResolvedValue({
+        claims: () => ({ sub: "sub-1", iss: "https://idp.example.com" }),
+        access_token: "at",
+        expires_in: 3600,
+      });
+      mockResolveOrCreateAccount.mockResolvedValue({
+        id: "user-1",
+        oidcSubject: "sub-1",
+        oidcIssuer: "https://idp.example.com",
+        displayName: "Alice",
+        email: "alice@example.com",
+        isNewUser: false,
+      });
+      mockBuildSessionData.mockReturnValue({
+        userId: "user-1",
+        sessionCreatedAt: new Date().toISOString(),
+        encryptedAccessToken: "enc(at)",
+        tokenExpiresAt: 9999999999,
+      });
+
+      // 1. join_links lookup — valid link
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          id: "link-1",
+          team_id: "team-lobby",
+          expires_at: new Date(Date.now() + 3_600_000),
+          revoked_at: null,
+        }],
+      });
+      // 2. INSERT — new row inserted (new member), on the transaction client
+      queueJoinFlowDbConnects([{ id: "membership-1" }]);
+      // 3. resolveJoinLandingPath's most-recent-session query — lobby
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "session-lobby-1", status: "lobby" }] });
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/auth/callback?state=valid&code=abc",
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe(
+        "http://localhost:5173/session/session-lobby-1?newMember=true",
+      );
+    });
+
+    // -------------------------------------------------------------------------
     // Task 11.6 — Audit events carry real sourceIp (not the string "callback")
     // -------------------------------------------------------------------------
 

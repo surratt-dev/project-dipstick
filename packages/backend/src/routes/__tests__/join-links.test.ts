@@ -422,7 +422,7 @@ describe("joinLinkRoutes", () => {
           ],
         })
         .mockResolvedValueOnce({ rows: [{ global_role: "engineer" }] })
-        .mockResolvedValueOnce({ rows: [{ id: "session-abc" }] }); // active session
+        .mockResolvedValueOnce({ rows: [{ id: "session-abc", status: "active" }] }); // active session
       mockDbConnect.mockResolvedValueOnce(
         makeMockClient([{ rows: [] }, { rows: [{ id: "membership-1" }] }]),
       );
@@ -435,6 +435,38 @@ describe("joinLinkRoutes", () => {
 
       expect(res.statusCode).toBe(302);
       expect(res.headers.location).toBe("/session/session-abc");
+    });
+
+    // session-lobby-routing-gap, design.md D6/tasks.md 5.4: confirms the
+    // real redirect goes through resolveJoinLandingPath's seven-status
+    // bucket logic, not just that a session row was found.
+    it("should redirect to /session/:sessionId when the most recent session is lobby", async () => {
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: "link-1",
+              team_id: "team-1",
+              expires_at: new Date(Date.now() + 86400000),
+              revoked_at: null,
+              is_active: true,
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ rows: [{ global_role: "engineer" }] })
+        .mockResolvedValueOnce({ rows: [{ id: "session-lobby-1", status: "lobby" }] });
+      mockDbConnect.mockResolvedValueOnce(
+        makeMockClient([{ rows: [] }, { rows: [{ id: "membership-1" }] }]),
+      );
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/join/valid-token",
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe("/session/session-lobby-1");
     });
 
     // auth-events-audit-log-coverage, design.md Decision D5, tasks 6.3-6.7.

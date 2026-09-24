@@ -20,6 +20,7 @@ import { sanitizeOidcError } from "../auth/oidc-error-sanitizer.js";
 import { writeSessionInvalidatedAuditRow } from "../auth/session-invalidation-audit.js";
 import { writeFailOpenAuditRow } from "../auth/fail-open-audit-write.js";
 import { withAuditTransaction } from "../auth/audit-write-transaction.js";
+import { resolveJoinLandingPath } from "../auth/join-landing-path.js";
 import { resolveActorGlobalRole } from "../realtime/connection-reauthorization.js";
 import type { AuthSession, DevLoginOption, DevLoginOptionsResponse } from "@dipstick/shared";
 
@@ -851,11 +852,11 @@ async function executeJoinFlow(
     });
   }
 
-  // Check for active session
-  const sessionResult = await db.query(
-    `SELECT id FROM sessions WHERE team_id = $1 AND status = 'active' LIMIT 1`,
-    [link.team_id],
-  );
+  // session-lobby-routing-gap, design.md D6: the full seven-SessionStatus
+  // landing decision is shared with join-links.ts's GET /api/join/:token
+  // via resolveJoinLandingPath, not a second independently-maintained copy
+  // of the `status = 'active'` check this replaced.
+  const landingPath = await resolveJoinLandingPath(link.team_id);
 
   // Append outcome signal so the frontend can surface the correct notification.
   // ?newMember=true  — first-time join (new row inserted)
@@ -863,10 +864,5 @@ async function executeJoinFlow(
   const outcomeSuffix =
     insertResult.rows.length > 0 ? "?newMember=true" : "?alreadyMember=true";
 
-  if (sessionResult.rows.length > 0) {
-    const activeSession = sessionResult.rows[0] as { id: string };
-    return { redirectUrl: `/session/${activeSession.id}${outcomeSuffix}` };
-  }
-
-  return { redirectUrl: `/team/${link.team_id}${outcomeSuffix}` };
+  return { redirectUrl: `${landingPath}${outcomeSuffix}` };
 }

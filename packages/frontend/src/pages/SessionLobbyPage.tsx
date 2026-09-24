@@ -299,9 +299,19 @@ export function SessionLobbyPage() {
 
       {branch.kind === "lobby" && (
         <div data-testid="session-lobby-waiting">
-          <p data-testid="session-lobby-info">
-            Session <strong>{sessionId}</strong> — waiting for the facilitator to start.
-          </p>
+          {branch.isFacilitator ? (
+            <p data-testid="session-lobby-info">
+              Session <strong>{sessionId}</strong> — waiting for the facilitator to start.
+            </p>
+          ) : (
+            // session-lobby-routing-gap design.md D5/task 4.2: the
+            // Engineer-facing waiting copy drops the raw sessionId and adds
+            // a one-line reassurance — the facilitator-facing copy above is
+            // unchanged (out of scope for this change).
+            <p data-testid="session-lobby-waiting-message">
+              Session Lobby — the facilitator will start the session shortly.
+            </p>
+          )}
           {branch.isFacilitator && (
             <div style={{ marginTop: "1rem" }}>
               <button

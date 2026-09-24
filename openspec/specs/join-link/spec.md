@@ -294,15 +294,39 @@ The "no active row, create one" branch SHALL invoke the same audited creation lo
 ---
 
 ### Requirement: Session-aware join link landing
-If an active session exists for the team (status `active`) at the time a join link flow completes, the user SHALL be directed to `/session/:sessionId`. If no active session exists, the user SHALL land on `/team/:teamId`.
+If a session exists for the team whose status is `lobby`, `pre_session`, or `active` at the time a join link flow completes, the user SHALL be directed to `/session/:sessionId`. If the team's most recent session (if any) is in `draft`, `wrap_up`, `complete`, or `abandoned` status, or no session exists at all for the team, the user SHALL land on `/team/:teamId`. These two buckets are exhaustive over `SessionStatus`'s seven values — a future addition to `SessionStatus` MUST be deliberately assigned to one of the two buckets in this requirement's text, not left to an implicit default.
+
+Both call sites that redeem a join link and then need to know where to send the user — `join-links.ts`'s `GET /api/join/:token` (direct/already-authenticated path) and `auth.ts`'s `executeJoinFlow` (through-OIDC path, reached from `GET /auth/callback`) — SHALL resolve this destination via a single shared helper (`resolveJoinLandingPath`), not independently-maintained copies of the same status check.
+
+This requirement governs the redirect destination only. It does not guarantee that a first-time-joining Engineer who lands on `/session/:sessionId` during `lobby` or `pre_session` is authorized to see session content there — that is a separate, currently-unresolved `session_participants` registration gap, tracked as a named follow-up (see `session-lobby-routing-gap`'s design.md Decision D7).
+
+#### Scenario: Lobby session exists at join time
+- **WHEN** a user completes the join flow and a session with status `lobby` exists for the team
+- **THEN** the user is redirected to `/session/:sessionId`
+
+#### Scenario: Pre-session review is in progress at join time
+- **WHEN** a user completes the join flow and a session with status `pre_session` exists for the team
+- **THEN** the user is redirected to `/session/:sessionId`
 
 #### Scenario: Active session exists at join time
 - **WHEN** a user completes the join flow and a session with status `active` exists for the team
 - **THEN** the user is redirected to `/session/:sessionId`
 
-#### Scenario: No active session at join time
-- **WHEN** a user completes the join flow and no active session exists for the team
-- **THEN** the user is redirected to `/team/:teamId`
+#### Scenario: Only a draft session exists at join time
+- **WHEN** a user completes the join flow and the team's most recent session has status `draft`
+- **THEN** the user lands on `/team/:teamId`
+
+#### Scenario: Only a wrap-up session exists at join time
+- **WHEN** a user completes the join flow and the team's most recent session has status `wrap_up`
+- **THEN** the user lands on `/team/:teamId`
+
+#### Scenario: Only a completed or abandoned session exists at join time
+- **WHEN** a user completes the join flow and the team's most recent session has status `complete` or `abandoned`
+- **THEN** the user lands on `/team/:teamId`
+
+#### Scenario: No session exists at join time
+- **WHEN** a user completes the join flow and no session exists for the team
+- **THEN** the user lands on `/team/:teamId`
 
 ---
 
