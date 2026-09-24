@@ -206,3 +206,58 @@ describe("SessionCreationPage — confirm screen", () => {
     expect(fetchMock.mock.calls[2]![0]).toBe("/api/v1/teams/eligible-for-session");
   });
 });
+
+// ---------------------------------------------------------------------------
+// http-session-expiry-reauth-parity, tasks.md task 5.3, design.md Decisions
+// 1a and 3.
+// ---------------------------------------------------------------------------
+const SESSION_EXPIRED_BODY = {
+  error: { category: "session_expired", message: "Your session has expired. Please sign in again." },
+};
+
+describe("http-session-expiry-reauth-parity: SessionCreationPage reauth parity", () => {
+  it("5.3: session-expiry on the picker's GET renders the treatment", async () => {
+    mockFetchSequence({ ok: false, status: 401, jsonBody: SESSION_EXPIRED_BODY });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
+    expect(screen.queryByTestId("picker-error")).not.toBeInTheDocument();
+  });
+
+  it("5.3: session-expiry on the confirm screen's POST renders the treatment, not the 409/403 branches", async () => {
+    const listBody: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+      callerHasTeamMemberships: false,
+    };
+    mockFetchSequence({ jsonBody: listBody }, { ok: false, status: 401, jsonBody: SESSION_EXPIRED_BODY });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
+    expect(screen.queryByTestId("confirm-error-session-already-exists")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("confirm-error-membership-conflict")).not.toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it("a non-session-expiry 401 still falls into the existing generic-error branch (regression)", async () => {
+    const listBody: EligibleTeamsResponse = {
+      eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+      callerHasTeamMemberships: false,
+    };
+    mockFetchSequence(
+      { jsonBody: listBody },
+      { ok: false, status: 401, jsonBody: { error: { category: "provider_unavailable", message: "x" } } },
+    );
+
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+
+    await waitFor(() => expect(screen.getByTestId("confirm-error-membership-conflict")).toBeInTheDocument());
+  });
+});

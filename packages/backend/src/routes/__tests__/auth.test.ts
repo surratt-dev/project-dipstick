@@ -2414,4 +2414,63 @@ describe("validateReturnTo", () => {
     expect(result).toBe(value);
     expect(log.debug).not.toHaveBeenCalled();
   });
+
+  // http-session-expiry-reauth-parity, design.md Decision 3 / tasks.md task
+  // 2.3: two new allow-listed shapes (DraftSessionHost's combined
+  // team-and-session route, and the first literal, non-UUID-anchored path
+  // in this list).
+  describe("http-session-expiry-reauth-parity: new allow-listed shapes", () => {
+    it("accepts the combined /team/:teamId/session/:sessionId shape", () => {
+      const log = fakeLog();
+      const value =
+        "/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c/session/1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d";
+      const result = validateReturnTo(value, log);
+
+      expect(result).toBe(value);
+      expect(log.debug).not.toHaveBeenCalled();
+    });
+
+    it("accepts the literal /sessions/new path", () => {
+      const log = fakeLog();
+      const result = validateReturnTo("/sessions/new", log);
+
+      expect(result).toBe("/sessions/new");
+      expect(log.debug).not.toHaveBeenCalled();
+    });
+
+    it("accepts /sessions/new with a trailing query string", () => {
+      const log = fakeLog();
+      const value = "/sessions/new?foo=bar";
+      const result = validateReturnTo(value, log);
+
+      expect(result).toBe(value);
+      expect(log.debug).not.toHaveBeenCalled();
+    });
+
+    it("rejects /sessions/new/anything as a near-miss", () => {
+      const log = fakeLog();
+      const result = validateReturnTo("/sessions/new/anything", log);
+
+      expect(result).toBeNull();
+      expect(log.debug).toHaveBeenCalled();
+    });
+
+    it("rejects /sessions/newer as a near-miss", () => {
+      const log = fakeLog();
+      const result = validateReturnTo("/sessions/newer", log);
+
+      expect(result).toBeNull();
+      expect(log.debug).toHaveBeenCalled();
+    });
+
+    it("still accepts the existing /session/:id and /team/:id shapes (regression)", () => {
+      const log = fakeLog();
+      const sessionValue = "/session/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+      const teamValue = "/team/9f8b1a2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+
+      expect(validateReturnTo(sessionValue, log)).toBe(sessionValue);
+      expect(validateReturnTo(teamValue, log)).toBe(teamValue);
+      expect(log.debug).not.toHaveBeenCalled();
+    });
+  });
 });

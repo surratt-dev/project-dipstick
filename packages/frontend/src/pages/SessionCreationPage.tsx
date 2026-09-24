@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import type { EligibleTeam, EligibleTeamsResponse, SessionAlreadyExistsResponse } from "@dipstick/shared";
 import { useAuth } from "../auth/AuthContext.js";
+import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
+import { detectSessionExpiry } from "../http/sessionExpiry.js";
 
 // ---------------------------------------------------------------------------
 // SessionCreationPage — picker -> confirm -> create flow
@@ -38,6 +40,13 @@ export function SessionCreationPage() {
   const [submitting, setSubmitting] = useState(false);
   const [confirmError, setConfirmError] = useState<ConfirmError | null>(null);
 
+  // http-session-expiry-reauth-parity design.md Decision 1a: always
+  // role="facilitator" on this page — gated on canFacilitateSessions before
+  // rendering at all, no derivation needed. `returnTo` is this page's fixed
+  // route (`/sessions/new`, not window.location.pathname) per design.md
+  // Decision 3.
+  const [reauthRequired, setReauthRequired] = useState<{ returnTo: string } | null>(null);
+
   const loadEligibleTeams = useCallback(async () => {
     setListLoading(true);
     setListError(null);
@@ -46,6 +55,11 @@ export function SessionCreationPage() {
         credentials: "include",
       });
       if (!res.ok) {
+        const { isSessionExpired } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired({ returnTo: "/sessions/new" + window.location.search });
+          return;
+        }
         setListError("Failed to load teams you can create a session for.");
         return;
       }
@@ -78,6 +92,10 @@ export function SessionCreationPage() {
     return <Navigate to="/" replace />;
   }
 
+  if (reauthRequired) {
+    return <ReauthRequiredTreatment role="facilitator" returnTo={reauthRequired.returnTo} />;
+  }
+
   function selectTeam(team: EligibleTeam) {
     setConfirmError(null);
     setScreen({ name: "confirm", team });
@@ -104,6 +122,16 @@ export function SessionCreationPage() {
           state: { teamName: team.teamName, lastSessionAt: team.lastSessionAt },
         });
         return;
+      }
+
+      if (res.status === 401) {
+        const { isSessionExpired } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired({ returnTo: "/sessions/new" + window.location.search });
+          return;
+        }
+        // A non-session-expiry 401 falls through to the generic-error
+        // branch below, unaltered.
       }
 
       if (res.status === 409) {
