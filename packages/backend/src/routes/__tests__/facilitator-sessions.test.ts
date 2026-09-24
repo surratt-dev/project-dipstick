@@ -262,6 +262,39 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(res.json().sessionId).toBe("session-draft-1");
   });
 
+  // cross-team-facilitator-constraint tasks 2.1/2.2 — the actor query's
+  // membership join uses removed_at IS NULL to determine is_member;
+  // asserted at the query-text level since the mocked DB layer doesn't
+  // evaluate JOIN conditions. "FROM users u" uniquely isolates this query
+  // from the team-exists check ("FROM teams") and the denial-path audit
+  // insert ("INSERT INTO audit_log") mocked elsewhere in this block; the
+  // success-path INSERT INTO sessions/audit_log pair runs on the
+  // transaction client, not db.query, so it never appears in this list.
+  it("the actor query's membership join excludes removed memberships via removed_at IS NULL", async () => {
+    mockActorQuery("facilitator", false);
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "session-draft-1" }] }, // INSERT sessions
+      { rows: [] }, // INSERT audit_log (draft_created)
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/sessions/draft",
+    });
+
+    const actorQueryCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("FROM users u"),
+    );
+    expect(actorQueryCall).toBeDefined();
+    expect(actorQueryCall![0] as string).toContain("removed_at IS NULL");
+  });
+
   it("returns 201 with draft status, a joinToken, and writes the draft_created audit row in the same transaction as the insert", async () => {
     mockActorQuery("facilitator", false);
     mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
@@ -1813,6 +1846,53 @@ describe("Grace window behavior (Task 8.9, 8.10) — documented reference", () =
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state
+//
+// cross-team-facilitator-constraint task 3.1 — demonstrates there is no
+// mechanism that re-evaluates or invalidates an existing session record in
+// response to a later team_memberships change: this handler's only query is
+// against `sessions`, with no team_memberships reference anywhere in it.
+// Backs session-creation/spec.md's "does not invalidate the existing
+// session record" scenario.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("reflects the mocked session row unchanged and issues no team_memberships query", async () => {
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: "session-1",
+          team_id: "team-1",
+          facilitator_id: "facilitator-1",
+          status: "active",
+          join_token: "join-token-abc",
+        },
+      ],
+    });
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/team-1/sessions/session-1/facilitator-state",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.sessionId).toBe("session-1");
+    expect(body.teamId).toBe("team-1");
+    expect(body.currentSessionState).toBe("active");
+    expect(body.bannerState).toBeNull();
+    expect(body.joinToken).toBe("join-token-abc");
+
+    const teamMembershipsCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("team_memberships"),
+    );
+    expect(teamMembershipsCall).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/teams/eligible-for-session
 //
 // session-creation-existing-team, design.md Decision D2. tasks.md Section 3.
@@ -1869,6 +1949,27 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
     );
     expect(eligibleQueryCall).toBeDefined();
     expect(eligibleQueryCall![0] as string).toContain("deactivated_at IS NULL");
+  });
+
+  // cross-team-facilitator-constraint task 1.1 — the eligibility query
+  // excludes the caller's own active team memberships via this LEFT
+  // JOIN/WHERE shape; asserted at the query-text level for the same reason
+  // as 3.7 above (the mocked DB layer doesn't evaluate WHERE clauses).
+  it("the eligibility query excludes the caller's own team memberships via its WHERE clause", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ exists: false }] });
+
+    const app = await buildApp();
+    await app.inject({ method: "GET", url: "/api/v1/teams/eligible-for-session" });
+
+    const eligibleQueryCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("FROM teams"),
+    );
+    expect(eligibleQueryCall).toBeDefined();
+    expect(eligibleQueryCall![0] as string).toContain("LEFT JOIN team_memberships");
+    expect(eligibleQueryCall![0] as string).toContain("WHERE tm.id IS NULL");
   });
 
   // task 3.8

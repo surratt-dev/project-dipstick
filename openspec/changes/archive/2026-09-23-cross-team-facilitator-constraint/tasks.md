@@ -1,0 +1,25 @@
+## 1. Query-text assertion — eligible-teams membership exclusion
+
+- [x] 1.1 In `packages/backend/src/routes/__tests__/facilitator-sessions.test.ts`, in the `GET /api/v1/teams/eligible-for-session` describe block, add a test (adjacent to existing test 3.7) that locates the `FROM teams` query call and asserts its text contains the membership-exclusion join shape (`LEFT JOIN team_memberships` and `WHERE tm.id IS NULL`), mirroring 3.7's `.find(...)` / `.toContain(...)` pattern.
+- [x] 1.2 Run the test and confirm it fails if the predicate text is altered or removed (temporarily comment out the `WHERE tm.id IS NULL` clause in `facilitator-sessions.ts` locally, confirm the new test fails, then revert) — do not leave the production file changed.
+
+## 2. Query-text assertion — draft-session membership check
+
+- [x] 2.1 In the same test file, in the `POST /api/v1/teams/:teamId/sessions/draft` describe block, add a test that locates the actor query call (the one selecting `global_role` and `is_member`) and asserts its text contains `removed_at IS NULL`, using the same `.find(...)` / `.toContain(...)` pattern as task 1.1.
+- [x] 2.2 Use `(call[0] as string).includes("FROM users u")` as the `.find()` predicate for task 2.1, and confirm it uniquely isolates the actor query from the other `db.query` calls this describe block's tests mock in the same request: the team-exists check (`facilitator-sessions.ts:243`, `"SELECT id FROM teams WHERE id = $1"`) contains `"FROM teams"` but not `"FROM users u"`, and the denial-path audit-log insert (`facilitator-sessions.ts:263`, `"INSERT INTO audit_log ..."`) contains neither substring. (The draft-session `INSERT INTO sessions` / `INSERT INTO audit_log` pair for the success path run on the transaction client via `client.query`, not `db.query`, so they never appear in `mockDbQuery.mock.calls` at all.) No other query in this describe block's mocked sequences contains `"FROM users u"`, so the predicate cannot match the wrong call.
+- [x] 2.3 Run the test and confirm it fails if the predicate text is altered or removed (temporarily comment out the `AND tm.removed_at IS NULL` line in the actor query's `LEFT JOIN team_memberships` clause in `facilitator-sessions.ts`, confirm the new test fails, then revert) — do not leave the production file changed.
+
+## 3. Historical-session non-invalidation coverage
+
+- [x] 3.1 In the same test file, add a new `describe` block for `GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state` (this file has no existing coverage of that endpoint). Give this block its own `beforeEach(() => vi.clearAllMocks())`, matching every other `describe` block in this file (11 existing instances follow this convention), so `mockDbQuery.mock.calls` reflects only this block's own tests and isn't corrupted by calls left over from whichever block runs immediately before it in file order. Add a test that:
+  1. Mocks the `sessions` query (`FROM sessions WHERE id = $1 AND team_id = $2`, `facilitator-sessions.ts:1694-1697`) to return a session row with an arbitrary non-draft status (e.g. `active`) and `facilitator_id` equal to the mocked caller's user id.
+  2. Calls the endpoint and asserts a `200` response whose `currentSessionState` and other fields reflect the mocked row unchanged.
+  3. Asserts that none of `mockDbQuery.mock.calls` contains `team_memberships` anywhere in the query text.
+  Do not attempt a before/after comparison of a membership value — this endpoint's handler contains exactly one query (the `sessions` read above) plus an in-memory `facilitator_id` check, with no `team_memberships` reference anywhere in it, so there is nothing to vary between a "before" and "after" mock. Step 3 is what proves the absence of a mechanism, which is the actual claim being tested.
+- [x] 3.2 Add the corresponding scenario to `openspec/changes/cross-team-facilitator-constraint/specs/session-creation/spec.md`'s `MODIFIED` requirement (already drafted: "A facilitator joining the facilitated team after session creation does not invalidate the existing session record") — verify it is present and matches the test's behavior exactly. Per security review, the scenario and its surrounding requirement text are scoped narrowly to session-record validity/creatability and explicitly disclaim any claim about participation or voting eligibility (a separate, unmodified `session-participation` concern) — do not broaden this wording when verifying it matches the test.
+
+## 4. Verification
+
+- [x] 4.1 Run the full `facilitator-sessions.test.ts` suite and confirm all tests pass, including the three new ones.
+- [x] 4.2 Confirm no production file under `packages/backend/src` was modified as part of this change (diff should be limited to the test file and `openspec/` artifacts).
+- [x] 4.3 Reference this change's PR when closing GitHub issue #46, noting the issue's original enforcement concern was already resolved by PR #153 and that this PR closes the residual test-coverage gap identified during that review.
