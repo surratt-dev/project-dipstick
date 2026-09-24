@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, waitFor, act, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { REAUTH_GRACE_EXPIRED_CLOSE_CODE } from "@dipstick/shared";
 import { SessionLobbyPage } from "../SessionLobbyPage.js";
 import { FakeWebSocket } from "../../realtime/__tests__/fake-websocket.js";
 
@@ -80,6 +81,14 @@ function mockFetchOnce(status: number, body: unknown): void {
     ok: status >= 200 && status < 300,
     json: () => Promise.resolve(body),
   } as Response);
+}
+
+const SESSION_EXPIRED_BODY = {
+  error: { category: "session_expired", message: "Your session has expired. Please sign in again.", correlationId: "corr-1" },
+};
+
+function mockSessionExpiredFetchOnce(): void {
+  mockFetchOnce(401, SESSION_EXPIRED_BODY);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,5 +366,177 @@ describe("6.4: no Start Session or advance control is rendered for a non-facilit
     renderPage();
     await waitFor(() => expect(screen.getByTestId("session-lobby-waiting")).toBeInTheDocument());
     expect(screen.queryByTestId("start-session-button")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// http-session-expiry-reauth-parity, tasks.md 3.0-3.8, design.md Decisions
+// 1a and 2. Covers the shared reauth-required gate: the three fetch-driven
+// signal sources on this page and the WS-driven `useConnectionHealth` state,
+// their role/returnTo values, and the idempotency rule between them.
+// ---------------------------------------------------------------------------
+describe("3.5-3.8: reauth-required parity (http-session-expiry-reauth-parity)", () => {
+  const originalLocation = window.location;
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", { writable: true, value: originalLocation });
+  });
+
+  function stubLocation(pathname: string, search = ""): void {
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: { ...originalLocation, pathname, search, href: "" },
+    });
+  }
+
+  function mockAuth(canFacilitateSessions: boolean): void {
+    vi.mocked(useAuth).mockReturnValue({
+      session: { ...mockSession, canFacilitateSessions },
+      loading: false,
+      refreshSession: vi.fn(),
+    });
+  }
+
+  describe("3.6: fetch-response session-expiry on each call site", () => {
+    it("action-items-review GET: renders the treatment with role=facilitator when canFacilitateSessions is true", async () => {
+      mockAuth(true);
+      stubLocation("/session/sess-1", "?x=1");
+      mockSessionExpiredFetchOnce();
+      renderPage("sess-1");
+
+      await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+      expect(screen.getByRole("alert").textContent).not.toMatch(/vote you haven't submitted/i);
+
+      fireEvent.click(screen.getByRole("button", { name: /log in again/i }));
+      expect(window.location.href).toBe(
+        `/auth/login?returnTo=${encodeURIComponent("/session/sess-1?x=1")}`,
+      );
+    });
+
+    it("action-items-review GET: renders the treatment with role=participant when canFacilitateSessions is false", async () => {
+      mockAuth(false);
+      mockSessionExpiredFetchOnce();
+      renderPage("sess-1");
+
+      await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+      expect(screen.getByRole("alert").textContent).toMatch(/vote you haven't submitted/i);
+    });
+
+    it("action-items-review GET: a non-session-expiry 401 leaves the existing generic-error path, not the treatment", async () => {
+      mockAuth(false);
+      mockFetchOnce(401, { error: { category: "provider_unavailable", message: "x" } });
+      renderPage("sess-1");
+
+      await waitFor(() => expect(screen.getByTestId("session-lobby-review-error")).toBeInTheDocument());
+      expect(screen.queryByRole("alert", { name: /log in again/i })).not.toBeInTheDocument();
+    });
+
+    it("start POST: renders the treatment with role=facilitator", async () => {
+      mockAuth(true);
+      mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: true });
+      renderPage("sess-1");
+      await waitFor(() => expect(screen.getByTestId("start-session-button")).toBeInTheDocument());
+
+      mockSessionExpiredFetchOnce();
+      fireEvent.click(screen.getByTestId("start-session-button"));
+
+      await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+      expect(screen.getByRole("alert").textContent).not.toMatch(/vote you haven't submitted/i);
+      expect(screen.queryByTestId("start-session-error")).not.toBeInTheDocument();
+    });
+
+    it("start POST: a non-session-expiry failure derives its message from the response body", async () => {
+      mockAuth(true);
+      mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: true });
+      renderPage("sess-1");
+      await waitFor(() => expect(screen.getByTestId("start-session-button")).toBeInTheDocument());
+
+      mockFetchOnce(500, { error: { message: "Server is unavailable." } });
+      fireEvent.click(screen.getByTestId("start-session-button"));
+
+      await waitFor(() => expect(screen.getByTestId("start-session-error")).toHaveTextContent("Server is unavailable."));
+    });
+
+    it("begin-voting POST: renders the treatment with role=facilitator", async () => {
+      mockAuth(true);
+      mockFetchOnce(200, {
+        actionItems: [
+          {
+            actionItemId: "ai-1",
+            description: "Fix flaky test",
+            ownerUserId: "user-1",
+            ownerDisplayName: "Alice",
+            status: "open",
+            originatingSessionId: "session-old-1",
+            originatingSessionNumber: 3,
+            stalenessLevel: "none",
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+        isFacilitator: true,
+      });
+      renderPage("sess-1");
+      await waitFor(() => expect(screen.getByTestId("begin-first-topic-button")).toBeInTheDocument());
+
+      mockSessionExpiredFetchOnce();
+      fireEvent.click(screen.getByTestId("begin-first-topic-button"));
+
+      await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+      expect(screen.getByRole("alert").textContent).not.toMatch(/vote you haven't submitted/i);
+      expect(screen.queryByTestId("begin-first-topic-error")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("3.7: the WS-driven signal alone", () => {
+    it("renders the treatment when useConnectionHealth's state transitions to reauth-required, with role following the canFacilitateSessions proxy", async () => {
+      mockAuth(true);
+      global.fetch = vi.fn(() => new Promise(() => {})); // GET never resolves
+      renderPage("sess-1");
+
+      await waitFor(() => expect(lastSocket).toBeDefined());
+      act(() => {
+        lastSocket?.emitClose(REAUTH_GRACE_EXPIRED_CLOSE_CODE);
+      });
+
+      await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+      expect(screen.getByRole("alert").textContent).not.toMatch(/vote you haven't submitted/i);
+    });
+  });
+
+  describe("3.5/3.8: idempotency — first signal wins, second is a no-op", () => {
+    it("WS signal first, then a fetch session-expiry — only one treatment, using the first signal's role/returnTo", async () => {
+      mockAuth(false);
+      stubLocation("/session/sess-1", "");
+      mockSessionExpiredFetchOnce();
+      renderPage("sess-1");
+
+      await waitFor(() => expect(lastSocket).toBeDefined());
+      act(() => {
+        lastSocket?.emitClose(REAUTH_GRACE_EXPIRED_CLOSE_CODE);
+      });
+
+      await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
+      // The fetch's own session-expiry response has already resolved (or will
+      // resolve) — it must not add a second treatment or alter the first.
+      await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
+    });
+
+    it("a start/begin-voting 401 first, then the WS close — only one treatment on screen", async () => {
+      mockAuth(true);
+      mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: true });
+      renderPage("sess-1");
+      await waitFor(() => expect(screen.getByTestId("start-session-button")).toBeInTheDocument());
+
+      mockSessionExpiredFetchOnce();
+      fireEvent.click(screen.getByTestId("start-session-button"));
+      await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
+
+      act(() => {
+        lastSocket?.emitClose(REAUTH_GRACE_EXPIRED_CLOSE_CODE);
+      });
+
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+    });
   });
 });

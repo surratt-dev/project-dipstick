@@ -8,7 +8,9 @@ import type {
 import { useAuth } from "../auth/AuthContext.js";
 import { SignOutButton } from "../components/SignOutButton.js";
 import { PreSessionActionItemReview } from "../components/PreSessionActionItemReview.js";
+import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
 import { useConnectionHealth } from "../realtime/connectionHealth.js";
+import { detectSessionExpiry } from "../http/sessionExpiry.js";
 import { buildSessionWebSocketUrl } from "./SessionConnectionHost.js";
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,24 @@ function isSessionStateChangeMessage(
   return message.eventType === "session_state_change";
 }
 
+// http-session-expiry-reauth-parity design.md Decision 1a: the
+// `action-items-review` GET is the call that *establishes* this page's own
+// facilitator/participant distinction (`branch.isFacilitator`) — if that
+// call itself 401s, there is no such distinction to read yet, so
+// `session?.canFacilitateSessions` is used as an explicit proxy instead.
+// The same proxy is reused by the WS-driven signal (task 3.4) per Decision 2.
+function reauthRoleProxy(session: { canFacilitateSessions: boolean } | null): "facilitator" | "participant" {
+  return session?.canFacilitateSessions ? "facilitator" : "participant";
+}
+
+function currentReturnTo(): string {
+  return window.location.pathname + window.location.search;
+}
+
+function readErrorMessage(body: unknown): string | undefined {
+  return (body as { error?: { message?: string } } | null)?.error?.message;
+}
+
 export function SessionLobbyPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const { session } = useAuth();
@@ -68,12 +88,32 @@ export function SessionLobbyPage() {
   const [beginVotingPending, setBeginVotingPending] = useState(false);
   const [beginVotingError, setBeginVotingError] = useState<string | null>(null);
 
+  // http-session-expiry-reauth-parity design.md Decision 2's "Structural
+  // home for the gate": the single shared idempotency gate every signal
+  // source (3.1-3.4) writes into via `prev ?? ...` — first-wins, by
+  // construction, not by convention. Not written to directly by any render
+  // branch below; only the top-level early return (task 3.0) reads it.
+  const [reauthRequired, setReauthRequired] = useState<{
+    role: "facilitator" | "participant";
+    returnTo: string;
+  } | null>(null);
+
   const fetchReview = useCallback(async () => {
     if (!sessionId) return;
     try {
       const res = await fetch(`/api/v1/sessions/${sessionId}/action-items-review`, {
         credentials: "include",
       });
+
+      if (res.status === 401) {
+        const { isSessionExpired } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired((prev) => prev ?? { role: reauthRoleProxy(session), returnTo: currentReturnTo() });
+          return;
+        }
+        setBranch({ kind: "error" });
+        return;
+      }
 
       if (res.status === 200) {
         const data = (await res.json()) as ActionItemsReviewResponse;
@@ -101,14 +141,24 @@ export function SessionLobbyPage() {
     } catch {
       setBranch({ kind: "error" });
     }
-  }, [sessionId]);
+  }, [sessionId, session]);
 
   // Task 4.1: the WebSocket subscription is established in the same effect
   // pass as the fetch below, not gated behind the fetch resolving.
   const connect = useCallback(() => {
     return new WebSocket(buildSessionWebSocketUrl(sessionId ?? ""));
   }, [sessionId]);
-  const { socket } = useConnectionHealth(connect);
+  const { socket, state: connectionHealthState } = useConnectionHealth(connect);
+
+  // Task 3.4: the WS-driven detector — a second, independent signal of the
+  // same absolute-lifetime expiry (design.md Decision 2). Routed through the
+  // same shared gate as the three fetch-response signals above; whichever
+  // arrives first wins, the other is a no-op.
+  useEffect(() => {
+    if (connectionHealthState === "reauth-required") {
+      setReauthRequired((prev) => prev ?? { role: reauthRoleProxy(session), returnTo: currentReturnTo() });
+    }
+  }, [connectionHealthState, session]);
 
   useEffect(() => {
     void fetchReview();
@@ -151,7 +201,14 @@ export function SessionLobbyPage() {
         credentials: "include",
       });
       if (!res.ok) {
-        setStartError("Couldn't start the session. Try again.");
+        // Task 3.2: only reachable when branch.isFacilitator === true — no
+        // ambiguity about role (design.md Decision 1a).
+        const { isSessionExpired, body } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired((prev) => prev ?? { role: "facilitator", returnTo: currentReturnTo() });
+          return;
+        }
+        setStartError(readErrorMessage(body) ?? "Couldn't start the session. Try again.");
         return;
       }
       // Success: the session_state_change broadcast (received above) moves
@@ -176,10 +233,17 @@ export function SessionLobbyPage() {
           credentials: "include",
         });
         if (!res.ok) {
+          // Task 3.3: this button is only reachable as the facilitator
+          // (design.md Decision 1a) — role="facilitator" unconditionally.
+          const { isSessionExpired, body } = await detectSessionExpiry(res);
+          if (isSessionExpired) {
+            setReauthRequired((prev) => prev ?? { role: "facilitator", returnTo: currentReturnTo() });
+            return;
+          }
           // Generic fallback — does not assume a clean 4xx body. Covers the
           // pre-existing "no topics configured" bare-Error/500 (SESSION-005
           // rough edge, out of scope for this change to fix; see proposal.md).
-          setBeginVotingError("Couldn't start voting. Try again.");
+          setBeginVotingError(readErrorMessage(body) ?? "Couldn't start voting. Try again.");
           return;
         }
         // Success: session_state_change moves every subscriber off the
@@ -193,6 +257,13 @@ export function SessionLobbyPage() {
   }, [sessionId]);
 
   if (!session) return null;
+
+  // Task 3.0: the single top-level early return that supersedes the entire
+  // render tree below for the reauth-required case — none of the four
+  // signal sources (3.1-3.4) render ReauthRequiredTreatment directly.
+  if (reauthRequired) {
+    return <ReauthRequiredTreatment role={reauthRequired.role} returnTo={reauthRequired.returnTo} />;
+  }
 
   return (
     <div

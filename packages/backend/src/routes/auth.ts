@@ -73,6 +73,12 @@ const UUID_PATTERN = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 const RETURN_TO_ALLOW_LIST: RegExp[] = [
   new RegExp(`^/session/${UUID_PATTERN}(?:\\?.*)?$`),
   new RegExp(`^/team/${UUID_PATTERN}(?:\\?.*)?$`),
+  new RegExp(`^/team/${UUID_PATTERN}/session/${UUID_PATTERN}(?:\\?.*)?$`),
+  // http-session-expiry-reauth-parity design.md Decision 3: the first
+  // literal, non-UUID-anchored shape in this list — deliberate and narrow
+  // (a fixed string, not a wildcard), not license to add other loose
+  // literal paths without the same scrutiny.
+  new RegExp(`^/sessions/new(?:\\?.*)?$`),
 ];
 
 /**

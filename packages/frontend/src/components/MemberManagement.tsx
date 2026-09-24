@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext.js";
 import type { TeamMember, TeamMembersResponse, MembershipRole } from "@dipstick/shared";
+import { ReauthRequiredTreatment } from "./ReauthRequiredTreatment.js";
+import { detectSessionExpiry } from "../http/sessionExpiry.js";
 
 // MemberManagement fetches from TEAM-003 (GET /api/v1/teams/:teamId) which
 // returns the split TeamMembersResponse with participants/engineeringManagers.
@@ -92,6 +94,12 @@ export function MemberManagement({ teamId }: Props) {
   const [roleChangeState, setRoleChangeState] = useState<RoleChangeState>({
     status: "idle",
   });
+  // http-session-expiry-reauth-parity design.md Decision 1a/7: role is
+  // always "facilitator" — not a facilitator claim about the caller, but
+  // the value that suppresses the (here, inapplicable) vote-loss sentence.
+  // No new returnTo allow-list entry needed: /team/:teamId already matches
+  // the existing /team/:id entry.
+  const [reauthRequired, setReauthRequired] = useState<{ returnTo: string } | null>(null);
 
   const loadMembers = useCallback(async () => {
     setFetchError(null);
@@ -152,10 +160,14 @@ export function MemberManagement({ teamId }: Props) {
         }
 
         if (!res.ok) {
-          const body = (await res.json()) as { error?: { message?: string } };
+          const { isSessionExpired, body } = await detectSessionExpiry(res);
+          if (isSessionExpired) {
+            setReauthRequired({ returnTo: window.location.pathname + window.location.search });
+            return;
+          }
           setRoleChangeState({
             status: "error",
-            message: body.error?.message ?? "Role change failed.",
+            message: (body as { error?: { message?: string } } | null)?.error?.message ?? "Role change failed.",
           });
           return;
         }
@@ -188,6 +200,10 @@ export function MemberManagement({ teamId }: Props) {
   // -------------------------------------------------------------------------
   // Render helpers
   // -------------------------------------------------------------------------
+  if (reauthRequired) {
+    return <ReauthRequiredTreatment role="facilitator" returnTo={reauthRequired.returnTo} />;
+  }
+
   if (fetchError) {
     return <p role="alert">{fetchError}</p>;
   }

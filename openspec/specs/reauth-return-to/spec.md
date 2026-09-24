@@ -8,7 +8,7 @@ This spec covers: `GET /auth/login`'s acceptance and storage of an optional `ret
 
 This spec does NOT cover: a general-purpose or arbitrary-redirect mechanism (the allow-list is closed to this application's own known route shapes); the `reauth-required` treatment's own rendering or its `returnTo` prop plumbing (see `websocket-staleness-signal`'s "Reauth-required call-to-action" requirement); or any change to which close code triggers `reauth-required` (see `websocket-session-authorization`).
 
-**Implementation status:** Implemented. `packages/backend/src/routes/auth.ts`'s `GET /login` accepts and validates `returnTo` via `validateReturnTo`, storing it in the OIDC state payload in Redis alongside any `pendingJoinToken`. `GET /callback` retrieves it via the existing atomic `redis.getdel` read and redirects there when no `pendingJoinToken` redirect took precedence. The allow-list (`RETURN_TO_ALLOW_LIST`) matches `/session/:id` and `/team/:id`, with `:id` pinned to this application's UUID format and an optional `?`-prefixed query string tolerated. Character-rejection checks (CR/LF, backslash, `://`, leading `//`) run before the allow-list pattern match, on the raw decoded value.
+**Implementation status:** Implemented. `packages/backend/src/routes/auth.ts`'s `GET /login` accepts and validates `returnTo` via `validateReturnTo`, storing it in the OIDC state payload in Redis alongside any `pendingJoinToken`. `GET /callback` retrieves it via the existing atomic `redis.getdel` read and redirects there when no `pendingJoinToken` redirect took precedence. The allow-list (`RETURN_TO_ALLOW_LIST`) matches `/session/:id`, `/team/:id`, `/team/:teamId/session/:sessionId`, and the literal path `/sessions/new`; every `:id`/`:teamId`/`:sessionId` segment is pinned to this application's UUID format, and an optional `?`-prefixed query string is tolerated on every entry. `/sessions/new` is the list's first non-UUID-anchored, literal-string shape (`http-session-expiry-reauth-parity` design.md Decision 3) — deliberate and narrow, not license for other loose literal paths without the same scrutiny. Character-rejection checks (CR/LF, backslash, `://`, leading `//`) run before the allow-list pattern match, on the raw decoded value.
 
 ---
 
@@ -43,7 +43,7 @@ This mechanism SHALL be identical regardless of which OIDC identity provider is 
 
 ### Requirement: Return-to value is allow-listed by known internal path shape
 
-The application SHALL validate a supplied `returnTo` value against an explicit allow-list of known internal route shapes before storing it (`/session/:id`, `/team/:id`, and any other session-context route shape confirmed at implementation time — see design.md's Open Questions). A `returnTo` value that does not match an allow-listed shape SHALL be discarded silently: the login flow proceeds as though no `returnTo` value was supplied, without surfacing an error to the user. The application SHALL NOT accept an arbitrary path, a full URL, a protocol-relative URL, or any value containing a scheme or authority component as a `returnTo` value.
+The application SHALL validate a supplied `returnTo` value against an explicit allow-list of known internal route shapes before storing it (`/session/:id`, `/team/:id`, `/team/:teamId/session/:sessionId`, and the literal path `/sessions/new`). A `returnTo` value that does not match an allow-listed shape SHALL be discarded silently: the login flow proceeds as though no `returnTo` value was supplied, without surfacing an error to the user. The application SHALL NOT accept an arbitrary path, a full URL, a protocol-relative URL, or any value containing a scheme or authority component as a `returnTo` value.
 
 #### Scenario: A non-allow-listed path is discarded silently
 
@@ -66,6 +66,22 @@ The application SHALL validate a supplied `returnTo` value against an explicit a
 
 - **WHEN** `GET /auth/login?returnTo=/team/xyz789` is requested
 - **THEN** the value matches the `/team/:id` allow-listed shape and is stored
+
+#### Scenario: An allow-listed combined team-and-session path is accepted
+
+- **WHEN** `GET /auth/login?returnTo=/team/<uuid>/session/<uuid>` is requested, with both `<uuid>` segments matching this application's UUID format
+- **THEN** the value matches the `/team/:teamId/session/:sessionId` allow-listed shape and is stored
+
+#### Scenario: The allow-listed session-creation path is accepted
+
+- **WHEN** `GET /auth/login?returnTo=/sessions/new` is requested
+- **THEN** the value matches the literal `/sessions/new` allow-listed shape and is stored
+
+#### Scenario: A near-miss of the session-creation path is rejected
+
+- **WHEN** `GET /auth/login?returnTo=/sessions/new/anything` or `GET /auth/login?returnTo=/sessions/newer` is requested
+- **THEN** the value does not match the literal `/sessions/new` allow-listed shape
+- **AND** the application discards the value and proceeds as though no `returnTo` parameter had been supplied
 
 ---
 

@@ -123,3 +123,71 @@ describe("DraftSessionHost", () => {
     expect(screen.queryByTestId("draft-control-view")).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// http-session-expiry-reauth-parity, tasks.md 4.1-4.5, design.md Decisions
+// 1a and 4.
+// ---------------------------------------------------------------------------
+const SESSION_EXPIRED_BODY = {
+  error: { category: "session_expired", message: "Your session has expired. Please sign in again." },
+};
+
+describe("http-session-expiry-reauth-parity: DraftSessionHost reauth parity", () => {
+  // task 4.3
+  it("4.3: a mount-time facilitator-state session-expiry renders the treatment, not the generic load error", async () => {
+    mockFetchSequence({ ok: false, status: 401, jsonBody: SESSION_EXPIRED_BODY });
+
+    renderHost();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
+    expect(screen.queryByTestId("draft-session-host-error")).not.toBeInTheDocument();
+  });
+
+  it("a non-session-expiry 401 (e.g. provider_unavailable) keeps the existing generic-error handling, deriving the message from the response body", async () => {
+    mockFetchSequence({
+      ok: false,
+      status: 401,
+      jsonBody: { error: { category: "provider_unavailable", message: "Unable to maintain your session." } },
+    });
+
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("draft-session-host-error")).toBeInTheDocument());
+    expect(screen.getByTestId("draft-session-host-error")).toHaveTextContent("Unable to maintain your session.");
+  });
+
+  // task 4.4
+  it("4.4: a session expiring between clicking 'Yes, open the room' and the advance response renders the treatment, not 'Could not open the room.'", async () => {
+    mockFetchSequence({ jsonBody: draftState }, { ok: false, status: 401, jsonBody: SESSION_EXPIRED_BODY });
+
+    renderHost();
+    await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("open-the-room"));
+    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
+    expect(screen.queryByTestId("advance-error")).not.toBeInTheDocument();
+  });
+
+  // task 4.5
+  it("4.5: the confirm-step phase does not survive a fresh mount (a reauth round trip lands on the bare draft view)", async () => {
+    mockFetchSequence({ jsonBody: draftState });
+    const { unmount } = renderHost();
+    await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("open-the-room"));
+    expect(screen.getByTestId("open-the-room-confirm")).toBeInTheDocument();
+
+    // Session expires while sitting on the confirm step, no further fetch
+    // fires. The user reauthenticates and returns via `returnTo` — modeled
+    // here as a fresh mount of this component, since `advanceState.phase`
+    // is plain React state with no persistence.
+    unmount();
+    mockFetchSequence({ jsonBody: draftState });
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+    expect(screen.queryByTestId("open-the-room-confirm")).not.toBeInTheDocument();
+  });
+});

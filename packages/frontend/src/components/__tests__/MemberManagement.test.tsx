@@ -346,6 +346,135 @@ describe("5.4 / 5.5: Two-step confirmation flow for zero-participant case", () =
 });
 
 // ---------------------------------------------------------------------------
+// http-session-expiry-reauth-parity, tasks.md 6.1/6.3/6.4, design.md
+// Decision 1a/7.
+// ---------------------------------------------------------------------------
+const SESSION_EXPIRED_BODY = {
+  error: { category: "session_expired", message: "Your session has expired. Please sign in again." },
+};
+
+describe("http-session-expiry-reauth-parity: MemberManagement.submitRoleChange reauth parity", () => {
+  it("6.3: session-expiry on the initial PATCH renders the treatment, not 'Role change failed.'", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(membersResponseWithAssignRoles),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve(SESSION_EXPIRED_BODY),
+      } as unknown as Response);
+
+    render(<MemberManagement teamId="team-1" />);
+    await waitFor(() => expect(screen.getByTestId("role-select-u1")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId("role-select-u1"), {
+      target: { value: "engineering_manager" },
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
+    expect(screen.queryByText("Role change failed.")).not.toBeInTheDocument();
+  });
+
+  it("6.3: session-expiry on the confirmed re-submission (after a prior 422) also renders the treatment", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(membersResponseWithAssignRoles),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: () => Promise.resolve({ requiresConfirmation: true }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve(SESSION_EXPIRED_BODY),
+      } as unknown as Response);
+
+    render(<MemberManagement teamId="team-1" />);
+    await waitFor(() => expect(screen.getByTestId("role-select-u1")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId("role-select-u1"), {
+      target: { value: "engineering_manager" },
+    });
+    await waitFor(() => expect(screen.getByTestId("zero-participant-warning-u1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("confirm-zero-participant-u1"));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
+  });
+
+  it("a non-session-expiry PATCH failure keeps the existing generic-error handling, deriving the message from the response body (regression)", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(membersResponseWithAssignRoles),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: { message: "Server error." } }),
+      } as unknown as Response);
+
+    render(<MemberManagement teamId="team-1" />);
+    await waitFor(() => expect(screen.getByTestId("role-select-u1")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId("role-select-u1"), {
+      target: { value: "engineering_manager" },
+    });
+
+    await waitFor(() => expect(screen.getByText("Server error.")).toBeInTheDocument());
+  });
+
+  it("6.4: the awaiting_confirmation state does not survive a fresh mount (a reauth round trip lands on the bare member list)", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(membersResponseWithAssignRoles),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: () => Promise.resolve({ requiresConfirmation: true }),
+      } as unknown as Response);
+
+    const { unmount } = render(<MemberManagement teamId="team-1" />);
+    await waitFor(() => expect(screen.getByTestId("role-select-u1")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId("role-select-u1"), {
+      target: { value: "engineering_manager" },
+    });
+    await waitFor(() => expect(screen.getByTestId("zero-participant-warning-u1")).toBeInTheDocument());
+
+    // Session expires while awaiting confirmation, no further fetch fires.
+    // The actor reauthenticates and returns via `returnTo` — modeled here as
+    // a fresh mount, since `roleChangeState` is plain React state with no
+    // persistence.
+    unmount();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(membersResponseWithAssignRoles),
+    } as unknown as Response);
+    render(<MemberManagement teamId="team-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("role-select-u1")).toBeInTheDocument());
+    expect(screen.queryByTestId("zero-participant-warning-u1")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Task 5.6 — plain-language confirmation after successful role change
 // ---------------------------------------------------------------------------
 describe("5.6: Plain-language confirmation after successful role change", () => {

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import type { FacilitatorSessionStateResponse } from "@dipstick/shared";
+import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
+import { detectSessionExpiry } from "../http/sessionExpiry.js";
 
 // ---------------------------------------------------------------------------
 // DraftSessionHost — the real, refresh-safe route from design.md Decision D6
@@ -47,6 +49,10 @@ export function DraftSessionHost() {
 
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [advanceState, setAdvanceState] = useState<AdvanceState>({ phase: "idle" });
+  // http-session-expiry-reauth-parity design.md Decision 1a: always
+  // role="facilitator" on this page — gated on canFacilitateSessions before
+  // rendering at all, no derivation needed.
+  const [reauthRequired, setReauthRequired] = useState<{ returnTo: string } | null>(null);
 
   const loadFacilitatorState = useCallback(async () => {
     if (!teamId || !sessionId) return;
@@ -56,10 +62,14 @@ export function DraftSessionHost() {
         credentials: "include",
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: { message: string } } | null;
+        const { isSessionExpired, body } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired({ returnTo: window.location.pathname + window.location.search });
+          return;
+        }
         setLoadState({
           status: "error",
-          message: body?.error?.message ?? "Unable to load this session.",
+          message: (body as { error?: { message: string } } | null)?.error?.message ?? "Unable to load this session.",
         });
         return;
       }
@@ -83,10 +93,14 @@ export function DraftSessionHost() {
         credentials: "include",
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: { message: string } } | null;
+        const { isSessionExpired, body } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired({ returnTo: window.location.pathname + window.location.search });
+          return;
+        }
         setAdvanceState({
           phase: "failed",
-          message: body?.error?.message ?? "Could not open the room. Please try again.",
+          message: (body as { error?: { message: string } } | null)?.error?.message ?? "Could not open the room. Please try again.",
         });
         return;
       }
@@ -103,6 +117,10 @@ export function DraftSessionHost() {
   }
 
   if (!teamId || !sessionId) return null;
+
+  if (reauthRequired) {
+    return <ReauthRequiredTreatment role="facilitator" returnTo={reauthRequired.returnTo} />;
+  }
 
   if (loadState.status === "loading") {
     return <p>Loading session…</p>;
