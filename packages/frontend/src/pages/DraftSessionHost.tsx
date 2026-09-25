@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { buildJoinLinkPath, type FacilitatorSessionStateResponse } from "@dipstick/shared";
 import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
 import { detectSessionExpiry } from "../http/sessionExpiry.js";
@@ -45,6 +45,11 @@ type LoadState =
 
 type AdvanceState = { phase: "idle" } | { phase: "confirming" } | { phase: "submitting" } | { phase: "failed"; message: string };
 
+// session-lobby-routing-gap design.md D1: no "confirming" phase -- Start
+// Session has no confirmation step, matching SessionLobbyPage's
+// handleStartSession (SessionLobbyPage.tsx) rather than openTheRoom's.
+type StartSessionState = { phase: "idle" } | { phase: "submitting" } | { phase: "failed"; message: string };
+
 export function DraftSessionHost() {
   const { teamId, sessionId } = useParams<{ teamId: string; sessionId: string }>();
   const location = useLocation();
@@ -55,6 +60,7 @@ export function DraftSessionHost() {
 
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [advanceState, setAdvanceState] = useState<AdvanceState>({ phase: "idle" });
+  const [startSessionState, setStartSessionState] = useState<StartSessionState>({ phase: "idle" });
   // http-session-expiry-reauth-parity design.md Decision 1a: always
   // role="facilitator" on this page — gated on canFacilitateSessions before
   // rendering at all, no derivation needed.
@@ -124,6 +130,41 @@ export function DraftSessionHost() {
       setAdvanceState({ phase: "idle" });
     } catch {
       setAdvanceState({ phase: "failed", message: "Network error opening the room. Please try again." });
+    }
+  }
+
+  // session-lobby-routing-gap design.md D1: the lobby -> pre_session
+  // trigger. Same POST /api/v1/sessions/:sessionId/start SessionLobbyPage's
+  // handleStartSession calls, and the same in-place-update-on-success /
+  // inline-retry-on-failure pattern as openTheRoom above.
+  async function startSession() {
+    if (!sessionId) return;
+    setStartSessionState({ phase: "submitting" });
+    try {
+      const res = await fetch(`/api/v1/sessions/${sessionId}/start`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const { isSessionExpired, body } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired({ returnTo: window.location.pathname + window.location.search });
+          return;
+        }
+        setStartSessionState({
+          phase: "failed",
+          message: (body as { error?: { message: string } } | null)?.error?.message ?? "Couldn't start the session. Try again.",
+        });
+        return;
+      }
+      setLoadState((prev) =>
+        prev.status === "loaded"
+          ? { status: "loaded", data: { ...prev.data, currentSessionState: "pre_session" } }
+          : prev,
+      );
+      setStartSessionState({ phase: "idle" });
+    } catch {
+      setStartSessionState({ phase: "failed", message: "Network error starting the session. Please try again." });
     }
   }
 
@@ -197,7 +238,50 @@ export function DraftSessionHost() {
             Team created. Default topics assigned.
           </p>
         )}
-        <p>The room is open. Session status: {data.currentSessionState}.</p>
+        {/* session-lobby-routing-gap design.md D1/D2/D5: the lobby -> pre_session
+            trigger (Start Session), the navigate-away link that closes the
+            transition instead of relocating the dead end (pre_session/active/
+            wrap_up), and the untouched static text for genuinely terminal
+            statuses (complete/abandoned) -- not a new dead end, since nothing
+            about those statuses is actionable. */}
+        {data.currentSessionState === "lobby" && (
+          <div data-testid="live-readiness-lobby">
+            {/* design.md D5/task 4.1: heading and control label aligned with
+                SessionLobbyPage's lobby-branch "Session Lobby" heading and
+                "Start Session" button, so landing on either surface
+                mid-transition reads as the same product. */}
+            <h2>Session Lobby</h2>
+            <p>Waiting for participants to join. Start the session when you're ready.</p>
+            <button
+              type="button"
+              data-testid="start-session-button"
+              onClick={() => void startSession()}
+              disabled={startSessionState.phase === "submitting"}
+            >
+              {startSessionState.phase === "submitting" ? "Starting…" : "Start Session"}
+            </button>
+            {startSessionState.phase === "failed" && (
+              <p role="alert" data-testid="start-session-error" style={{ color: "#c62828", marginTop: "0.5rem" }}>
+                {startSessionState.message}
+              </p>
+            )}
+          </div>
+        )}
+
+        {(data.currentSessionState === "pre_session" ||
+          data.currentSessionState === "active" ||
+          data.currentSessionState === "wrap_up") && (
+          <div data-testid="live-readiness-navigate">
+            <p>The room is open. Session status: {data.currentSessionState}.</p>
+            <Link to={`/session/${sessionId}`} data-testid="live-session-navigate-link">
+              Go to the session
+            </Link>
+          </div>
+        )}
+
+        {(data.currentSessionState === "complete" || data.currentSessionState === "abandoned") && (
+          <p>The room is open. Session status: {data.currentSessionState}.</p>
+        )}
 
         <div style={{ marginTop: "1rem" }}>
           <div style={{ fontSize: "0.875rem", fontWeight: 600, color: "#757575" }}>JOIN LINK</div>

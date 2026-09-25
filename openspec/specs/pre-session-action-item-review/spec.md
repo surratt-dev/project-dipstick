@@ -93,6 +93,23 @@ Without a frontend trigger for the already-implemented `POST /api/v1/sessions/:s
 - **WHEN** `POST /start` fails for the facilitator (e.g. a network error, or the session was already started from another tab)
 - **THEN** the facilitator's screen shows an inline retry affordance and remains on the `lobby` branch; the session is not assumed to have transitioned
 
+### Requirement: `SessionLobbyPage`'s `lobby`-branch heading and Start Session label are aligned with `DraftSessionHost`'s
+
+`SessionLobbyPage`'s `lobby`-branch heading and Start Session control label SHALL read as describing the same action and the same product as `DraftSessionHost`'s equivalent `lobby`-status heading and Start Session control label (see the `session-creation` capability's corresponding requirement). This is a copy/labeling alignment on a component this change already touches, not a shared-component refactor or a redesign.
+
+#### Scenario: Facilitator sees consistent heading and control label on both surfaces
+- **WHEN** a facilitator views `SessionLobbyPage`'s `lobby` branch for a session they facilitate, having previously seen `DraftSessionHost`'s `lobby`-status rendering for the same session
+- **THEN** the heading text and Start Session control label on `SessionLobbyPage` read as the same action and product as what they saw on `DraftSessionHost`
+
+### Requirement: Non-facilitator waiting copy on `SessionLobbyPage`'s `lobby` branch omits the raw session ID and reassures the participant
+
+`SessionLobbyPage`'s `lobby`-branch waiting message, shown to non-facilitator participants, SHALL NOT display the raw `sessionId`. It SHALL include a one-line reassurance that the facilitator will start the session shortly.
+
+#### Scenario: Non-facilitator sees reassurance copy without a raw session ID
+- **WHEN** a non-facilitator participant views `SessionLobbyPage`'s `lobby` branch
+- **THEN** the waiting message does not display the raw `sessionId`
+- **AND** the waiting message includes a one-line reassurance that the facilitator will start the session shortly
+
 ### Requirement: The pre-session review screen displays open action items to all session participants
 
 The application SHALL render, for every participant present during the `pre_session` phase, a read-only list of the team's open and in-progress action items, each showing: description, owner display name, current status, originating session number (`originatingSessionNumber` from the review data — a human-facing integer, e.g. "Session #12" — not `originatingSessionId`'s UUID; matches the existing `Session #N` display pattern already used in `EmSessionHistoryPage.tsx`), and a staleness indicator (see the staleness requirements below). The screen SHALL be shown to all participants — engineers and facilitator — simultaneously, and SHALL NOT expose any inline control to change an item's status in this capability (deferred; see GitHub issue #103).

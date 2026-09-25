@@ -195,6 +195,65 @@ describe.skipIf(!dbUp)("join-link-redemption-wiring — real Postgres end-to-end
     },
   );
 
+  // session-lobby-routing-gap, design.md D6/D7, tasks.md 6.3: the same
+  // real-Postgres shape as 5.1 above, but for a `lobby`-status session --
+  // confirms resolveJoinLandingPath's seven-status bucket logic against a
+  // real database, not just the mocked route-level tests in
+  // join-links.test.ts. This does not touch the D7 registration gap (no
+  // assertion is made about action-items-review or the WebSocket here) --
+  // only that the redirect itself lands at the right address.
+  it("session-lobby-routing-gap 6.3: a lobby-status session redirects the engineer to /session/:sessionId, against a real database", async () => {
+    const facilitatorId = "aaaaaaaa-0000-0000-0000-000000000005";
+    const engineerId = "aaaaaaaa-0000-0000-0000-000000000006";
+    const teamId = "bbbbbbbb-0000-0000-0000-000000000003";
+    const sessionId = "cccccccc-0000-0000-0000-000000000003";
+    const { db } = mods;
+
+    try {
+      await db.query(
+        `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
+         VALUES ($1, $2, 'test-issuer', 'E2E Facilitator 3', $3, 'facilitator')`,
+        [facilitatorId, `sub-${facilitatorId}`, `${facilitatorId}@example.com`],
+      );
+      await db.query(
+        `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
+         VALUES ($1, $2, 'test-issuer', 'E2E Engineer 3', $3, 'engineer')`,
+        [engineerId, `sub-${engineerId}`, `${engineerId}@example.com`],
+      );
+      await db.query(`INSERT INTO teams (id, name, created_by_user_id) VALUES ($1, $2, $3)`, [
+        teamId,
+        "Integration Test Team (session-lobby-routing-gap)",
+        facilitatorId,
+      ]);
+      await db.query(
+        `INSERT INTO sessions (id, team_id, facilitator_id, status, is_first_session, session_number)
+         VALUES ($1, $2, $3, 'lobby', true, 1)`,
+        [sessionId, teamId, facilitatorId],
+      );
+
+      const facilitatorApp = await buildApp(mods.facilitatorSessionRoutes, facilitatorId);
+      const stateRes = await facilitatorApp.inject({
+        method: "GET",
+        url: `/api/v1/teams/${teamId}/sessions/${sessionId}/facilitator-state`,
+      });
+      expect(stateRes.statusCode).toBe(200);
+      const joinToken = (stateRes.json() as { joinToken: string }).joinToken;
+
+      const engineerApp = await buildApp(mods.joinLinkRoutes, engineerId);
+      const joinRes = await engineerApp.inject({ method: "GET", url: buildJoinLinkPath(joinToken) });
+
+      expect(joinRes.statusCode).toBe(302);
+      expect(joinRes.headers.location).toBe(`/session/${sessionId}`);
+    } finally {
+      await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [teamId]);
+      await db.query(`DELETE FROM audit_log WHERE team_id = $1`, [teamId]);
+      await db.query(`DELETE FROM join_links WHERE team_id = $1`, [teamId]);
+      await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
+      await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
+      await db.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [[facilitatorId, engineerId]]);
+    }
+  });
+
   // Supplementary structural guard, not itself a pre-fix regression
   // demonstration: GET /api/join/:token's own registration and behavior are
   // unchanged by this proposal (the bug was the frontend building a link

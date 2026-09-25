@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { withAuditTransaction } from "../auth/audit-write-transaction.js";
 import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
+import { resolveJoinLandingPath } from "../auth/join-landing-path.js";
 import type { SessionData } from "../auth/session-store.js";
 
 export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
@@ -198,21 +199,12 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    // Check for active in-progress session
-    const sessionResult = await db.query(
-      `SELECT id FROM sessions WHERE team_id = $1 AND status = 'active' LIMIT 1`,
-      [link.team_id],
-    );
-
-    if (sessionResult.rows.length > 0) {
-      const activeSession = sessionResult.rows[0] as { id: string };
-      const alreadyParam = isAlreadyMember ? "?alreadyMember=true" : "";
-      return reply.redirect(
-        `/session/${activeSession.id}${alreadyParam}`,
-      );
-    }
-
+    // session-lobby-routing-gap, design.md D6: the full seven-SessionStatus
+    // landing decision is shared with auth.ts's executeJoinFlow via
+    // resolveJoinLandingPath, not a second independently-maintained copy of
+    // the `status = 'active'` check this replaced.
+    const landingPath = await resolveJoinLandingPath(link.team_id);
     const alreadyParam = isAlreadyMember ? "?alreadyMember=true" : "";
-    return reply.redirect(`/team/${link.team_id}${alreadyParam}`);
+    return reply.redirect(`${landingPath}${alreadyParam}`);
   });
 }

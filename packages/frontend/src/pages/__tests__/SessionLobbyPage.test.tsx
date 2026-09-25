@@ -137,7 +137,11 @@ describe("4.2: branching off GET .../action-items-review", () => {
     renderPage();
 
     await waitFor(() => expect(screen.getByTestId("session-lobby-waiting")).toBeInTheDocument());
-    expect(screen.getByTestId("session-lobby-info")).toBeInTheDocument();
+    // session-lobby-routing-gap design.md D5/task 4.2: non-facilitator copy
+    // is now session-lobby-waiting-message, not the raw-sessionId
+    // session-lobby-info (facilitator-only, see the next test).
+    expect(screen.getByTestId("session-lobby-waiting-message")).toBeInTheDocument();
+    expect(screen.queryByTestId("session-lobby-info")).not.toBeInTheDocument();
     expect(screen.queryByTestId("start-session-button")).not.toBeInTheDocument();
   });
 
@@ -147,6 +151,19 @@ describe("4.2: branching off GET .../action-items-review", () => {
     renderPage();
 
     await waitFor(() => expect(screen.getByTestId("start-session-button")).toBeInTheDocument());
+  });
+
+  // session-lobby-routing-gap, design.md D5/tasks.md 4.4: non-facilitator
+  // waiting copy drops the raw sessionId and reassures the participant.
+  it("4.4: non-facilitator waiting copy on the lobby branch contains no raw sessionId and includes the reassurance line", async () => {
+    mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: false });
+
+    renderPage("sess-abc-123");
+
+    await waitFor(() => expect(screen.getByTestId("session-lobby-waiting-message")).toBeInTheDocument());
+    const message = screen.getByTestId("session-lobby-waiting-message");
+    expect(message.textContent).not.toContain("sess-abc-123");
+    expect(message.textContent).toMatch(/facilitator will start the session shortly/i);
   });
 
   it("409 with any other currentSessionStatus -> leaves the page (no review data shown)", async () => {
@@ -285,7 +302,9 @@ describe("7.1: Access model statement in session lobby", () => {
   });
 
   it("session lobby renders the session info once in the lobby branch", async () => {
-    mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: false });
+    // session-lobby-routing-gap design.md D5/task 4.2: session-lobby-info
+    // (which shows the raw sessionId) is now facilitator-only.
+    mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: true });
     renderPage("sess-abc-123");
 
     await waitFor(() => expect(screen.getByTestId("session-lobby")).toBeInTheDocument());
