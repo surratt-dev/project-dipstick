@@ -21,6 +21,8 @@ export type {
   TopicAdvanceResponse,
   ActionItemsReviewResponse,
   ActionItemsReviewWrongStatusResponse,
+  ParticipantRosterEntry,
+  ParticipantRosterResponse,
 } from "./types/session.js";
 export type {
   EligibleTeam,

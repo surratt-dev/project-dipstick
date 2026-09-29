@@ -2,8 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { buildJoinLinkPath, type FacilitatorSessionStateResponse } from "@dipstick/shared";
 import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
+import { LobbyParticipantRoster } from "../components/LobbyParticipantRoster.js";
 import { detectSessionExpiry } from "../http/sessionExpiry.js";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard.js";
+import { useConnectionHealth } from "../realtime/connectionHealth.js";
+import { buildSessionWebSocketUrl } from "./SessionConnectionHost.js";
 
 // ---------------------------------------------------------------------------
 // DraftSessionHost — the real, refresh-safe route from design.md Decision D6
@@ -222,75 +225,30 @@ export function DraftSessionHost() {
     );
   }
 
+  // participant-readiness-view design.md D1 correction (engineering review
+  // Finding 2): this branch is a MOUNT/UNMOUNT gate, not an inline render --
+  // LiveReadinessView is its own child component that owns the
+  // useConnectionHealth call and the roster hook. Rendering it only here
+  // (data.currentSessionState !== "draft") means the WebSocket subscription
+  // is never opened while the session is still `draft`, where a facilitator
+  // has no valid grant path (session-subscriber-access-helper.ts's
+  // LIVE_FACILITATOR_STATUSES excludes `draft`) -- calling
+  // useConnectionHealth unconditionally at this component's top level would
+  // self-DoS every draft-control-view facilitator against our own
+  // CLOSE_UNAUTHORIZED rejection via connectionHealth.ts's exponential
+  // reconnect backoff.
   if (data.currentSessionState !== "draft") {
     return (
-      <div
-        data-testid="live-readiness-view"
-        style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}
-      >
-        <h1>{teamLabel}</h1>
-        {/* task 5.7, design.md D2: new-team-specific acknowledgment, scoped
-            to the navigation that just created this team -- does not alter
-            the existing-team flow's landing copy, which never sets
-            newTeamCreated. */}
-        {newTeamCreated && (
-          <p data-testid="new-team-landing-acknowledgment">
-            Team created. Default topics assigned.
-          </p>
-        )}
-        {/* session-lobby-routing-gap design.md D1/D2/D5: the lobby -> pre_session
-            trigger (Start Session), the navigate-away link that closes the
-            transition instead of relocating the dead end (pre_session/active/
-            wrap_up), and the untouched static text for genuinely terminal
-            statuses (complete/abandoned) -- not a new dead end, since nothing
-            about those statuses is actionable. */}
-        {data.currentSessionState === "lobby" && (
-          <div data-testid="live-readiness-lobby">
-            {/* design.md D5/task 4.1: heading and control label aligned with
-                SessionLobbyPage's lobby-branch "Session Lobby" heading and
-                "Start Session" button, so landing on either surface
-                mid-transition reads as the same product. */}
-            <h2>Session Lobby</h2>
-            <p>Waiting for participants to join. Start the session when you're ready.</p>
-            <button
-              type="button"
-              data-testid="start-session-button"
-              onClick={() => void startSession()}
-              disabled={startSessionState.phase === "submitting"}
-            >
-              {startSessionState.phase === "submitting" ? "Starting…" : "Start Session"}
-            </button>
-            {startSessionState.phase === "failed" && (
-              <p role="alert" data-testid="start-session-error" style={{ color: "#c62828", marginTop: "0.5rem" }}>
-                {startSessionState.message}
-              </p>
-            )}
-          </div>
-        )}
-
-        {(data.currentSessionState === "pre_session" ||
-          data.currentSessionState === "active" ||
-          data.currentSessionState === "wrap_up") && (
-          <div data-testid="live-readiness-navigate">
-            <p>The room is open. Session status: {data.currentSessionState}.</p>
-            <Link to={`/session/${sessionId}`} data-testid="live-session-navigate-link">
-              Go to the session
-            </Link>
-          </div>
-        )}
-
-        {(data.currentSessionState === "complete" || data.currentSessionState === "abandoned") && (
-          <p>The room is open. Session status: {data.currentSessionState}.</p>
-        )}
-
-        <div style={{ marginTop: "1rem" }}>
-          <div style={{ fontSize: "0.875rem", fontWeight: 600, color: "#757575" }}>JOIN LINK</div>
-          {/* design.md D5: full-emphasis body text once joinable -- no muted
-              color, no badge (badge is draft-only, per spec.md). */}
-          <p data-testid="live-join-link">{joinUrl}</p>
-          {renderCopyControl("live-join-link")}
-        </div>
-      </div>
+      <LiveReadinessView
+        sessionId={sessionId}
+        teamLabel={teamLabel}
+        newTeamCreated={newTeamCreated}
+        data={data}
+        joinUrl={joinUrl}
+        renderCopyControl={renderCopyControl}
+        startSessionState={startSessionState}
+        onStartSession={() => void startSession()}
+      />
     );
   }
 
@@ -353,6 +311,129 @@ export function DraftSessionHost() {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// LiveReadinessView — participant-readiness-view design.md Decision D1
+// (correction, engineering review Finding 2), tasks.md 4.1/4.2.
+//
+// The extracted, formerly-inline `live-readiness-view` branch. Rendered by
+// DraftSessionHost ONLY once data.currentSessionState !== "draft" (see that
+// mount/unmount gate above) -- owning useConnectionHealth here, rather than
+// at DraftSessionHost's top level, means the socket opens exactly once the
+// session leaves `draft`, not on every facilitator visit regardless of
+// status.
+//
+// Reuses the same useConnectionHealth pattern SessionLobbyPage already
+// demonstrates (SessionLobbyPage.tsx's `connect` + useConnectionHealth
+// call). The roster hook (useParticipantRoster) is the same shared
+// implementation rendered on SessionLobbyPage's lobby branch (task 4.2) --
+// no independently-drifting copy.
+// ---------------------------------------------------------------------------
+
+interface LiveReadinessViewProps {
+  sessionId: string;
+  teamLabel: string;
+  newTeamCreated: boolean;
+  data: FacilitatorSessionStateResponse;
+  joinUrl: string;
+  renderCopyControl: (testidPrefix: string) => JSX.Element;
+  startSessionState: StartSessionState;
+  onStartSession: () => void;
+}
+
+function LiveReadinessView({
+  sessionId,
+  teamLabel,
+  newTeamCreated,
+  data,
+  joinUrl,
+  renderCopyControl,
+  startSessionState,
+  onStartSession,
+}: LiveReadinessViewProps) {
+  const connect = useCallback(() => new WebSocket(buildSessionWebSocketUrl(sessionId)), [sessionId]);
+  const { socket } = useConnectionHealth(connect);
+
+  return (
+    <div
+      data-testid="live-readiness-view"
+      style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}
+    >
+      <h1>{teamLabel}</h1>
+      {/* task 5.7, design.md D2: new-team-specific acknowledgment, scoped
+          to the navigation that just created this team -- does not alter
+          the existing-team flow's landing copy, which never sets
+          newTeamCreated. */}
+      {newTeamCreated && (
+        <p data-testid="new-team-landing-acknowledgment">
+          Team created. Default topics assigned.
+        </p>
+      )}
+      {/* session-lobby-routing-gap design.md D1/D2/D5: the lobby -> pre_session
+          trigger (Start Session), the navigate-away link that closes the
+          transition instead of relocating the dead end (pre_session/active/
+          wrap_up), and the untouched static text for genuinely terminal
+          statuses (complete/abandoned) -- not a new dead end, since nothing
+          about those statuses is actionable. */}
+      {data.currentSessionState === "lobby" && (
+        <div data-testid="live-readiness-lobby">
+          {/* design.md D5/task 4.1: heading and control label aligned with
+              SessionLobbyPage's lobby-branch "Session Lobby" heading and
+              "Start Session" button, so landing on either surface
+              mid-transition reads as the same product. */}
+          <h2>Session Lobby</h2>
+          <p>Waiting for participants to join. Start the session when you're ready.</p>
+          <button
+            type="button"
+            data-testid="start-session-button"
+            onClick={onStartSession}
+            disabled={startSessionState.phase === "submitting"}
+          >
+            {startSessionState.phase === "submitting" ? "Starting…" : "Start Session"}
+          </button>
+          {startSessionState.phase === "failed" && (
+            <p role="alert" data-testid="start-session-error" style={{ color: "#c62828", marginTop: "0.5rem" }}>
+              {startSessionState.message}
+            </p>
+          )}
+
+          {/* participant-readiness-roster, tasks.md 4.2/6.1: active while
+              currentSessionState === "lobby" -- the only status this
+              change's roster covers (design.md Non-Goals: no visual
+              continuity across the lobby -> active transition). Its own
+              child component (shared with SessionLobbyPage) so
+              useParticipantRoster's initial fetch fires only during lobby,
+              not for every non-draft status this WebSocket subscription
+              otherwise covers. */}
+          <LobbyParticipantRoster sessionId={sessionId} socket={socket} joinUrl={joinUrl} />
+        </div>
+      )}
+
+      {(data.currentSessionState === "pre_session" ||
+        data.currentSessionState === "active" ||
+        data.currentSessionState === "wrap_up") && (
+        <div data-testid="live-readiness-navigate">
+          <p>The room is open. Session status: {data.currentSessionState}.</p>
+          <Link to={`/session/${sessionId}`} data-testid="live-session-navigate-link">
+            Go to the session
+          </Link>
+        </div>
+      )}
+
+      {(data.currentSessionState === "complete" || data.currentSessionState === "abandoned") && (
+        <p>The room is open. Session status: {data.currentSessionState}.</p>
+      )}
+
+      <div style={{ marginTop: "1rem" }}>
+        <div style={{ fontSize: "0.875rem", fontWeight: 600, color: "#757575" }}>JOIN LINK</div>
+        {/* design.md D5: full-emphasis body text once joinable -- no muted
+            color, no badge (badge is draft-only, per spec.md). */}
+        <p data-testid="live-join-link">{joinUrl}</p>
+        {renderCopyControl("live-join-link")}
+      </div>
     </div>
   );
 }

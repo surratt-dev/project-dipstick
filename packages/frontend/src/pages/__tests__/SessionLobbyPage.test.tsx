@@ -176,12 +176,32 @@ describe("4.2: branching off GET .../action-items-review", () => {
     expect(screen.queryByTestId("session-lobby-waiting")).not.toBeInTheDocument();
   });
 
-  it("404 -> existing no-access handling", async () => {
+  // participant-readiness-view design.md D2, tasks.md 1.3b: a 404 now
+  // triggers one registration-retry attempt before falling back to
+  // no-access -- a genuinely-unauthorized caller (EM, stranger, no
+  // membership) still ends up here once the retry also 404s.
+  it("404 -> registration retry also 404s -> existing no-access handling", async () => {
+    mockFetchOnce(404, { error: { category: "not_found", message: "Session not found.", correlationId: "x" } });
+    mockFetchOnce(200, { alreadyParticipant: false }); // best-effort registration POST
     mockFetchOnce(404, { error: { category: "not_found", message: "Session not found.", correlationId: "x" } });
 
     renderPage();
 
     await waitFor(() => expect(screen.getByTestId("session-lobby-no-access")).toBeInTheDocument());
+  });
+
+  // The gap this change closes: a first-time joiner's initial 404 clears on
+  // the registration retry, landing them on the real branch instead of
+  // no-access.
+  it("404 -> registration retry succeeds -> the retried fetch's real branch renders", async () => {
+    mockFetchOnce(404, { error: { category: "not_found", message: "Session not found.", correlationId: "x" } });
+    mockFetchOnce(201, { alreadyParticipant: false }); // registration POST succeeds
+    mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: false });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("session-lobby-waiting")).toBeInTheDocument());
+    expect(screen.queryByTestId("session-lobby-no-access")).not.toBeInTheDocument();
   });
 });
 
@@ -557,5 +577,57 @@ describe("3.5-3.8: reauth-required parity (http-session-expiry-reauth-parity)", 
 
       expect(screen.getAllByRole("alert")).toHaveLength(1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// participant-readiness-roster — tasks.md 5.1/5.2/5.3. Roster rendered in
+// SessionLobbyPage's lobby branch, facilitator-only, using the page's
+// existing WebSocket connection.
+// ---------------------------------------------------------------------------
+describe("participant-readiness-roster: SessionLobbyPage's lobby branch (tasks.md 5.1-5.3)", () => {
+  it("5.1/5.3: the roster appears for the facilitator and updates live on participant_joined", async () => {
+    mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: true });
+    mockFetchOnce(200, { participants: [] });
+
+    renderPage("sess-1");
+
+    await waitFor(() => expect(screen.getByTestId("participant-roster-empty")).toBeInTheDocument());
+
+    lastSocket?.emitOpen();
+    mockFetchOnce(200, { participants: [{ userId: "u1", displayName: "Alice" }] });
+    lastSocket?.emitMessage({
+      eventType: "participant_joined",
+      payload: { sessionId: "sess-1", userId: "u1", joinedAt: "2026-01-01T00:00:00Z" },
+    });
+
+    await waitFor(() => expect(screen.getByTestId("participant-roster-list")).toBeInTheDocument());
+    expect(screen.getByTestId("participant-roster-row")).toHaveTextContent("Alice");
+  });
+
+  // task 5.2: the non-facilitator branch continues to withhold participant
+  // identity — no roster testid reaches the DOM at all for a participant.
+  it("5.2: a non-facilitator sees no roster — no participant names, no count", async () => {
+    mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: false });
+
+    renderPage("sess-1");
+
+    await waitFor(() => expect(screen.getByTestId("session-lobby-waiting-message")).toBeInTheDocument());
+    expect(screen.queryByTestId("participant-roster")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("start-session-button")).not.toBeInTheDocument();
+  });
+
+  // Parity with DraftSessionHost's 4.3 refresh-restore test — SessionLobbyPage
+  // has its own, older, independent WebSocket lifecycle, so this is not
+  // automatically covered by that page's test passing.
+  it("5.3: a page refresh (fresh mount) restores the roster without navigating away", async () => {
+    mockFetchOnce(409, { currentSessionStatus: "lobby", isFacilitator: true });
+    mockFetchOnce(200, { participants: [{ userId: "u1", displayName: "Alice" }] });
+
+    renderPage("sess-1");
+
+    await waitFor(() => expect(screen.getByTestId("participant-roster-list")).toBeInTheDocument());
+    expect(screen.getByTestId("participant-roster-row")).toHaveTextContent("Alice");
+    expect(screen.getByTestId("session-lobby-waiting")).toBeInTheDocument();
   });
 });

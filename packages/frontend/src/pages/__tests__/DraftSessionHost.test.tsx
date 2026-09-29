@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { DraftSessionHost } from "../DraftSessionHost.js";
 import type { FacilitatorSessionStateResponse } from "@dipstick/shared";
+import { FakeWebSocket } from "../../realtime/__tests__/fake-websocket.js";
 
 // ---------------------------------------------------------------------------
 // DraftSessionHost — design.md Decision D6. tasks.md Section 7 (7.7-7.12).
@@ -176,8 +177,12 @@ describe("DraftSessionHost", () => {
 describe("session-lobby-routing-gap: Start Session control (tasks.md §2)", () => {
   // 2.1/2.2/2.3, test 2.5
   it("2.5: facilitator starts the session from DraftSessionHost and the view updates in place to pre_session", async () => {
+    // participant-readiness-view: LobbyRoster's own initial fetch (D5) fires
+    // as soon as the lobby branch mounts, between the facilitator-state
+    // fetch and the Start Session click -- a third queued response, not a second.
     const fetchMock = mockFetchSequence(
       { jsonBody: lobbyState },
+      { jsonBody: { participants: [] } },
       { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "pre_session" } },
     );
 
@@ -189,7 +194,7 @@ describe("session-lobby-routing-gap: Start Session control (tasks.md §2)", () =
     await waitFor(() => expect(screen.queryByTestId("live-readiness-lobby")).not.toBeInTheDocument());
     expect(screen.getByTestId("live-readiness-navigate")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       "/api/v1/sessions/sess-1/start",
       expect.objectContaining({ method: "POST" }),
     );
@@ -511,5 +516,106 @@ describe("http-session-expiry-reauth-parity: DraftSessionHost reauth parity", ()
 
     await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
     expect(screen.queryByTestId("open-the-room-confirm")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// participant-readiness-view — tasks.md 4.1/4.2/4.3. LiveReadinessView's
+// mount/unmount WebSocket gate, and the roster rendered inside it.
+// ---------------------------------------------------------------------------
+describe("participant-readiness-view: LiveReadinessView's WebSocket mount gate and roster (tasks.md 4.1-4.3)", () => {
+  let sockets: FakeWebSocket[] = [];
+
+  beforeEach(() => {
+    sockets = [];
+    vi.stubGlobal(
+      "WebSocket",
+      vi.fn(() => {
+        const ws = new FakeWebSocket();
+        sockets.push(ws);
+        return ws;
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Regression test for the self-DoS failure mode (design.md D1 correction,
+  // engineering review Finding 2): while currentSessionState === "draft",
+  // no WebSocket connection is opened at all -- asserted directly against
+  // the stubbed constructor, not merely that the roster doesn't render.
+  it("4.3: no WebSocket connection is opened while currentSessionState is draft", async () => {
+    mockFetchSequence({ jsonBody: draftState });
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("draft-control-view")).toBeInTheDocument());
+    expect(sockets).toHaveLength(0);
+  });
+
+  // The child component mounts (and the socket opens) exactly once the
+  // session transitions out of draft.
+  it("4.3: the socket opens exactly once the session transitions out of draft (Open the room)", async () => {
+    mockFetchSequence(
+      { jsonBody: draftState },
+      { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "lobby" } },
+      { jsonBody: { participants: [] } },
+    );
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
+    expect(sockets).toHaveLength(0);
+
+    await userEvent.click(screen.getByTestId("open-the-room"));
+    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+
+    await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("4.3: the roster appears on DraftSessionHost's lobby branch and updates live on participant_joined", async () => {
+    mockFetchSequence({ jsonBody: lobbyState }, { jsonBody: { participants: [] } });
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("participant-roster-empty")).toBeInTheDocument());
+
+    const socket = sockets[0];
+    expect(socket).toBeDefined();
+    socket!.emitOpen();
+
+    // unrecognized userId (design.md D3a) — the hook re-fetches the roster.
+    // Queued BEFORE the event fires: the message handler calls fetch()
+    // synchronously within the same tick the event dispatches.
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ participants: [{ userId: "u1", displayName: "Alice" }] }),
+    } as unknown as Response);
+
+    socket!.emitMessage({
+      eventType: "participant_joined",
+      payload: { sessionId: "sess-1", userId: "u1", joinedAt: "2026-01-01T00:00:00Z" },
+    });
+
+    await waitFor(() => expect(screen.getByTestId("participant-roster-list")).toBeInTheDocument());
+    expect(screen.getByTestId("participant-roster-row")).toHaveTextContent("Alice");
+  });
+
+  // Parity with SessionLobbyPage's own refresh-restore requirement — a
+  // fresh mount of DraftSessionHost (modeling a page refresh) restores the
+  // roster from the D5 REST fetch, not from any in-memory connection state.
+  it("4.3: a page refresh restores the roster without navigating away", async () => {
+    mockFetchSequence(
+      { jsonBody: lobbyState },
+      { jsonBody: { participants: [{ userId: "u1", displayName: "Alice" }] } },
+    );
+
+    renderHost();
+
+    await waitFor(() => expect(screen.getByTestId("participant-roster-list")).toBeInTheDocument());
+    expect(screen.getByTestId("participant-roster-row")).toHaveTextContent("Alice");
+    // Still on the same lobby view -- no navigation occurred.
+    expect(screen.getByTestId("live-readiness-lobby")).toBeInTheDocument();
   });
 });

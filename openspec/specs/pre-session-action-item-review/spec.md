@@ -101,6 +101,41 @@ Without a frontend trigger for the already-implemented `POST /api/v1/sessions/:s
 - **WHEN** a facilitator views `SessionLobbyPage`'s `lobby` branch for a session they facilitate, having previously seen `DraftSessionHost`'s `lobby`-status rendering for the same session
 - **THEN** the heading text and Start Session control label on `SessionLobbyPage` read as the same action and product as what they saw on `DraftSessionHost`
 
+### Requirement: `SessionLobbyPage`'s `lobby` branch renders the participant readiness roster for the Facilitator
+
+`SessionLobbyPage`'s `lobby` branch SHALL render the participant readiness roster (see `participant-readiness-roster` capability) for the Facilitator, using the same shared roster component/hook rendered on `DraftSessionHost`'s live-readiness-view, over this page's own existing WebSocket connection (no second socket opened for the roster). Non-facilitator viewers of this branch continue to see the existing waiting message only, with no participant names or count. `SessionLobbyPage` has no mechanism to fetch a session's join token, so unlike `DraftSessionHost`, the roster's empty-state prompt on this surface renders without a join link (see `participant-readiness-roster`'s empty-state requirement for this accepted, surface-specific gap).
+
+#### Scenario: Facilitator sees the roster on SessionLobbyPage's lobby branch
+- **WHEN** the Facilitator views `SessionLobbyPage` for a session in `lobby` status with one or more participants who have joined
+- **THEN** the participant readiness roster is visible, listing those participants
+
+#### Scenario: Non-facilitator continues to see only the waiting message
+- **WHEN** an Engineer (non-facilitator) views `SessionLobbyPage`'s `lobby` branch
+- **THEN** they see the existing waiting message, with no participant names, no participant count, and no roster
+
+#### Scenario: Roster survives a page refresh on SessionLobbyPage
+- **WHEN** the Facilitator refreshes `SessionLobbyPage` while its session is in `lobby` status
+- **THEN** the roster is restored from the session record via this page's own connection-teardown/reconnect path, without navigating away
+
+### Requirement: `SessionLobbyPage` registers a first-time joiner via retry-on-404, not an unconditional call
+
+`SessionLobbyPage`'s review fetch (`fetchReview`, backing `GET .../action-items-review`) SHALL, on receiving a `404` response, attempt registration once — calling `POST /api/v1/sessions/:sessionId/participants` (see `session-participation`'s `lobby`/`pre_session` registration requirement) — and then retry the same review fetch exactly once. This is the frontend caller the relaxed registration gate requires. It SHALL NOT be implemented as an unconditional call fired on every mount: an unconditional call would fire for every viewer, including the facilitator and already-registered participants, for no behavioral benefit in the common case. A caller who is still unauthorized after the retry (Engineering Manager, stranger, non-member) SHALL land on the `no-access` branch — the retry does not loosen authorization or loop.
+
+#### Scenario: A first-time joiner is registered via the retry-on-404 caller
+- **WHEN** a first-time-joining Engineer's initial `GET .../action-items-review` call returns `404` (no `session_participants` row yet)
+- **THEN** `POST .../participants` is called once
+- **AND** the review fetch is retried exactly once
+- **AND** on success, the participant's screen renders the appropriate branch (`lobby` or `pre_session`) rather than `no-access`
+
+#### Scenario: A genuinely unauthorized caller still lands on no-access after the retry
+- **WHEN** a caller who is not entitled to session access (e.g., an Engineering Manager, or a non-member of the session's team) triggers the retry-on-404 registration attempt
+- **THEN** the registration attempt is rejected server-side, the retried review fetch also returns `404`
+- **AND** the caller's screen shows the `no-access` branch, with no further retry loop
+
+#### Scenario: An already-registered caller never triggers the registration call
+- **WHEN** a facilitator or an already-registered participant's `GET .../action-items-review` call succeeds or returns `409` (not `404`)
+- **THEN** `POST .../participants` is never called for that request
+
 ### Requirement: Non-facilitator waiting copy on `SessionLobbyPage`'s `lobby` branch omits the raw session ID and reassures the participant
 
 `SessionLobbyPage`'s `lobby`-branch waiting message, shown to non-facilitator participants, SHALL NOT display the raw `sessionId`. It SHALL include a one-line reassurance that the facilitator will start the session shortly.
