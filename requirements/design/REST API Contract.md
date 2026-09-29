@@ -2027,9 +2027,15 @@ PATCH /api/v1/action-items/:actionItemId/owner
 **Description**
 Reassigns an action item to a new active team member. Typically used when the current owner has left the team.
 
+**Corrected by `reassign-action-item-owner` (2026-09-29):** this entry originally stated three things that did not match this endpoint's actual, shipped design (design.md's Migration Plan, this change's implementation):
+
+1. The error table below listed `403` for both "not a facilitator" and "resolved action items cannot be reassigned" — an authorization failure and a state-precondition failure collapsed into one status code. Corrected to `409 Conflict` for the resolved case, matching `VOTE-002`'s own "resolved is terminal, unhedged" precedent (Open Question 3).
+2. `sessionId` was documented as optional ("Current session context, for history attribution"). It is REQUIRED for this endpoint: this endpoint's governing use case has no out-of-session path, unlike `VOTE-002`'s own optional `sessionId`, whose optionality is grounded in a use case that explicitly supports an out-of-session status update. Its absence is rejected `422`.
+3. **Authorization** below previously read `global_role = 'facilitator'` only — a real, distinct enum value (`user_role`, migration 1) that describes a materially weaker, standing authorization model than what this endpoint actually implements, and the code never checks `users.global_role` at all. Corrected to state the actual session-scoped mechanism, matching `VOTE-002`'s own corrected entry.
+
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` only. The facilitator must have an active session for the team this action item belongs to.
+**Authorization:** A session exists for the action item's team with `facilitator_id` equal to the authenticated caller and `status` in `lobby`, `pre_session`, `active`, or `wrap_up` — the same session-scoped `EXISTS` check `VOTE-002` establishes (that endpoint's Decision D10), reused verbatim rather than re-derived (design.md Decision D1). Unlike `VOTE-002`, there is no owner-authorized path here at all: reassignment is a privileged action, not something the current owner can do to themselves, so authorization is facilitator-or-nothing.
 
 **Request**
 
@@ -2042,7 +2048,8 @@ Reassigns an action item to a new active team member. Typically used when the cu
 ```typescript
 interface ReassignActionItemRequest {
   newOwnerUserId: string;    // Must be an active participant member of the action item's team
-  sessionId?: string;        // Current session context, for history attribution
+  sessionId: string;         // Required. The current session context, for history attribution.
+                             // Missing or invalid values are rejected 422 (design.md Decision D4).
 }
 ```
 
@@ -2064,14 +2071,17 @@ interface ReassignActionItemResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not a facilitator; resolved action items cannot be reassigned |
-| `404 Not Found` | Action item, new owner user, or new owner's team membership does not exist |
-| `422 Unprocessable Entity` | New owner is not an active `participant` member of the action item's team; new owner is the facilitator themselves |
+| `403 Forbidden` | Caller has some relationship to the item's team (member, or has ever facilitated a session for it) but is not currently an authorized active facilitator |
+| `404 Not Found` | Action item does not exist, or exists but the caller has zero relationship to its team (indistinguishable from nonexistence); new owner user does not exist; new owner has no `team_memberships` row at all for this team |
+| `409 Conflict` | The action item's current status is `resolved` — resolved is a terminal state and is not a valid target for this endpoint |
+| `422 Unprocessable Entity` | `sessionId` is missing, or does not reference an active-state session for this team; new owner is the calling facilitator themselves; new owner's `team_memberships` row for this team is soft-removed or has `role = 'engineering_manager'` |
 
 **Notes**
 - The reassignment event is recorded in `action_item_history` with the prior `owner_id` and the facilitator as `changed_by_user_id`.
 - The new owner must be an active `participant` member of the team — not the facilitator themselves, and not an EM.
-- Resolved action items cannot be reassigned.
+- Resolved action items cannot be reassigned (`409`, not `403` — see the correction note above).
+- Reassigning an item to its own current owner is accepted as a `200` no-op: `updated_at` is bumped and an `audit_log` row is written (`metadata.no_op = true`), but no `action_item_history` row is written, since no ownership transition occurred.
+- No WebSocket broadcast is published for any reassignment, no-op or real.
 
 ---
 
