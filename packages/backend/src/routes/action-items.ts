@@ -413,7 +413,7 @@ export async function actionItemRoutes(app: FastifyInstance): Promise<void> {
     // spec.md's corresponding note).
     // -----------------------------------------------------------------------
     let hasRelationship = false;
-    const teamAccessGrant = await evaluateTeamAccess(userId, item.team_id);
+    const teamAccessGrant = await evaluateTeamAccess(userId, item.team_id, request.log);
     hasRelationship = teamAccessGrant !== null;
     if (!hasRelationship) {
       const everFacilitatedResult = await db.query<{ exists: boolean }>(
