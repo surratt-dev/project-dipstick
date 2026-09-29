@@ -145,26 +145,27 @@
 ## Summary
 **Actor:** Facilitator
 
-**Trigger:** The Facilitator wants to distribute the session join link to participants and copies it from the session room.
+**Trigger:** The Facilitator wants to distribute the session join link to participants and copies it from their session control surface (see Preconditions).
 
 **Goal:** As a Facilitator, I want to copy the session join link so that I can share it with participants through an external channel (e.g., Slack, email, or a meeting chat).
 
 ---
 
 ## Preconditions
-- A session has been created and is in a "waiting for participants" state.
-- The Facilitator is viewing the session room.
-- A join link has been generated and is displayed in the session room.
+- A session has been created; the join link exists and is copyable whether the session is in `draft` status (not yet open to participants) or has reached `lobby` status or later (waiting for participants).
+- The Facilitator is viewing their own control surface for the session — concretely, `DraftSessionHost`'s `draft-control-view` branch while the session is in `draft` status, or its `live-readiness-view` branch once the session reaches `lobby` status or later. This is *not* `SessionLobbyPage`, which shares the word "lobby" in its name but is unreachable by any live navigation path during the `lobby` window (tracked separately as issue #164). **Keep this mapping in sync if `DraftSessionHost`'s branching or the app's routing changes** — it is stated explicitly here so the next reader doesn't have to re-derive it from route code.
+- A join link has been generated.
 
 ## Main Flow
-1. The Facilitator views the session room, where the join link is displayed.
+1. The Facilitator views their session control surface (see Preconditions), where the join link is displayed — as muted, selectable text alongside the `draft`-status badge while in `draft`, or as the full-emphasis primary link once `lobby` or later.
 2. The Facilitator clicks or activates the copy button adjacent to the join link.
 3. The application copies the join link URL to the Facilitator's clipboard.
-4. The application displays a brief confirmation (e.g., "Link copied") to acknowledge the action.
+4. The application displays an inline confirmation banner reading exactly "Link copied," which clears automatically after 8 seconds.
 5. The Facilitator pastes and shares the link via an out-of-band channel.
 
 ## Alternate Flows
 - **Clipboard API unavailable (browser or OS restriction):** The application falls back to displaying the join link as selectable text so the Facilitator can copy it manually. No confirmation of successful copy is shown.
+- **Clipboard API available but the write call rejects at runtime (permission denied, insecure context, or any other runtime rejection):** Treated identically to "Clipboard API unavailable." The application falls back to displaying the join link as selectable text. No confirmation of successful copy is shown.
 - **Facilitator manually selects and copies the link text:** The application does not interfere. The link is visible and selectable at all times.
 
 ## Postconditions
@@ -174,11 +175,11 @@
 ---
 
 ## Acceptance Criteria
-- [ ] The join link is displayed prominently in the session room at all times before the session begins.
-- [ ] A copy button is present adjacent to the join link.
+- [ ] While the session is in `draft` status, the join link is displayed using muted/de-emphasized styling alongside the existing `draft`-status badge, with a functional copy button present adjacent to it — copying is available before the room opens, so a Facilitator can stage a share message in advance.
+- [ ] Once the session reaches `lobby` status or later, the join link is displayed using full-emphasis body text styling (not the muted `draft` treatment), without the `draft`-status badge, and the same copy button remains present and functional adjacent to it. The badge's presence — not the copy button's presence — is what distinguishes the two states.
 - [ ] Activating the copy button places the full join link URL on the system clipboard.
 - [ ] A visible confirmation is shown after a successful copy.
-- [ ] The join link remains visible and manually copyable regardless of clipboard API availability.
+- [ ] The join link remains visible and manually copyable both when the Clipboard API is unavailable and when an available `navigator.clipboard.writeText()` call rejects at runtime — neither case shows a copy-success confirmation.
 
 ## Out of Scope
 - Sending the link directly to participants within the application (notifications are out of scope).
