@@ -295,7 +295,22 @@ export type AuditEventName =
   // session.draft_created are the direct precedent (an access/existence
   // -establishing event audited in the same transaction as the rows it
   // covers). metadata: { team_id, session_id }.
-  | "team.created_with_session";
+  | "team.created_with_session"
+  // session.participant_registered / session.participant_registration_rejected:
+  // participant-readiness-view, design.md Decision D2 (security review
+  // Finding 3). Written at the session_participants registration point
+  // (POST /api/v1/sessions/:sessionId/participants, relaxed per D2 to also
+  // accept lobby/pre_session, not only active) -- closing the
+  // session-lobby-routing-gap D7 gap this change absorbs as in-scope work.
+  // Mirrors session.draft_created / session.draft_denied_membership_conflict's
+  // established pair (a successful access-establishing write and its
+  // rejected counterpart both get an audit row). metadata: { session_id }.
+  // The rejected variant additionally covers the corrected condition set
+  // (D2's correction) -- not just EM-exclusion, but the membership_exists /
+  // membership_removed_at checks evaluateSessionSubscriberAccess Path 1
+  // already applies.
+  | "session.participant_registered"
+  | "session.participant_registration_rejected";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

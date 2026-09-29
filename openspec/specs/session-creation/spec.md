@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines requirements for facilitator-initiated session creation, covering two flows: session creation for an existing team (the eligible-teams listing, the facilitator-from-another-team enforcement point, the concurrent-active-session block, audit logging for denial and success, the draft-status landing control view, and the "Open the room" advance action), and inline creation of a brand-new team and its first session via `POST /api/v1/teams` (team-name uniqueness, default-topic assignment via `default-topic-provisioning`, and the direct-to-`lobby` landing specific to a team with no prior context). Any picker personalization beyond the eligible-teams list and empty-state copy remains out of scope for this capability today and left for it to grow into later.
+Defines requirements for facilitator-initiated session creation, covering two flows: session creation for an existing team (the eligible-teams listing, the facilitator-from-another-team enforcement point, the concurrent-active-session block, audit logging for denial and success, the draft-status landing control view, the "Open the room" advance action, and — once the session reaches `lobby` — `DraftSessionHost`'s own session-scoped WebSocket subscription and its rendering of the participant readiness roster, see `participant-readiness-roster`), and inline creation of a brand-new team and its first session via `POST /api/v1/teams` (team-name uniqueness, default-topic assignment via `default-topic-provisioning`, and the direct-to-`lobby` landing specific to a team with no prior context). Any picker personalization beyond the eligible-teams list and empty-state copy remains out of scope for this capability today and left for it to grow into later.
 
 ## Requirements
 
@@ -175,6 +175,34 @@ Because no `session_status` transition in this system is reversible, activating 
 #### Scenario: This requirement does not speak to lobby-landing behavior
 - **WHEN** an Engineer redeems a session's join link while that session's status is `lobby`
 - **THEN** this requirement makes no claim about what page or state the Engineer subsequently lands on — the redirect destination is governed by the `join-link` capability's "Session-aware join link landing" requirement, not by this requirement
+
+---
+
+### Requirement: `DraftSessionHost`'s live-readiness-view opens a session-scoped WebSocket connection while the session is in `lobby`
+
+`DraftSessionHost`'s live participant-readiness view SHALL open a session-scoped WebSocket connection (via the same `useConnectionHealth` pattern used elsewhere in the application) while `currentSessionState !== 'draft'`, so it can receive `participant_joined`/`participant_left` events and render the participant readiness roster (see `participant-readiness-roster` capability) without requiring the Facilitator to navigate to a different page.
+
+This subscription is not a call added to `DraftSessionHost`'s existing render function. `DraftSessionHost` renders two branches from one component today — a `draft`-status control view and the live-readiness view — and `evaluateSessionSubscriberAccess`'s facilitator grant path excludes `draft` status entirely, so a facilitator has zero valid grant paths while the session is `draft`. Calling `useConnectionHealth` unconditionally (rather than gating its *mount*) would open a socket during `draft` that the server immediately rejects as unauthorized, and `connectionHealth.ts`'s disclosure-blind close-code handling would drive that into an indefinite exponential-backoff reconnect loop — a self-inflicted denial-of-service against the application's own authorization boundary. The live-readiness view is therefore its own child component, owning the `useConnectionHealth` call, mounted only when `currentSessionState !== 'draft'` — mount/unmount is the gate, not a status check inside the hook.
+
+#### Scenario: DraftSessionHost opens a WebSocket connection during lobby
+- **WHEN** the Facilitator views `DraftSessionHost` for a session in `lobby` status
+- **THEN** a session-scoped WebSocket connection is opened for that session
+
+#### Scenario: No WebSocket connection is opened while the session is in `draft`
+- **WHEN** the Facilitator views `DraftSessionHost` for a session in `draft` status
+- **THEN** no WebSocket connection is opened, and no reconnect/backoff activity occurs
+
+#### Scenario: The live-readiness child component mounts exactly once the session leaves `draft`
+- **WHEN** a session transitions from `draft` to `lobby` while the Facilitator is on `DraftSessionHost`
+- **THEN** the live-readiness child component mounts (and its WebSocket connection opens) exactly once, at that transition
+
+### Requirement: `DraftSessionHost`'s live-readiness-view renders the participant readiness roster
+
+While `currentSessionState === 'lobby'`, `DraftSessionHost`'s live-readiness-view SHALL render the participant readiness roster, using the same shared roster component/hook rendered on `SessionLobbyPage`'s `lobby` branch, and passing the join link it already has available so the roster's empty-state prompt can display it (see `participant-readiness-roster`'s empty-state requirement).
+
+#### Scenario: Facilitator sees the roster on their landing page
+- **WHEN** the Facilitator views `DraftSessionHost` for a session in `lobby` status with one or more participants who have joined
+- **THEN** the participant readiness roster is visible on `DraftSessionHost`, listing those participants
 
 ---
 

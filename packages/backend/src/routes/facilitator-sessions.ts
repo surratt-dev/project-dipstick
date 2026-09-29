@@ -25,6 +25,7 @@ import type {
   TopicAdvanceResponse,
   ActionItemsReviewResponse,
   ActionItemsReviewWrongStatusResponse,
+  ParticipantRosterResponse,
   SessionAlreadyExistsResponse,
   EligibleTeam,
   EligibleTeamsResponse,
@@ -1014,6 +1015,89 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     await applyTimingFloor(startTime);
     reply.header("Cache-Control", "no-store");
     const body: ActionItemsReviewResponse = { actionItems, isFacilitator };
+    return reply.code(200).send(body);
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/sessions/:sessionId/participants-roster
+  // (participant-readiness-roster, design.md Decision D5)
+  //
+  // The initial/refresh fetch for the Facilitator-only live participant
+  // roster. Two distinct authorization requirements, per security review
+  // Finding 2 (design.md D5's correction):
+  //
+  //   - Caller-level authorization: only a caller holding a `facilitator`
+  //     grant from evaluateSessionSubscriberAccess may call this endpoint at
+  //     all. Follows dispatchParticipantJoined/dispatchParticipantLeft's
+  //     precedent (ws-event-dispatcher.ts:310-354) -- grant?.path !==
+  //     "facilitator" is rejected with the SAME disclosure-blind 404 a
+  //     missing/invalid grant gets, not a 403 that would confirm the
+  //     session exists. Deliberately NOT action-items-review's precedent
+  //     (accepting both grants and filtering via an isFacilitator flag) --
+  //     that would serve full participant names to any Engineer in the
+  //     session calling this endpoint with their own valid cookie.
+  //
+  //   - Row-level content filtering: the roster query itself re-applies
+  //     evaluateSessionSubscriberAccess Path 1's exact EM-exclusion
+  //     condition set, so a user who would fail that grant (e.g. an EM who
+  //     somehow has a session_participants row) is excluded from the
+  //     response even though the caller (the facilitator) is authorized.
+  //
+  // Reads from the durable session_participants table, not in-memory
+  // connection-registry state (task 2.2) -- a page refresh restores the
+  // full roster, including currently-disconnected participants, since rows
+  // are never deleted (design.md D3). No connection/disconnection column
+  // exists on session_participants, so every entry here is registration-only
+  // -- the frontend roster hook layers live participant_joined/
+  // participant_left state on top of this snapshot itself.
+  //
+  // applyTimingFloor() + Cache-Control: no-store on every response path
+  // (200 and 404), matching action-items-review's convention exactly
+  // (security review Finding 4).
+  // -------------------------------------------------------------------------
+  app.get<{
+    Params: { sessionId: string };
+  }>("/api/v1/sessions/:sessionId/participants-roster", async (request, reply) => {
+    const startTime = Date.now();
+    const userSession = request.session as unknown as SessionData;
+    const { sessionId } = request.params;
+
+    const grant = await evaluateSessionSubscriberAccess(userSession.userId, sessionId);
+
+    if (grant === null || grant.path !== "facilitator") {
+      await applyTimingFloor(startTime);
+      reply.header("Cache-Control", "no-store");
+      return reply.code(404).send({
+        error: {
+          category: "not_found" as const,
+          message: "Session not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    const rosterResult = await db.query<{ user_id: string; display_name: string }>(
+      `SELECT sp.user_id, u.display_name
+       FROM session_participants sp
+       JOIN users u ON u.id = sp.user_id
+       LEFT JOIN team_memberships tm ON tm.user_id = sp.user_id AND tm.team_id = $2
+       WHERE sp.session_id = $1
+         AND tm.user_id IS NOT NULL
+         AND tm.removed_at IS NULL
+         AND u.global_role != 'engineering_manager'
+         AND tm.role != 'engineering_manager'
+       ORDER BY u.display_name ASC`,
+      [sessionId, grant.teamId],
+    );
+
+    await applyTimingFloor(startTime);
+    reply.header("Cache-Control", "no-store");
+    const body: ParticipantRosterResponse = {
+      participants: rosterResult.rows.map((row) => ({
+        userId: row.user_id,
+        displayName: row.display_name,
+      })),
+    };
     return reply.code(200).send(body);
   });
 

@@ -17,6 +17,20 @@ import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-acce
 //   Per Decision 4 in design.md: reads from the database at each request.
 //   Does NOT use session-cached role values.
 //
+//   participant-readiness-view, design.md Decision D2 (security review
+//   Finding 1 correction): the role-check query below now reads
+//   membership_exists and membership_removed_at, not just membership_role,
+//   and rejects unless membership_exists && membership_removed_at IS NULL --
+//   replicating evaluateSessionSubscriberAccess Path 1's full condition set
+//   (session-subscriber-access-helper.ts:155-161), not the previous
+//   EM-only-exclusion query, which passed a non-member because its LEFT JOIN
+//   yielded membership_role = null rather than rejecting.
+//
+//   D2 also relaxes the status gate: lobby and pre_session are now accepted
+//   alongside active, closing the session-lobby-routing-gap D7 registration
+//   gap this change absorbs as in-scope work -- draft remains rejected (no
+//   valid facilitator or participant grant path exists for a draft session).
+//
 // POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in
 //   Records a vote from a participant. Performs a per-operation DB read of
 //   team_memberships.role at each lock-in attempt (Task 3.7 / Decision 4).
@@ -69,31 +83,40 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       status: string;
     };
 
-    if (status !== "active") {
+    // D2: lobby/pre_session accepted alongside active; draft is still
+    // rejected -- a draft session has no valid participant grant path
+    // (evaluateSessionSubscriberAccess Path 3 excludes draft, and Path 1
+    // requires this very row not to exist yet).
+    if (status !== "lobby" && status !== "pre_session" && status !== "active") {
       return reply.code(422).send({
         error: {
           category: "invalid_request" as const,
-          message: "Session is not active.",
+          message: "Session is not open for participant registration.",
           correlationId: crypto.randomUUID(),
         },
       });
     }
 
-    // EM non-participation check (Tasks 3.1, 3.2):
-    // Query BOTH users.global_role AND team_memberships.role from the DB.
-    // NOT from session state, in-memory cache, or middleware-level state.
-    // This is the per-request DB read required by Decision 4.
+    // Membership + EM non-participation check (Tasks 3.1, 3.2; D2 correction
+    // per security review Finding 1): query users.global_role AND the full
+    // team_memberships state (existence, removal, role) from the DB. NOT
+    // from session state, in-memory cache, or middleware-level state. This
+    // is the per-request DB read required by Decision 4, shaped to match
+    // evaluateSessionSubscriberAccess Path 1 exactly.
     const roleCheckResult = await db.query<{
       global_role: string;
       membership_role: string | null;
+      membership_removed_at: Date | null;
+      membership_exists: boolean;
     }>(
       `SELECT u.global_role,
-              tm.role AS membership_role
+              tm.role AS membership_role,
+              tm.removed_at AS membership_removed_at,
+              (tm.user_id IS NOT NULL) AS membership_exists
        FROM users u
        LEFT JOIN team_memberships tm
              ON tm.user_id = u.id
             AND tm.team_id = $2
-            AND tm.removed_at IS NULL
        WHERE u.id = $1`,
       [session.userId, teamId],
     );
@@ -108,36 +131,112 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { global_role, membership_role } = roleCheckResult.rows[0] as {
-      global_role: string;
-      membership_role: string | null;
-    };
+    const { global_role, membership_role, membership_removed_at, membership_exists } =
+      roleCheckResult.rows[0] as {
+        global_role: string;
+        membership_role: string | null;
+        membership_removed_at: Date | null;
+        membership_exists: boolean;
+      };
 
-    // Reject if EITHER global_role OR membership_role indicates EM
-    if (
-      global_role === "engineering_manager" ||
-      membership_role === "engineering_manager"
-    ) {
+    // Reject unless the caller has an active team membership for this
+    // session's team AND is not an Engineering Manager by either check
+    // (D2 correction: membership_exists is required, not just EM-exclusion
+    // -- a user with no team_memberships row at all previously passed
+    // because the LEFT JOIN yielded membership_role = null).
+    const isEligible =
+      membership_exists &&
+      membership_removed_at === null &&
+      global_role !== "engineering_manager" &&
+      membership_role !== "engineering_manager";
+
+    if (!isEligible) {
+      // Synchronous audit write, no transaction needed (no paired state
+      // change) -- mirrors session.draft_denied_membership_conflict's
+      // established convention (facilitator-sessions.ts).
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          global_role,
+          request.ip,
+          "session.participant_registration_rejected",
+          teamId,
+          JSON.stringify({ session_id: sessionId }),
+        ],
+      );
+      emitAuditEvent(request.log, "session.participant_registration_rejected", {
+        actorUserId: session.userId,
+        actorGlobalRole: global_role,
+        actorIp: request.ip,
+        sessionId,
+        teamId,
+      });
+
       return reply.code(403).send({
         error: {
           category: "invalid_request" as const,
           message:
-            "Engineering Managers cannot participate as voters in sessions.",
+            "You are not eligible to participate as a voter in this session.",
           correlationId: crypto.randomUUID(),
         },
       });
     }
 
-    // Insert participant record (idempotent)
-    const insertResult = await db.query<{ id: string }>(
-      `INSERT INTO session_participants (session_id, user_id)
-       VALUES ($1, $2)
-       ON CONFLICT (session_id, user_id) DO NOTHING
-       RETURNING id`,
-      [sessionId, session.userId],
-    );
+    // Insert participant record (idempotent) and, on first registration
+    // only, its audit row, in one transaction -- join.link_redeemed's
+    // established pattern (join-links.ts): INSERT + conditional audit INSERT
+    // in the same transaction, emitAuditEvent fired only after commit.
+    const client = await db.connect();
+    let alreadyParticipant: boolean;
+    try {
+      await client.query("BEGIN");
 
-    const alreadyParticipant = insertResult.rows.length === 0;
+      const insertResult = await client.query<{ id: string }>(
+        `INSERT INTO session_participants (session_id, user_id)
+         VALUES ($1, $2)
+         ON CONFLICT (session_id, user_id) DO NOTHING
+         RETURNING id`,
+        [sessionId, session.userId],
+      );
+
+      alreadyParticipant = insertResult.rows.length === 0;
+
+      if (!alreadyParticipant) {
+        await client.query(
+          `INSERT INTO audit_log
+             (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            session.userId,
+            global_role,
+            request.ip,
+            "session.participant_registered",
+            teamId,
+            JSON.stringify({ session_id: sessionId }),
+          ],
+        );
+      }
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    if (!alreadyParticipant) {
+      emitAuditEvent(request.log, "session.participant_registered", {
+        actorUserId: session.userId,
+        actorGlobalRole: global_role,
+        actorIp: request.ip,
+        sessionId,
+        teamId,
+      });
+    }
 
     return reply
       .code(alreadyParticipant ? 200 : 201)
@@ -221,7 +320,8 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // Per-operation role check (Task 3.7 / Decision 4):
+      // Per-operation role check (Task 3.7 / Decision 4; D2 correction per
+      // security review Finding 1):
       // Read membership_role FROM THE DATABASE at this exact moment.
       // NOT from the session, a WebSocket connection-time cache, or any
       // in-memory store. A role change that happened AFTER the connection
@@ -230,17 +330,25 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       // Redis prohibition (Decision 4): membership_role data MUST NOT be
       // cached in Redis. No Redis read or write for membership_role is
       // permitted in this handler.
+      //
+      // Same corrected condition set as POST .../participants above --
+      // membership_exists and membership_removed_at are now read alongside
+      // membership_role, matching evaluateSessionSubscriberAccess Path 1
+      // (this handler carried the same incomplete-LEFT-JOIN gap).
       const roleCheckResult = await db.query<{
         global_role: string;
         membership_role: string | null;
+        membership_removed_at: Date | null;
+        membership_exists: boolean;
       }>(
         `SELECT u.global_role,
-                tm.role AS membership_role
+                tm.role AS membership_role,
+                tm.removed_at AS membership_removed_at,
+                (tm.user_id IS NOT NULL) AS membership_exists
          FROM users u
          LEFT JOIN team_memberships tm
                ON tm.user_id = u.id
               AND tm.team_id = $2
-              AND tm.removed_at IS NULL
          WHERE u.id = $1`,
         [session.userId, teamId],
       );
@@ -255,16 +363,22 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const { global_role, membership_role } = roleCheckResult.rows[0] as {
-        global_role: string;
-        membership_role: string | null;
-      };
+      const { global_role, membership_role, membership_removed_at, membership_exists } =
+        roleCheckResult.rows[0] as {
+          global_role: string;
+          membership_role: string | null;
+          membership_removed_at: Date | null;
+          membership_exists: boolean;
+        };
 
-      // Reject if EITHER global_role OR membership_role is 'engineering_manager'.
+      // Reject unless the caller has an active team membership for this
+      // session's team AND is not an Engineering Manager by either check.
       // A user promoted to EM after the connection was opened is caught here.
       // A vote they submitted BEFORE the promotion is already in the votes table
       // and is NOT removed by this check — it will be counted at reveal.
       if (
+        !membership_exists ||
+        membership_removed_at !== null ||
         global_role === "engineering_manager" ||
         membership_role === "engineering_manager"
       ) {

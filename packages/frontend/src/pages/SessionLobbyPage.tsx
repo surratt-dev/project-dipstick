@@ -9,6 +9,7 @@ import { useAuth } from "../auth/AuthContext.js";
 import { SignOutButton } from "../components/SignOutButton.js";
 import { PreSessionActionItemReview } from "../components/PreSessionActionItemReview.js";
 import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
+import { LobbyParticipantRoster } from "../components/LobbyParticipantRoster.js";
 import { useConnectionHealth } from "../realtime/connectionHealth.js";
 import { detectSessionExpiry } from "../http/sessionExpiry.js";
 import { buildSessionWebSocketUrl } from "./SessionConnectionHost.js";
@@ -98,7 +99,7 @@ export function SessionLobbyPage() {
     returnTo: string;
   } | null>(null);
 
-  const fetchReview = useCallback(async () => {
+  const fetchReview = useCallback(async (didRetryRegistration = false): Promise<void> => {
     if (!sessionId) return;
     try {
       const res = await fetch(`/api/v1/sessions/${sessionId}/action-items-review`, {
@@ -132,6 +133,27 @@ export function SessionLobbyPage() {
       }
 
       if (res.status === 404) {
+        // participant-readiness-view design.md D2, tasks.md 1.3b: the
+        // frontend caller the relaxed POST .../participants gate requires.
+        // A first-time joiner has no session_participants row yet, so
+        // action-items-review's own evaluateSessionSubscriberAccess check
+        // 404s here -- attempt registration once, then retry this same
+        // fetch exactly once. A genuinely-unauthorized caller (EM, stranger,
+        // non-member) still 404s on the retry, since the corrected
+        // server-side check (sessions.ts) rejects them too -- this does not
+        // loop, and does not change behavior for anyone who already has a
+        // row (the retry is only reached from a 404 in the first place).
+        if (!didRetryRegistration) {
+          try {
+            await fetch(`/api/v1/sessions/${sessionId}/participants`, {
+              method: "POST",
+              credentials: "include",
+            });
+          } catch {
+            // best-effort; fall through to the retry regardless
+          }
+          return fetchReview(true);
+        }
         setBranch({ kind: "no-access" });
         return;
       }
@@ -328,6 +350,17 @@ export function SessionLobbyPage() {
                 </p>
               )}
             </div>
+          )}
+
+          {/* participant-readiness-roster, tasks.md 5.1/5.2/6.1: facilitator-
+              only, same shared component/hook DraftSessionHost's lobby
+              branch renders -- the non-facilitator waiting message above is
+              unchanged (task 5.2), no participant names/count reach it. Its
+              own child component (mount/unmount gate, not a hidden hook
+              call) so useParticipantRoster's initial fetch only fires for
+              a facilitator viewing this branch. */}
+          {branch.isFacilitator && (
+            <LobbyParticipantRoster sessionId={sessionId ?? ""} socket={socket} />
           )}
         </div>
       )}

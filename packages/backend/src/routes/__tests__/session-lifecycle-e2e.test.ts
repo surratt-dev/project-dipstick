@@ -144,7 +144,7 @@ describe("session-lifecycle-transitions — full session run-through (tasks.md 8
     // -----------------------------------------------------------------
     mockDbQuery
       .mockResolvedValueOnce({ rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }] })
-      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }] })
       .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
     mockDbConnect.mockResolvedValueOnce(
       makeMockClient([
@@ -233,7 +233,7 @@ describe("session-lifecycle-transitions — full session run-through (tasks.md 8
     // -----------------------------------------------------------------
     mockDbQuery
       .mockResolvedValueOnce({ rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }] })
-      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }] })
       .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
     mockDbConnect.mockResolvedValueOnce(
       makeMockClient([

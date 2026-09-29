@@ -65,23 +65,31 @@ function buildApp(sessionData: Record<string, unknown> = {}) {
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/sessions/:sessionId/participants
+//
+// participant-readiness-view, design.md Decision D2 (security review Finding
+// 1 correction): the role-check row now carries membership_exists and
+// membership_removed_at alongside membership_role — a rejection now also
+// writes an audit_log row (plain db.query, no transaction, mirroring
+// session.draft_denied_membership_conflict) before the 403, and a successful
+// first-time registration runs INSERT participant + its audit row in one
+// transaction (mockDbConnect/makeMockClient, mirroring join.link_redeemed).
 // ---------------------------------------------------------------------------
 describe("POST /api/v1/sessions/:sessionId/participants", () => {
   beforeEach(() => vi.clearAllMocks());
 
   // Task 3.3 — global_role=engineer + membership_role=engineering_manager → rejected
   it("3.3: rejects a user with global_role=engineer and membership_role=engineering_manager", async () => {
-    // 1) session fetch — active
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{ id: "s1", team_id: "team-1", status: "active" }],
       })
-      // 2) role check — global engineer, but team membership EM
+      // role check — global engineer, but team membership EM
       .mockResolvedValueOnce({
         rows: [
-          { global_role: "engineer", membership_role: "engineering_manager" },
+          { global_role: "engineer", membership_role: "engineering_manager", membership_removed_at: null, membership_exists: true },
         ],
-      });
+      })
+      .mockResolvedValueOnce({ rows: [] }); // INSERT INTO audit_log (rejection)
 
     const app = await buildApp();
     const res = await app.inject({
@@ -90,7 +98,19 @@ describe("POST /api/v1/sessions/:sessionId/participants", () => {
     });
 
     expect(res.statusCode).toBe(403);
-    expect(res.json().error.message).toContain("Engineering Managers");
+    expect(res.json().error.message).toContain("not eligible");
+
+    // 1.3a: EM-rejection produces an audit_log row.
+    const auditCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall![1]).toContain("session.participant_registration_rejected");
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "session.participant_registration_rejected",
+      expect.objectContaining({ sessionId: "s1" }),
+    );
   });
 
   // Task 3.6 — membership_role=participant + global_role=engineer → allowed
@@ -100,9 +120,16 @@ describe("POST /api/v1/sessions/:sessionId/participants", () => {
         rows: [{ id: "s1", team_id: "team-1", status: "active" }],
       })
       .mockResolvedValueOnce({
-        rows: [{ global_role: "engineer", membership_role: "participant" }],
-      })
-      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] }); // INSERT participant
+        rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }],
+      });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "sp-1" }] }, // INSERT participant (first registration)
+      { rows: [] }, // INSERT audit_log (session.participant_registered)
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp();
     const res = await app.inject({
@@ -111,6 +138,15 @@ describe("POST /api/v1/sessions/:sessionId/participants", () => {
     });
 
     expect(res.statusCode).toBe(201);
+    const auditInsertCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditInsertCall![1]).toContain("session.participant_registered");
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "session.participant_registered",
+      expect.objectContaining({ sessionId: "s1" }),
+    );
   });
 
   it("rejects a user with global_role=engineering_manager (existing check still works)", async () => {
@@ -120,9 +156,10 @@ describe("POST /api/v1/sessions/:sessionId/participants", () => {
       })
       .mockResolvedValueOnce({
         rows: [
-          { global_role: "engineering_manager", membership_role: "participant" },
+          { global_role: "engineering_manager", membership_role: "participant", membership_removed_at: null, membership_exists: true },
         ],
-      });
+      })
+      .mockResolvedValueOnce({ rows: [] }); // INSERT INTO audit_log (rejection)
 
     const app = await buildApp();
     const res = await app.inject({
@@ -131,6 +168,167 @@ describe("POST /api/v1/sessions/:sessionId/participants", () => {
     });
 
     expect(res.statusCode).toBe(403);
+  });
+
+  // 1.4 — first-time joiner registered during `lobby` (D2/D7 gap closure).
+  it("1.4: registers a first-time joiner during lobby status", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "s1", team_id: "team-1", status: "lobby" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }],
+      });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "sp-1" }] }, // INSERT participant
+      { rows: [] }, // INSERT audit_log
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/participants",
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().alreadyParticipant).toBe(false);
+  });
+
+  // 1.4 — EM rejected during lobby/pre_session registration (global_role path).
+  it("1.4: rejects an EM (by global_role) attempting to register during pre_session", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "s1", team_id: "team-1", status: "pre_session" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineering_manager", membership_role: "participant", membership_removed_at: null, membership_exists: true }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/participants",
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  // 1.4 — EM rejected during lobby registration (membership_role path).
+  it("1.4: rejects an EM (by membership_role) attempting to register during lobby", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "s1", team_id: "team-1", status: "lobby" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineer", membership_role: "engineering_manager", membership_removed_at: null, membership_exists: true }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/participants",
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  // 1.4 / security review Finding 1 — a user with no team_memberships row at
+  // all for the session's team is rejected. This is the exact gap the
+  // original LEFT JOIN query missed (membership_role = null passed).
+  it("1.4: rejects a user with no team_memberships row for the session's team", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "s1", team_id: "team-1", status: "lobby" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineer", membership_role: null, membership_removed_at: null, membership_exists: false }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/participants",
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  // 1.4 — a user whose team membership was removed is rejected, even though
+  // a stale membership_role value might otherwise read as eligible.
+  it("1.4: rejects a user whose team_memberships row has been removed", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "s1", team_id: "team-1", status: "lobby" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: new Date("2026-01-01"), membership_exists: true }],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/participants",
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  // 1.4 — reconnecting participant does not create a duplicate row.
+  it("1.4: a reconnecting participant with an existing row is not duplicated", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "s1", team_id: "team-1", status: "lobby" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }],
+      });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // INSERT ... ON CONFLICT DO NOTHING — no row returned, already exists
+      { rows: [] }, // COMMIT (no audit row written — alreadyParticipant short-circuits it)
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/participants",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().alreadyParticipant).toBe(true);
+    const auditInsertCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditInsertCall).toBeUndefined();
+  });
+
+  // 1.4 — registration is still rejected for a session in draft status
+  // (negative case pinning the boundary the chosen mechanism must not loosen).
+  it("1.4: rejects registration for a session in draft status", async () => {
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ id: "s1", team_id: "team-1", status: "draft" }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/participants",
+    });
+
+    expect(res.statusCode).toBe(422);
+    // Only the session fetch ran — no role check, no insert, no audit write.
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    expect(mockDbConnect).not.toHaveBeenCalled();
   });
 });
 
@@ -162,7 +360,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       // Role check: membership_role is now engineering_manager (changed after join)
       .mockResolvedValueOnce({
         rows: [
-          { global_role: "engineer", membership_role: "engineering_manager" },
+          { global_role: "engineer", membership_role: "engineering_manager", membership_removed_at: null, membership_exists: true },
         ],
       });
 
@@ -193,7 +391,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
         ],
       })
       .mockResolvedValueOnce({
-        rows: [{ global_role: "engineer", membership_role: "participant" }],
+        rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }],
       })
       .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] }); // participant check
 
@@ -270,7 +468,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
         ],
       })
       .mockResolvedValueOnce({
-        rows: [{ global_role: "engineer", membership_role: "participant" }],
+        rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }],
       })
       .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
 
@@ -306,7 +504,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       })
       .mockResolvedValueOnce({
         rows: [
-          { global_role: "engineer", membership_role: "engineering_manager" },
+          { global_role: "engineer", membership_role: "engineering_manager", membership_removed_at: null, membership_exists: true },
         ],
       });
 
@@ -327,7 +525,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       .mockResolvedValueOnce({
         rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }],
       })
-      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }] })
       .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
 
     const client = makeMockClient([
@@ -362,7 +560,7 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
       .mockResolvedValueOnce({
         rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }],
       })
-      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant" }] })
+      .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }] })
       .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
 
     const client = makeMockClient([

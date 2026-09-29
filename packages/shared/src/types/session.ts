@@ -114,6 +114,28 @@ export interface ActionItemsReviewWrongStatusResponse {
   isFacilitator: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// participant-readiness-roster: GET /api/v1/sessions/:sessionId/participants-roster
+// design.md Decision D5.
+//
+// Facilitator-only initial/refresh roster fetch. Row-level content filtering
+// matches evaluateSessionSubscriberAccess Path 1's EM-exclusion (design.md
+// D5) -- a user who would be excluded from session-scoped WebSocket delivery
+// never appears here either. No connection/disconnection state is carried:
+// session_participants has no persisted connection column (D2/D3's "rows are
+// never deleted" note), so every entry here reflects registration only --
+// the roster hook (frontend) is responsible for layering live
+// participant_joined/participant_left state on top of this snapshot.
+// ---------------------------------------------------------------------------
+export interface ParticipantRosterEntry {
+  userId: string;
+  displayName: string;
+}
+
+export interface ParticipantRosterResponse {
+  participants: ParticipantRosterEntry[];
+}
+
 export interface TopicAdvanceResponse {
   sessionId: string;
   teamId: string;
