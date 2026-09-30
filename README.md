@@ -1,5 +1,19 @@
 # Dipstick — Engineering Health Check
 
+[![CI](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml)
+[![Integration Tests](https://github.com/surratt-dev/project-dipstick/actions/workflows/integration.yml/badge.svg?branch=main)](https://github.com/surratt-dev/project-dipstick/actions/workflows/integration.yml)
+[![Docker Build](https://github.com/surratt-dev/project-dipstick/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/surratt-dev/project-dipstick/actions/workflows/docker.yml)
+[![Release](https://github.com/surratt-dev/project-dipstick/actions/workflows/release.yml/badge.svg)](https://github.com/surratt-dev/project-dipstick/actions/workflows/release.yml)
+[![Coverage (shared)](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/GIST_OWNER/GIST_ID/raw/dipstick-coverage-shared.json)](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml?query=branch%3Amain)
+[![Coverage (backend)](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/GIST_OWNER/GIST_ID/raw/dipstick-coverage-backend.json)](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml?query=branch%3Amain)
+[![Coverage (frontend)](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/GIST_OWNER/GIST_ID/raw/dipstick-coverage-frontend.json)](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml?query=branch%3Amain)
+[![Latest release](https://img.shields.io/github/v/release/surratt-dev/project-dipstick?sort=semver)](https://github.com/surratt-dev/project-dipstick/releases/latest)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React](https://img.shields.io/badge/React-20232A?logo=react&logoColor=61DAFB)](https://react.dev/)
+[![Fastify](https://img.shields.io/badge/Fastify-000000?logo=fastify&logoColor=white)](https://fastify.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+
 A web application that facilitates recurring Engineering Health Check sessions for engineering teams. Teams vote simultaneously on topics related to their development experience and codebase health; a facilitator from a different team guides the session and the application tracks results over time to surface trends.
 
 The ritual replaces a fragile spreadsheet-based process. The application enforces the mechanics that make it work — simultaneous vote reveal, no engineering manager participation as voters, cross-team facilitator requirement — as structural constraints, not configurable options.
