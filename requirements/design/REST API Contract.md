@@ -853,7 +853,7 @@ interface RestoreTopicResponse {
 **Corrected (`re-add-removed-topic` design.md Decision 2):** this table originally listed the customization lock under `403 Forbidden` and a single undifferentiated `404 Not Found` row — the same drafting shape `remove-topic` design.md Decision 4 already corrected for `TOPIC-004`. As implemented, the lock is a state precondition, not an actor-identity/role failure, so it is `409 Conflict`, and the `404` row is split so a caller can distinguish a nonexistent team from a nonexistent topic. `403 Forbidden` is reserved for the two actor-identity/role failures and is evaluated, and returned, before any later check in the cascade (`403` → `404 TEAM_NOT_FOUND` → `409 TOPIC_CUSTOMIZATION_LOCKED` → `404 TOPIC_NOT_FOUND` → `422 TOPIC_ALREADY_ACTIVE`).
 
 **Notes**
-- The prior `displayOrder` position is not restored; the topic is appended to the end of the active list (`re-add-removed-topic` design.md Decision 3) — the `topics_team_order UNIQUE (team_id, display_order, status)` constraint is why archiving a topic never had to renumber the remaining active topics in the first place, and restoring to the prior position would require deciding what happens if an active topic has since taken that slot. Not FR-8.6, which is about the canonical default topic set remaining restorable, not about ordering semantics.
+- The prior `displayOrder` position is not restored; the topic is appended to the end of the active list (`re-add-removed-topic` design.md Decision 3) — archiving a topic never has to renumber the remaining active topics because position is unique only among a team's active rows (partial unique index `topics_team_active_order ON topics (team_id, display_order) WHERE status = 'active'`, migration 18, `reorder-topics` design.md Decision 1); an archived row's `display_order` is not meaningful and not maintained, and restoring to the prior position would require deciding what happens if an active topic has since taken that slot. Not FR-8.6, which is about the canonical default topic set remaining restorable, not about ordering semantics.
 - This is the inverse of `TOPIC-004`'s soft-delete: `topics.status` transitions back to `'active'`. Historical `votes` and `session_topics` records tied to this topic are unaffected and unchanged by a restore.
 - A successful restore sets `topics.restored_by`/`topics.restored_at` in the same transaction as the status transition, leaving `archived_at`/`archived_by` untouched — preserved, not cleared (`re-add-removed-topic` design.md Decision 4) — surfaced back to facilitators via `TOPIC-002`'s `archived[].restoredBy`/`archived[].restoredAt` for a topic that has since been re-archived.
 - A marker surfacing the gap left by a topic's absence while archived in the EM trend view is out of scope for this endpoint and is tracked as a separate, deferred follow-up change (`re-add-removed-topic` proposal.md "Scope Decision").
@@ -872,7 +872,7 @@ Replaces the display order for all active topics in a team with a new ordering.
 
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` AND not a member of this team AND `isCustomizationLocked = false`.
+**Authorization:** `global_role = 'facilitator'` AND not a member of this team, OR `application_admin` (the standing, org-wide facilitator-or-admin model shared with `TOPIC-002`/`TOPIC-004`/`TOPIC-005`), AND `isCustomizationLocked = false`.
 
 **Request**
 
@@ -885,9 +885,12 @@ Replaces the display order for all active topics in a team with a new ordering.
 ```typescript
 interface ReorderTopicsRequest {
   orderedTopicIds: string[];   // Complete ordered list of ALL active topic IDs for this team.
-                               // Partial lists are rejected.
+                               // 1..200 entries (MAX_REORDER_TOPICS), each a UUID, case-insensitive;
+                               // entries are lowercased before the duplicate check.
 }
 ```
+
+Unknown top-level body keys are ignored, as in `TOPIC-003`.
 
 **Response**
 
@@ -896,25 +899,43 @@ interface ReorderTopicsRequest {
 ```typescript
 interface ReorderTopicsResponse {
   topics: Array<{
-    topicId: string;
+    topicId: string;        // lowercase
     name: string;
-    displayOrder: number;   // New assigned display order (0-indexed or 1-indexed, consistent)
+    displayOrder: number;   // 1-based and dense (1..N) after a save that changes the order;
+                            // on a no-op, the stored values, which may have gaps
   }>;
+  openSessionCreatedAt: string | null;  // Creation time of the team's lobby/pre_session/active/wrap_up
+                                        // session (not draft); always null for application_admin.
 }
 ```
 
+A save that does not change the order (no-op) returns the same shape, with `topics` in the current order and their stored `displayOrder` values (which may have gaps left by archives; they are not renumbered), and writes nothing.
+
+Every response, success or error, carries `Cache-Control: no-store`.
+
 **Error Responses**
+
+All errors use the standard envelope `{ error: { category, code, message, correlationId } }`. Checks are evaluated in this order, and the first failure is returned: `403` → `404 TEAM_NOT_FOUND` → `409 TOPIC_CUSTOMIZATION_LOCKED` → `422 INVALID_TOPIC_ORDER` → `409 TOPIC_ORDER_STALE`. `applyTimingFloor` is applied on every handled exit, including `200`.
 
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not a facilitator, is a team member, customization lock active |
-| `404 Not Found` | Team does not exist; any provided `topicId` does not exist for this team |
-| `422 Unprocessable Entity` | `orderedTopicIds` does not match the complete set of active topics for the team (missing or extra IDs); empty array |
+| `403 Forbidden` | Not a facilitator and not an `application_admin` (`NOT_A_FACILITATOR`); facilitator is an active team member (`FACILITATOR_IS_TEAM_MEMBER`) |
+| `404 Not Found` | Team does not exist (`TEAM_NOT_FOUND`). Never returned for a topic ID. |
+| `409 Conflict` | Customization lock is active (`TOPIC_CUSTOMIZATION_LOCKED`), whatever the body |
+| `409 Conflict` | The well-formed list does not equal the team's current active set: a missing active ID, or an extra archived, other-team, or unknown ID (`TOPIC_ORDER_STALE`, `category: "precondition_failed"`). The body is identical for every cause and carries no IDs. |
+| `422 Unprocessable Entity` | Malformed body (`INVALID_TOPIC_ORDER`, `field: "orderedTopicIds"`): not a JSON object; `orderedTopicIds` missing, not an array, empty, or over 200 entries (checked before any per-entry check); an entry that is not a UUID string; a duplicate after lowercasing. The message never echoes submitted values. |
+
+`INVALID_TOPIC_ORDER` deliberately diverges from `TOPIC-003`'s `VALIDATION_FAILED`: the failure is about the list as a whole. The envelope keeps the same shape by setting `field`.
+
+**Corrected (`reorder-topics` design.md Decisions 2, 4, 7):** the original draft authorized facilitators only (no `application_admin` branch, the FR-8.2 [HARD] gap `TOPIC-004`/`TOPIC-005` already corrected), listed the customization lock under `403`, returned `404` for an unknown topic ID, rejected a partial list with `422`, and left `displayOrder` as "0-indexed or 1-indexed". As implemented: the lock is `409`, `404` is for the team only, any set mismatch is `409 TOPIC_ORDER_STALE`, `422` is for structure only, and `displayOrder` is 1-based and dense after a save that changes the order (a no-op returns the stored values, which may have gaps).
 
 **Notes**
-- The request must include all active topic IDs. A partial list is rejected with `422`. This avoids ambiguity about topics not mentioned in the list.
-- All `display_order` values are updated in a single PostgreSQL transaction.
+- The request must include all active topic IDs. A partial list is rejected with `409 TOPIC_ORDER_STALE`. This avoids ambiguity about topics not mentioned in the list.
+- All `display_order` values are updated in a single PostgreSQL transaction, under the same per-team advisory lock as `TOPIC-003`/`TOPIC-004`/`TOPIC-005`. The write is two-phase (active rows move to negated targets, then flip to `1..N`) so swaps never collide on the active-order unique index.
+- Concurrent reorders of the same set are last-writer-wins; no version token.
+- A changed order writes an `audit_log` row `topic.reordered` with `metadata: { previous_order: uuid[], new_order: uuid[] }` (IDs only) in the same transaction. A no-op writes nothing.
+- Reorder writes only `topics`. It never writes `session_topics`; sessions already created keep their order.
 
 ---
 

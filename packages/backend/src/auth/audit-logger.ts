@@ -368,7 +368,14 @@ export type AuditEventName =
   // is the direct precedent (an access/existence-establishing event audited
   // in the same transaction as the rows it authorizes). metadata: {
   // topic_id }.
-  | "topic.restored";
+  | "topic.restored"
+  // topic.reordered: reorder-topics, design.md Decision 6. Fired by
+  // PUT /api/v1/teams/:teamId/topics/order (TOPIC-006) on every save that
+  // changes the order (no-op saves are silent), in the same database
+  // transaction as the two-phase renumber. The audit_log row's metadata is
+  // { previous_order: uuid[], new_order: uuid[] } (lowercase IDs, no names);
+  // the structured-log event carries topicCount only, not the ID arrays.
+  | "topic.reordered";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

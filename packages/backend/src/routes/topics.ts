@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { PoolClient } from "pg";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import {
@@ -13,6 +14,8 @@ import type {
   ArchiveTopicResponse,
   ArchiveTopicConfirmationRequired,
   RestoreTopicResponse,
+  ReorderedTopic,
+  ReorderTopicsResponse,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -150,7 +153,7 @@ async function checkTeamExists(
 
   if (result.rows.length === 0) {
     await applyTimingFloor(startTime);
-    await reply.code(404).send(buildErrorEnvelope("not_found", "Team not found."));
+    await reply.code(404).send(buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND"));
     return { rejected: true };
   }
 
@@ -466,6 +469,137 @@ async function checkTopicExistsAndArchived(
 
   return { rejected: false };
 }
+
+// ---------------------------------------------------------------------------
+// reorder-topics Task 3.2 — TOPIC-006 identity/role check
+//
+// design.md Decision 2 step 1: calls the shared, decision-only
+// checkStandingFacilitatorOrAdminAuthorization, mirroring
+// checkRestoreTopicAuthorization. Must not be copied from TOPIC-003's
+// facilitator-only checkStandingFacilitatorAuthorization, which would
+// silently drop the application_admin branch. Writes its own message and
+// applies the timing floor itself, on both reason branches.
+// ---------------------------------------------------------------------------
+async function checkReorderTopicsAuthorization(
+  reply: FastifyReply,
+  userId: string,
+  teamId: string,
+  startTime: number,
+): Promise<AuthorizationResult> {
+  const decision = await checkStandingFacilitatorOrAdminAuthorization(userId, teamId);
+
+  if (!decision.authorized) {
+    const message =
+      decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
+        ? "A facilitator cannot reorder topics for a team they are a member of."
+        : "Only a facilitator or an application admin can reorder topics.";
+
+    await applyTimingFloor(startTime);
+    await reply.code(403).send(buildErrorEnvelope("forbidden", message, decision.reason));
+    return { rejected: true };
+  }
+
+  return { rejected: false, actorGlobalRole: decision.actorGlobalRole };
+}
+
+// ---------------------------------------------------------------------------
+// reorder-topics Task 3.4 — TOPIC-006 body validation
+//
+// design.md Decision 2 step 4 (security review F2/F3/F4, engineer review
+// M2/M7), evaluated in this order:
+//   1. the body is a non-array object (null, bare-array, and string bodies
+//      are a 422, never a TypeError -> 500);
+//   2. orderedTopicIds is an array;
+//   3. length is 1..MAX_REORDER_TOPICS, checked BEFORE any per-entry work so
+//      pre-lock work is bounded by the cap, not by the body-size limit;
+//   4. every entry is a string matching the strict UUID pattern,
+//      case-insensitively;
+//   5. every entry is lowercased, then checked for duplicates.
+// Unknown top-level keys are ignored, matching TOPIC-003's destructuring.
+// Messages state the rule and never echo submitted values.
+// ---------------------------------------------------------------------------
+const MAX_REORDER_TOPICS = 200;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type ReorderValidationResult = { valid: true; orderedTopicIds: string[] } | { valid: false; message: string };
+
+function validateReorderTopicsBody(body: unknown): ReorderValidationResult {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { valid: false, message: "The request body must be an object with an orderedTopicIds array." };
+  }
+
+  const raw = (body as { orderedTopicIds?: unknown }).orderedTopicIds;
+  if (!Array.isArray(raw)) {
+    return { valid: false, message: "orderedTopicIds is required and must be an array." };
+  }
+
+  if (raw.length < 1 || raw.length > MAX_REORDER_TOPICS) {
+    return {
+      valid: false,
+      message: `orderedTopicIds must contain between 1 and ${MAX_REORDER_TOPICS} entries.`,
+    };
+  }
+
+  if (!raw.every((entry) => typeof entry === "string" && UUID_PATTERN.test(entry))) {
+    return { valid: false, message: "Every entry in orderedTopicIds must be a topic ID (UUID)." };
+  }
+
+  const lowered = (raw as string[]).map((id) => id.toLowerCase());
+  if (new Set(lowered).size !== lowered.length) {
+    return { valid: false, message: "orderedTopicIds must not contain the same topic ID more than once." };
+  }
+
+  return { valid: true, orderedTopicIds: lowered };
+}
+
+// ---------------------------------------------------------------------------
+// reorder-topics Task 4.4 — thrown when either renumber phase updates a row
+// count other than N. Cannot happen under the per-team advisory lock; it is
+// the defense in depth that keeps a foreign or archived ID from ever being
+// renumbered even if the in-memory set check were wrong (design.md
+// Decision 3). Rolled back and rethrown to the global error handler (500).
+// ---------------------------------------------------------------------------
+export class ReorderRowCountMismatchError extends Error {
+  constructor(phase: 1 | 2, expected: number, actual: number | null) {
+    super(`Reorder phase ${phase} updated ${actual ?? "unknown"} rows; expected ${expected}.`);
+    this.name = "ReorderRowCountMismatchError";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// reorder-topics Task 4.2 — open-session hint
+//
+// design.md Decision 7: only for a caller whose global_role is
+// 'facilitator'. For application_admin the query is NOT issued at all
+// (admins are denied session content; this must not become an unaudited
+// way to learn a team's session state). 'draft' is deliberately excluded:
+// the topic snapshot belongs at lobby entry (#175). ORDER BY ... LIMIT 1 so
+// a drift in migration 10's one-open-session invariant degrades to "the
+// newest one" rather than a 500.
+// ---------------------------------------------------------------------------
+async function readOpenSessionCreatedAt(
+  client: PoolClient,
+  teamId: string,
+  actorGlobalRole: string,
+): Promise<string | null> {
+  if (actorGlobalRole !== "facilitator") {
+    return null;
+  }
+
+  const result = await client.query<{ created_at: Date }>(
+    `SELECT created_at FROM sessions
+      WHERE team_id = $1 AND status IN ('lobby', 'pre_session', 'active', 'wrap_up')
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [teamId],
+  );
+  const row = result.rows[0];
+  return row ? new Date(row.created_at).toISOString() : null;
+}
+
+const TOPIC_ORDER_STALE_MESSAGE =
+  "The team's topic list has changed since it was loaded. Reload the topics and try again.";
 
 export async function topicRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
@@ -963,6 +1097,196 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
         displayOrder: newPosition,
         restoredAt: restoredRow.restored_at.toISOString(),
       };
+      return reply.code(200).send(successResponse);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // PUT /api/v1/teams/:teamId/topics/order  (TOPIC-006, Reorder Topics)
+  //
+  // Check-ordering cascade (reorder-topics design.md Decision 2,
+  // specs/reorder-topics/spec.md "Reorder Topics evaluates checks in a fixed
+  // order"):
+  //   1. Identity/role authorization -- 403 NOT_A_FACILITATOR /
+  //      FACILITATOR_IS_TEAM_MEMBER, admits application_admin.
+  //   2. Team existence (reused unchanged) -- 404 TEAM_NOT_FOUND.
+  //   3. Customization lock (reused unchanged) -- 409
+  //      TOPIC_CUSTOMIZATION_LOCKED, audited via writeLockDenialAudit.
+  //      Before body validation, so a locked team gets 409 whatever the body.
+  //   4. Body structure -- 422 INVALID_TOPIC_ORDER.
+  //   5. Set equality against the team's active set, inside the per-team
+  //      advisory lock -- 409 TOPIC_ORDER_STALE.
+  //   6. No-op -- 200, no write, no audit.
+  //   7. Two-phase renumber + topic.reordered audit row, same transaction --
+  //      200.
+  //
+  // Every handled exit applies applyTimingFloor(startTime). The thrown path
+  // (catch -> ROLLBACK -> rethrow to the global error handler) is exempt, an
+  // inherited gap shared with TOPIC-003/004/005 (design.md Decision 2).
+  // -------------------------------------------------------------------------
+  app.put<{
+    Params: { teamId: string };
+    Body: unknown;
+  }>("/api/v1/teams/:teamId/topics/order", async (request, reply) => {
+    // Set once, first, so every exit carries it -- including the 500 the
+    // global error handler writes on this same reply (security review F6).
+    reply.header("Cache-Control", "no-store");
+
+    const startTime = Date.now();
+    const session = request.session as unknown as SessionData;
+    const { teamId } = request.params;
+    const endpoint = "PUT /api/v1/teams/:teamId/topics/order";
+
+    // Step 1 -- 403, checked first.
+    const authResult = await checkReorderTopicsAuthorization(reply, session.userId, teamId, startTime);
+    if (authResult.rejected) {
+      return reply;
+    }
+
+    // Step 2 -- 404, checked second.
+    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    if (existsResult.rejected) {
+      return reply;
+    }
+
+    // Step 3 -- 409, checked third.
+    const lockResult = await checkCustomizationLockGate(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.reordered",
+      },
+      startTime,
+    );
+    if (lockResult.rejected) {
+      return reply;
+    }
+
+    // Step 4 -- 422. From here on only the lowercased list is used.
+    const validation = validateReorderTopicsBody(request.body ?? {});
+    if (!validation.valid) {
+      await applyTimingFloor(startTime);
+      return reply
+        .code(422)
+        .send(buildErrorEnvelope("invalid_request", validation.message, "INVALID_TOPIC_ORDER", "orderedTopicIds"));
+    }
+    const newOrder = validation.orderedTopicIds;
+
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1::text))", [teamId]);
+
+      // Step 5 -- set equality, computed in memory against this team-scoped
+      // read. Submitted IDs are never looked up individually (security
+      // review F3), so the 409 cannot act as an existence oracle.
+      const currentResult = await client.query<{ id: string; name: string; display_order: number }>(
+        `SELECT id, name, display_order FROM topics
+          WHERE team_id = $1 AND status = 'active'
+          ORDER BY display_order, id`,
+        [teamId],
+      );
+      const currentRows = currentResult.rows;
+      const previousOrder = currentRows.map((row) => row.id);
+      const currentIds = new Set(previousOrder);
+
+      if (newOrder.length !== currentIds.size || !newOrder.every((id) => currentIds.has(id))) {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply
+          .code(409)
+          .send(buildErrorEnvelope("precondition_failed", TOPIC_ORDER_STALE_MESSAGE, "TOPIC_ORDER_STALE"));
+      }
+
+      // Step 6 -- no-op: nothing is written and nothing is audited. topics
+      // carries the stored displayOrder values, since none were rewritten.
+      if (newOrder.every((id, index) => id === previousOrder[index])) {
+        const openSessionCreatedAt = await readOpenSessionCreatedAt(client, teamId, authResult.actorGlobalRole);
+        await client.query("COMMIT");
+
+        await applyTimingFloor(startTime);
+        const noOpResponse: ReorderTopicsResponse = {
+          topics: currentRows.map((row) => ({ topicId: row.id, name: row.name, displayOrder: row.display_order })),
+          openSessionCreatedAt,
+        };
+        return reply.code(200).send(noOpResponse);
+      }
+
+      // Step 7 -- two-phase renumber (design.md Decision 3). The active-only
+      // unique index is non-deferrable, so a one-statement swap can collide
+      // partway. Phase 1 moves every active row to its negated target, which
+      // collides with nothing; phase 2 flips them to the final 1..N.
+      const expected = newOrder.length;
+      const phase1 = await client.query(
+        `UPDATE topics t
+            SET display_order = -v.pos, updated_at = now()
+           FROM unnest($2::uuid[]) WITH ORDINALITY AS v(id, pos)
+          WHERE t.id = v.id AND t.team_id = $1 AND t.status = 'active'`,
+        [teamId, newOrder],
+      );
+      if (phase1.rowCount !== expected) {
+        throw new ReorderRowCountMismatchError(1, expected, phase1.rowCount);
+      }
+
+      // Assumes every active display_order was >= 0 before this request, so
+      // the only negative active values are the ones phase 1 just wrote.
+      const phase2 = await client.query(
+        `UPDATE topics SET display_order = -display_order
+          WHERE team_id = $1 AND status = 'active' AND display_order < 0`,
+        [teamId],
+      );
+      if (phase2.rowCount !== expected) {
+        throw new ReorderRowCountMismatchError(2, expected, phase2.rowCount);
+      }
+
+      // Success audit row, same transaction as the renumber (design.md
+      // Decision 6). IDs only, lowercase, no names.
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          authResult.actorGlobalRole,
+          request.ip,
+          "topic.reordered",
+          teamId,
+          JSON.stringify({ previous_order: previousOrder, new_order: newOrder }),
+        ],
+      );
+
+      const openSessionCreatedAt = await readOpenSessionCreatedAt(client, teamId, authResult.actorGlobalRole);
+
+      await client.query("COMMIT");
+
+      // Structured-log counterpart, after COMMIT. Counts only; the ID arrays
+      // live in the durable audit_log row (security review F6).
+      emitAuditEvent(request.log, "topic.reordered", {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        topicCount: expected,
+      });
+
+      const namesById = new Map(currentRows.map((row) => [row.id, row.name]));
+      const topics: ReorderedTopic[] = newOrder.map((id, index) => ({
+        topicId: id,
+        name: namesById.get(id) as string,
+        displayOrder: index + 1,
+      }));
+
+      await applyTimingFloor(startTime);
+      const successResponse: ReorderTopicsResponse = { topics, openSessionCreatedAt };
       return reply.code(200).send(successResponse);
     } catch (err) {
       await client.query("ROLLBACK");

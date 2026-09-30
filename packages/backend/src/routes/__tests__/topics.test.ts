@@ -163,6 +163,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     const res = await app.inject({ method: "POST", url: "/api/v1/teams/nonexistent-team/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
     // auth query + team-existence query only — lock-check never reached.
     expect(mockDbQuery).toHaveBeenCalledTimes(2);
   });
@@ -222,6 +223,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     });
 
     expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
   });
 
   it("treats a caller with no user row the same as not-a-facilitator (403)", async () => {
@@ -952,6 +954,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/nonexistent-team/topics/topic-1" });
 
     expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
     expect(mockDbQuery).toHaveBeenCalledTimes(2);
   });
 
@@ -1526,6 +1529,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     });
 
     expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
     expect(mockDbQuery).toHaveBeenCalledTimes(2);
   });
 
@@ -1816,5 +1820,557 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — error envelope 
     expect(body.code).toBeUndefined();
     expect(body.message).toBeUndefined();
     expect(body.error).toBeDefined();
+  });
+});
+
+// ===========================================================================
+// PUT /api/v1/teams/:teamId/topics/order  (TOPIC-006, reorder-topics)
+// ===========================================================================
+
+const REORDER_URL = "/api/v1/teams/team-1/topics/order";
+const T1 = "aaaaaaaa-0000-4000-8000-000000000001";
+const T2 = "aaaaaaaa-0000-4000-8000-000000000002";
+const T3 = "aaaaaaaa-0000-4000-8000-000000000003";
+const CURRENT_ROWS = [
+  { id: T1, name: "Topic One", display_order: 1 },
+  { id: T2, name: "Topic Two", display_order: 2 },
+  { id: T3, name: "Topic Three", display_order: 4 },
+];
+
+/** Standard happy path through the three gates TOPIC-006 shares before body validation. */
+function mockPassAllReorderGates(globalRole: "facilitator" | "application_admin" = "facilitator") {
+  mockAuthQuery(globalRole, false);
+  mockTeamExists(true);
+  mockLockCount(1);
+}
+
+/**
+ * Mock transaction client for the reorder handler, dispatched on SQL text
+ * rather than call position so each test states only what differs.
+ */
+function makeReorderClient(
+  opts: {
+    current?: Array<{ id: string; name: string; display_order: number }>;
+    phase1Count?: number;
+    phase2Count?: number;
+    phase2Throws?: boolean;
+    openSessionCreatedAt?: Date | null;
+  } = {},
+) {
+  const current = opts.current ?? CURRENT_ROWS;
+  const query = vi.fn(async (sql: string, _params?: unknown[]) => {
+    if (sql.includes("FROM topics") && sql.startsWith("SELECT id, name, display_order")) {
+      return { rows: current, rowCount: current.length };
+    }
+    if (sql.includes("SET display_order = -v.pos")) {
+      return { rows: [], rowCount: opts.phase1Count ?? current.length };
+    }
+    if (sql.includes("SET display_order = -display_order")) {
+      if (opts.phase2Throws) throw new Error("simulated phase-2 failure");
+      return { rows: [], rowCount: opts.phase2Count ?? current.length };
+    }
+    if (sql.includes("FROM sessions")) {
+      return { rows: opts.openSessionCreatedAt ? [{ created_at: opts.openSessionCreatedAt }] : [] };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  const client = { query, release: vi.fn() };
+  mockDbConnect.mockResolvedValueOnce(client);
+  return client;
+}
+
+function sqlCalls(client: { query: ReturnType<typeof vi.fn> }): string[] {
+  return client.query.mock.calls.map((call) => String(call[0]).trim());
+}
+
+function reorderAuditInserts(client: { query: ReturnType<typeof vi.fn> }) {
+  return client.query.mock.calls.filter(
+    (call) => String(call[0]).includes("INSERT INTO audit_log") && (call[1] as unknown[])[3] === "topic.reordered",
+  );
+}
+
+async function putOrder(payload: unknown, userId?: string) {
+  const app = await buildApp(userId);
+  return app.inject({
+    method: "PUT",
+    url: REORDER_URL,
+    headers: { "content-type": "application/json" },
+    payload: JSON.stringify(payload),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Task 3.5 — error cascade (spec "Reorder Topics evaluates checks in a fixed order")
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — check ordering (design.md Decision 2)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("a non-facilitator against a nonexistent team receives 403 NOT_A_FACILITATOR, before team or lock", async () => {
+    mockAuthQuery("engineer", false);
+
+    const res = await putOrder({ orderedTopicIds: [T1] });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("a facilitator who is a team member receives 403 FACILITATOR_IS_TEAM_MEMBER", async () => {
+    mockAuthQuery("facilitator", true);
+
+    const res = await putOrder({ orderedTopicIds: [T1] });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("a nonexistent team receives 404 TEAM_NOT_FOUND before the lock is evaluated", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(false);
+
+    const res = await putOrder({ orderedTopicIds: [T1] });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.category).toBe("not_found");
+    expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("a locked team with an empty-array body receives 409 TOPIC_CUSTOMIZATION_LOCKED, not 422", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const res = await putOrder({ orderedTopicIds: [] });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3.6 — malformed bodies, each 422 INVALID_TOPIC_ORDER with no transaction
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — body validation (design.md Decision 2 step 4)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const uuid = (n: number) => `bbbbbbbb-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+  const LENGTH_MESSAGE = "orderedTopicIds must contain between 1 and 200 entries.";
+
+  const cases: Array<[string, unknown]> = [
+    ["orderedTopicIds missing", {}],
+    ["orderedTopicIds not an array", { orderedTopicIds: T1 }],
+    ["an empty array", { orderedTopicIds: [] }],
+    ["201 valid UUIDs", { orderedTopicIds: Array.from({ length: 201 }, (_, i) => uuid(i)) }],
+    ["a non-UUID string entry", { orderedTopicIds: [T1, "not-a-uuid"] }],
+    ["a number entry", { orderedTopicIds: [T1, 42] }],
+    ["a null entry", { orderedTopicIds: [T1, null] }],
+    ["an object entry", { orderedTopicIds: [T1, { id: T2 }] }],
+    ["a same-case duplicate", { orderedTopicIds: [T1, T2, T1] }],
+    ["a mixed-case duplicate", { orderedTopicIds: [T1, T2, T1.toUpperCase()] }],
+    ["a null body", null],
+    ["a bare-array body", [T1, T2]],
+    ["a string body", "orderedTopicIds"],
+  ];
+
+  it.each(cases)("%s → 422 INVALID_TOPIC_ORDER, field orderedTopicIds, no BEGIN and no write", async (_label, payload) => {
+    mockPassAllReorderGates();
+
+    const res = await putOrder(payload);
+
+    expect(res.statusCode).toBe(422);
+    const body = res.json();
+    expect(body.error.category).toBe("invalid_request");
+    expect(body.error.code).toBe("INVALID_TOPIC_ORDER");
+    expect(body.error.field).toBe("orderedTopicIds");
+    expect(mockDbConnect).not.toHaveBeenCalled();
+    // auth + team + lock only; nothing reaches the database afterwards.
+    expect(mockDbQuery).toHaveBeenCalledTimes(3);
+  });
+
+  it("201 non-UUID strings fail on length first (the cap is checked before per-entry work)", async () => {
+    mockPassAllReorderGates();
+
+    const res = await putOrder({ orderedTopicIds: Array.from({ length: 201 }, (_, i) => `junk-${i}`) });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.message).toBe(LENGTH_MESSAGE);
+  });
+
+  it("the 422 message never echoes a submitted value", async () => {
+    mockPassAllReorderGates();
+    const probe = "probe-value-<script>";
+
+    const res = await putOrder({ orderedTopicIds: [T1, probe] });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.message).not.toContain(probe);
+    expect(res.body).not.toContain(probe);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3.7 / 5.11 — exit invariants: timing floor exactly once and
+// Cache-Control: no-store on every handled exit.
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — timing floor and no-store on every handled exit", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const exits: Array<[string, () => void, unknown, number]> = [
+    ["403 NOT_A_FACILITATOR", () => mockAuthQuery("engineer", false), { orderedTopicIds: [T1] }, 403],
+    ["403 FACILITATOR_IS_TEAM_MEMBER", () => mockAuthQuery("facilitator", true), { orderedTopicIds: [T1] }, 403],
+    [
+      "404 TEAM_NOT_FOUND",
+      () => {
+        mockAuthQuery("facilitator", false);
+        mockTeamExists(false);
+      },
+      { orderedTopicIds: [T1] },
+      404,
+    ],
+    [
+      "409 TOPIC_CUSTOMIZATION_LOCKED",
+      () => {
+        mockAuthQuery("facilitator", false);
+        mockTeamExists(true);
+        mockLockCount(0);
+        mockDenialAuditInsert();
+      },
+      { orderedTopicIds: [T1] },
+      409,
+    ],
+    ["422 INVALID_TOPIC_ORDER", () => mockPassAllReorderGates(), { orderedTopicIds: [] }, 422],
+    [
+      "409 TOPIC_ORDER_STALE",
+      () => {
+        mockPassAllReorderGates();
+        makeReorderClient();
+      },
+      { orderedTopicIds: [T1, T2] },
+      409,
+    ],
+    [
+      "200 no-op",
+      () => {
+        mockPassAllReorderGates();
+        makeReorderClient();
+      },
+      { orderedTopicIds: [T1, T2, T3] },
+      200,
+    ],
+    [
+      "200 changed",
+      () => {
+        mockPassAllReorderGates();
+        makeReorderClient();
+      },
+      { orderedTopicIds: [T3, T1, T2] },
+      200,
+    ],
+  ];
+
+  it.each(exits)("%s applies the floor exactly once and sets Cache-Control: no-store", async (_label, arrange, payload, status) => {
+    arrange();
+
+    const res = await putOrder(payload);
+
+    expect(res.statusCode).toBe(status);
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("the thrown-path 500 from the global error handler also carries Cache-Control: no-store", async () => {
+    mockPassAllReorderGates();
+    makeReorderClient({ phase2Throws: true });
+
+    const res = await putOrder({ orderedTopicIds: [T3, T1, T2] });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tasks 4.1/5.6 — stale set mismatch (unit): constant body, rolled back, no audit
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — stale set (design.md Decision 4)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("takes the advisory lock as the first statement after BEGIN and reads the team-scoped active set", async () => {
+    mockPassAllReorderGates();
+    const client = makeReorderClient();
+
+    await putOrder({ orderedTopicIds: [T3, T1, T2] });
+
+    const calls = sqlCalls(client);
+    expect(calls[0]).toBe("BEGIN");
+    expect(calls[1]).toContain("pg_advisory_xact_lock(hashtext($1::text))");
+    expect(calls[2]).toContain("WHERE team_id = $1 AND status = 'active'");
+    expect(calls[2]).toContain("ORDER BY display_order, id");
+  });
+
+  it("missing, extra, and unknown IDs all return an identical 409 TOPIC_ORDER_STALE body and roll back", async () => {
+    const variants = [
+      [T1, T2],
+      [T1, T2, T3, "cccccccc-0000-4000-8000-000000000009"],
+      [T1, T2, "cccccccc-0000-4000-8000-000000000009"],
+    ];
+    const bodies: Array<{ category: string; code: string; message: string }> = [];
+
+    for (const ids of variants) {
+      vi.clearAllMocks();
+      mockPassAllReorderGates();
+      const client = makeReorderClient();
+
+      const res = await putOrder({ orderedTopicIds: ids });
+
+      expect(res.statusCode).toBe(409);
+      const { category, code, message } = res.json().error;
+      bodies.push({ category, code, message });
+      expect(sqlCalls(client)).toContain("ROLLBACK");
+      expect(sqlCalls(client)).not.toContain("COMMIT");
+      expect(sqlCalls(client).some((sql) => sql.startsWith("UPDATE"))).toBe(false);
+      expect(reorderAuditInserts(client)).toHaveLength(0);
+      expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+      expect(res.body).not.toContain("cccccccc");
+      expect(res.body).not.toContain(T3);
+    }
+
+    expect(bodies[0]).toEqual({
+      category: "precondition_failed",
+      code: "TOPIC_ORDER_STALE",
+      message: bodies[0]!.message,
+    });
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[2]).toEqual(bodies[0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tasks 4.3/5.3 — no-op (unit)
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — no-op (design.md Decision 2 step 6)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("submitting the current order returns 200 { topics, openSessionCreatedAt }, writes nothing, and emits nothing", async () => {
+    mockPassAllReorderGates();
+    const createdAt = new Date("2026-09-30T12:00:00.000Z");
+    const client = makeReorderClient({ openSessionCreatedAt: createdAt });
+
+    const res = await putOrder({ orderedTopicIds: [T1, T2, T3] });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      topics: [
+        { topicId: T1, name: "Topic One", displayOrder: 1 },
+        { topicId: T2, name: "Topic Two", displayOrder: 2 },
+        { topicId: T3, name: "Topic Three", displayOrder: 4 },
+      ],
+      openSessionCreatedAt: createdAt.toISOString(),
+    });
+    expect(sqlCalls(client).some((sql) => sql.startsWith("UPDATE"))).toBe(false);
+    expect(reorderAuditInserts(client)).toHaveLength(0);
+    expect(sqlCalls(client)).toContain("COMMIT");
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tasks 4.4/4.6/5.10 — changed save, audit row, structured-log event (unit)
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — changed save and audit (design.md Decisions 3, 6)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("renumbers in two phases, audits in the transaction, emits after COMMIT, and returns dense 1-based order", async () => {
+    mockPassAllReorderGates();
+    const client = makeReorderClient();
+
+    const res = await putOrder({ orderedTopicIds: [T3.toUpperCase(), T1, T2] });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      topics: [
+        { topicId: T3, name: "Topic Three", displayOrder: 1 },
+        { topicId: T1, name: "Topic One", displayOrder: 2 },
+        { topicId: T2, name: "Topic Two", displayOrder: 3 },
+      ],
+      openSessionCreatedAt: null,
+    });
+
+    const calls = sqlCalls(client);
+    const phase1 = calls.findIndex((sql) => sql.includes("SET display_order = -v.pos"));
+    const phase2 = calls.findIndex((sql) => sql.includes("SET display_order = -display_order"));
+    const audit = calls.findIndex((sql) => sql.startsWith("INSERT INTO audit_log"));
+    const commit = calls.indexOf("COMMIT");
+    expect(phase1).toBeGreaterThan(-1);
+    expect(phase2).toBeGreaterThan(phase1);
+    expect(audit).toBeGreaterThan(phase2);
+    expect(commit).toBeGreaterThan(audit);
+
+    // Phase 1 binds the lowercased IDs as a JS array.
+    expect(client.query.mock.calls[phase1]![1]).toEqual(["team-1", [T3, T1, T2]]);
+
+    const inserts = reorderAuditInserts(client);
+    expect(inserts).toHaveLength(1);
+    const params = inserts[0]![1] as unknown[];
+    expect(params[0]).toBe("facilitator-1");
+    expect(params[1]).toBe("facilitator");
+    expect(params[4]).toBe("team-1");
+    const metadata = JSON.parse(params[5] as string);
+    expect(metadata).toEqual({ previous_order: [T1, T2, T3], new_order: [T3, T1, T2] });
+    expect(params[5]).not.toContain("Topic");
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledTimes(1);
+    const [, event, fields] = mockEmitAuditEvent.mock.calls[0]!;
+    expect(event).toBe("topic.reordered");
+    expect(Object.keys(fields as object).sort()).toEqual(
+      ["actorGlobalRole", "actorIp", "actorUserId", "teamId", "topicCount"].sort(),
+    );
+    expect(fields).toMatchObject({ actorUserId: "facilitator-1", teamId: "team-1", topicCount: 3 });
+    // emitAuditEvent runs only after COMMIT has been issued.
+    const commitCallIndex = client.query.mock.invocationCallOrder[commit]!;
+    const emitCallIndex = mockEmitAuditEvent.mock.invocationCallOrder[0]!;
+    expect(emitCallIndex).toBeGreaterThan(commitCallIndex);
+  });
+
+  it("the lock denial writes topic.write_denied_locked with attempted_operation topic.reordered and no order payload", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const res = await putOrder({ orderedTopicIds: [T1, T2] });
+
+    expect(res.statusCode).toBe(409);
+    const denial = mockDbQuery.mock.calls.find((call) => String(call[0]).includes("INSERT INTO audit_log"));
+    expect(denial).toBeDefined();
+    const params = denial![1] as unknown[];
+    expect(params[3]).toBe("topic.write_denied_locked");
+    expect(JSON.parse(params[5] as string)).toEqual({
+      endpoint: "PUT /api/v1/teams/:teamId/topics/order",
+      attempted_operation: "topic.reordered",
+    });
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "topic.write_denied_locked",
+      expect.objectContaining({ attemptedOperation: "topic.reordered" }),
+    );
+  });
+
+  it.each([
+    ["403", () => mockAuthQuery("engineer", false), { orderedTopicIds: [T1] }],
+    [
+      "404",
+      () => {
+        mockAuthQuery("facilitator", false);
+        mockTeamExists(false);
+      },
+      { orderedTopicIds: [T1] },
+    ],
+    ["422", () => mockPassAllReorderGates(), { orderedTopicIds: [] }],
+  ])("a %s writes no audit row and emits no event", async (_label, arrange, payload) => {
+    arrange();
+
+    await putOrder(payload);
+
+    expect(mockDbQuery.mock.calls.some((call) => String(call[0]).includes("INSERT INTO audit_log"))).toBe(false);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tasks 4.2/5.8 — openSessionCreatedAt, and the admin security boundary (unit)
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — openSessionCreatedAt (design.md Decision 7)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("for a facilitator, returns the open session's created_at and filters out draft and terminal statuses", async () => {
+    mockPassAllReorderGates("facilitator");
+    const createdAt = new Date("2026-09-30T12:00:00.000Z");
+    const client = makeReorderClient({ openSessionCreatedAt: createdAt });
+
+    const res = await putOrder({ orderedTopicIds: [T3, T1, T2] });
+
+    expect(res.json().openSessionCreatedAt).toBe(createdAt.toISOString());
+    const sessionsSql = sqlCalls(client).find((sql) => sql.includes("FROM sessions"));
+    expect(sessionsSql).toContain("status IN ('lobby', 'pre_session', 'active', 'wrap_up')");
+    expect(sessionsSql).not.toContain("draft");
+    expect(sessionsSql).toContain("ORDER BY created_at DESC");
+    expect(sessionsSql).toContain("LIMIT 1");
+  });
+
+  it.each([
+    ["changed save", [T3, T1, T2]],
+    ["no-op", [T1, T2, T3]],
+  ])("for an application_admin (%s), returns null and never queries sessions", async (_label, ids) => {
+    mockPassAllReorderGates("application_admin");
+    const client = makeReorderClient({ openSessionCreatedAt: new Date("2026-09-30T12:00:00.000Z") });
+
+    const res = await putOrder({ orderedTopicIds: ids });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().openSessionCreatedAt).toBeNull();
+    expect(sqlCalls(client).some((sql) => sql.includes("sessions"))).toBe(false);
+    expect(mockDbQuery.mock.calls.some((call) => /FROM sessions\s+WHERE team_id = \$1 AND status IN/.test(String(call[0])))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tasks 5.4/5.5 — forced failure and row-count guard (unit, mocked client)
+// ---------------------------------------------------------------------------
+describe("PUT /api/v1/teams/:teamId/topics/order — atomicity and row-count guard (design.md Decision 3)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function expectRolledBackWithoutAudit(client: { query: ReturnType<typeof vi.fn> }) {
+    expect(sqlCalls(client)).toContain("ROLLBACK");
+    expect(sqlCalls(client)).not.toContain("COMMIT");
+    expect(reorderAuditInserts(client)).toHaveLength(0);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  }
+
+  it("a phase-2 UPDATE failure rolls back, writes no audit row, emits nothing, and responds 500", async () => {
+    mockPassAllReorderGates();
+    const client = makeReorderClient({ phase2Throws: true });
+
+    const res = await putOrder({ orderedTopicIds: [T3, T1, T2] });
+
+    expect(res.statusCode).toBe(500);
+    expectRolledBackWithoutAudit(client);
+    expect(client.release).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["phase 1", { phase1Count: 2 }],
+    ["phase 2", { phase2Count: 4 }],
+  ])("a %s row-count mismatch throws ReorderRowCountMismatchError, rolls back, and responds 500", async (_label, counts) => {
+    mockPassAllReorderGates();
+    const client = makeReorderClient(counts);
+    const thrown: unknown[] = [];
+    const app = Fastify();
+    app.decorateRequest("session", null);
+    app.addHook("onRequest", async (request) => {
+      (request as unknown as Record<string, unknown>).session = { userId: "facilitator-1" };
+    });
+    app.setErrorHandler((err, _req, reply) => {
+      thrown.push(err);
+      return reply.code(500).send({ error: { category: "internal" } });
+    });
+    app.register(topicRoutes);
+    await app.ready();
+
+    const res = await app.inject({
+      method: "PUT",
+      url: REORDER_URL,
+      payload: { orderedTopicIds: [T3, T1, T2] },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(thrown).toHaveLength(1);
+    expect((thrown[0] as Error).name).toBe("ReorderRowCountMismatchError");
+    expectRolledBackWithoutAudit(client);
   });
 });

@@ -39,6 +39,9 @@ export type {
   ArchiveTopicResponse,
   ArchiveTopicConfirmationRequired,
   RestoreTopicResponse,
+  ReorderTopicsRequest,
+  ReorderedTopic,
+  ReorderTopicsResponse,
 } from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";
 export type {

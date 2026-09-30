@@ -50,6 +50,12 @@
  *   - Denied (null grant, admin grant on content) — floor prevents timing oracle
  *
  * TODO-GROUP6: replace with measured p95/p99 value from load test before production deployment
+ *   The measurement must include PUT /api/v1/teams/:teamId/topics/order
+ *   (TOPIC-006) at the 200-entry cap: per-team advisory lock, two renumber
+ *   phases of up to 200 rows each, and an audit row. It is plausibly the
+ *   slowest topic write, so a floor measured without it could sit below
+ *   reorder's success latency (reorder-topics design.md Risks, security
+ *   review F7).
  */
 const TIMING_FLOOR_MS = 150;
 
