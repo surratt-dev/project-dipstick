@@ -360,7 +360,15 @@ export type AuditEventName =
   // server derived for that request (0 for an immediate archive, the
   // re-derived count for a confirm=true archive), never a client-supplied
   // value (design.md Decision 5's engineer-review correction, Finding 2).
-  | "topic.archived";
+  | "topic.archived"
+  // topic.restored: re-add-removed-topic, design.md Decision 6. Fired by
+  // POST /api/v1/teams/:teamId/topics/:topicId/restore (TOPIC-005) on every
+  // successful restore, in the same database transaction as the topics
+  // UPDATE (status/display_order/restored_at/restored_by) -- topic.archived
+  // is the direct precedent (an access/existence-establishing event audited
+  // in the same transaction as the rows it authorizes). metadata: {
+  // topic_id }.
+  | "topic.restored";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

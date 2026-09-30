@@ -577,7 +577,9 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     );
 
     // Task 7.3/Decision 6 — archivedBy via a join to users, not a second
-    // round trip.
+    // round trip. Task 5.2/design.md Decision 4 (re-add-removed-topic) —
+    // restoredAt/restoredBy via a second join to users on restored_by, same
+    // pattern, still no second round trip.
     const archivedResult = await db.query<{
       id: string;
       name: string;
@@ -587,11 +589,16 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       archived_at: Date;
       archived_by: string | null;
       archived_by_display_name: string | null;
+      restored_at: Date | null;
+      restored_by: string | null;
+      restored_by_display_name: string | null;
     }>(
       `SELECT t.id, t.name, t.prompt, t.vote_type, t.is_default, t.archived_at,
-              t.archived_by, u.display_name AS archived_by_display_name
+              t.archived_by, archived_by_user.display_name AS archived_by_display_name,
+              t.restored_at, t.restored_by, restored_by_user.display_name AS restored_by_display_name
        FROM topics t
-       LEFT JOIN users u ON u.id = t.archived_by
+       LEFT JOIN users archived_by_user ON archived_by_user.id = t.archived_by
+       LEFT JOIN users restored_by_user ON restored_by_user.id = t.restored_by
        WHERE t.team_id = $1 AND t.status = 'archived'
        ORDER BY t.archived_at DESC`,
       [teamId],
@@ -640,6 +647,11 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
         archivedBy:
           row.archived_by && row.archived_by_display_name
             ? { userId: row.archived_by, displayName: row.archived_by_display_name }
+            : null,
+        restoredAt: row.restored_at ? row.restored_at.toISOString() : null,
+        restoredBy:
+          row.restored_by && row.restored_by_display_name
+            ? { userId: row.restored_by, displayName: row.restored_by_display_name }
             : null,
       })),
       defaultTopicsNotActive: defaultTopicsResult.rows

@@ -644,6 +644,8 @@ interface GetAllTopicsResponse {
     isDefault: boolean;
     archivedAt: string;
     archivedBy: { userId: string; displayName: string } | null;  // Added (`remove-topic` design.md Decision 6). Facilitator-visible provenance — null only for a pre-existing row archived before this column existed; none exist today. Distinct from and in addition to the audit-log record of the same event.
+    restoredAt: string | null;  // Added (`re-add-removed-topic` design.md Decision 4). Null for a topic that has never been restored.
+    restoredBy: { userId: string; displayName: string } | null;  // Added (`re-add-removed-topic` design.md Decision 4). Facilitator-visible provenance for TOPIC-005's restore — mirrors archivedBy's shape. A topic archived and restored more than once shows only the most recent restore event, the same stated limitation archivedAt/archivedBy already carry for multiple archive events.
   }>;
   defaultTopicsNotActive: Array<{  // Canonical default topics currently absent from the active list
     topicId: string;
@@ -815,7 +817,7 @@ Transitions an archived topic back to active status, appending it at the end of 
 
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` AND not a member of this team AND `isCustomizationLocked = false`.
+**Authorization:** `global_role = 'facilitator'` AND not a member of this team, OR `application_admin`, AND `isCustomizationLocked = false`. **Corrected (`re-add-removed-topic` design.md Decision 1):** the original draft omitted an `application_admin` branch, the same FR-8.2 [HARD] gap `remove-topic` design.md Decision 1 already found and fixed for `TOPIC-004` — `TOPIC-002` already grants `application_admin` access to the read endpoint that lists a team's archived topics and would render a "Restore" affordance for one; an admin who clicked it would get a confusing `403`.
 
 **Request**
 
@@ -843,13 +845,18 @@ interface RestoreTopicResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not a facilitator, is a team member, customization lock active |
-| `404 Not Found` | Team or topic does not exist; topic does not belong to this team |
-| `422 Unprocessable Entity` | Topic is already active |
+| `403 Forbidden` | Not a facilitator and not an `application_admin` (`NOT_A_FACILITATOR`); facilitator is an active team member (`FACILITATOR_IS_TEAM_MEMBER`) |
+| `404 Not Found` | Team does not exist (`TEAM_NOT_FOUND`); topic does not exist for this team (`TOPIC_NOT_FOUND`) |
+| `409 Conflict` | Customization lock is active (`TOPIC_CUSTOMIZATION_LOCKED`) |
+| `422 Unprocessable Entity` | Topic is already active (`TOPIC_ALREADY_ACTIVE`) |
+
+**Corrected (`re-add-removed-topic` design.md Decision 2):** this table originally listed the customization lock under `403 Forbidden` and a single undifferentiated `404 Not Found` row — the same drafting shape `remove-topic` design.md Decision 4 already corrected for `TOPIC-004`. As implemented, the lock is a state precondition, not an actor-identity/role failure, so it is `409 Conflict`, and the `404` row is split so a caller can distinguish a nonexistent team from a nonexistent topic. `403 Forbidden` is reserved for the two actor-identity/role failures and is evaluated, and returned, before any later check in the cascade (`403` → `404 TEAM_NOT_FOUND` → `409 TOPIC_CUSTOMIZATION_LOCKED` → `404 TOPIC_NOT_FOUND` → `422 TOPIC_ALREADY_ACTIVE`).
 
 **Notes**
-- The prior `displayOrder` position is not restored; the topic is appended (FR-8.6, UC: Re-Add a Previously Removed Topic).
-- Sessions where the topic was absent while archived appear as gaps in trend charts. The API returns data that makes gaps visible — session records where the topic was absent are identifiable by the absence of a `session_topics` row for that `topic_id`.
+- The prior `displayOrder` position is not restored; the topic is appended to the end of the active list (`re-add-removed-topic` design.md Decision 3) — the `topics_team_order UNIQUE (team_id, display_order, status)` constraint is why archiving a topic never had to renumber the remaining active topics in the first place, and restoring to the prior position would require deciding what happens if an active topic has since taken that slot. Not FR-8.6, which is about the canonical default topic set remaining restorable, not about ordering semantics.
+- This is the inverse of `TOPIC-004`'s soft-delete: `topics.status` transitions back to `'active'`. Historical `votes` and `session_topics` records tied to this topic are unaffected and unchanged by a restore.
+- A successful restore sets `topics.restored_by`/`topics.restored_at` in the same transaction as the status transition, leaving `archived_at`/`archived_by` untouched — preserved, not cleared (`re-add-removed-topic` design.md Decision 4) — surfaced back to facilitators via `TOPIC-002`'s `archived[].restoredBy`/`archived[].restoredAt` for a topic that has since been re-archived.
+- A marker surfacing the gap left by a topic's absence while archived in the EM trend view is out of scope for this endpoint and is tracked as a separate, deferred follow-up change (`re-add-removed-topic` proposal.md "Scope Decision").
 
 ---
 

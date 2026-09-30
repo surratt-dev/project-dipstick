@@ -379,7 +379,7 @@
 
 **Trigger:** The Facilitator decides to reinstate a topic that was previously removed from the team's active topic set.
 
-**Goal:** As a Facilitator, I want to re-add a removed topic so that the team can resume tracking that area, with historical data preserved and the gap in tracking reflected in trend views.
+**Goal:** As a Facilitator, I want to re-add a removed topic so that the team can resume tracking that area, with historical data preserved. (The gap in tracking becoming visible in trend views is scoped to a separate follow-up change — see Notes.)
 
 ---
 
@@ -393,10 +393,10 @@
 2. The Application displays the active topic list and provides access to the list of removed topics.
 3. The Facilitator views the removed topics list and locates the topic to reinstate.
 4. The Facilitator selects the re-add action for that topic.
-5. The Application presents a confirmation, noting that existing historical data for the topic will be restored and the gap in sessions will be reflected in trend views.
+5. The Application presents a confirmation, noting that existing historical data for the topic will be restored.
 6. The Facilitator confirms.
 7. The Application marks the topic as active in the team's configuration.
-8. The Application appends the topic to the end of the active topic order (or restores its prior position — see Notes).
+8. The Application appends the topic to the end of the active topic order (resolved — see Notes).
 9. The Application confirms the re-addition and displays the updated active topic list.
 
 ## Alternate Flows
@@ -405,7 +405,7 @@
 - **Re-add fails due to a system error:** The Application displays an error. The topic remains removed. The Facilitator can retry.
 
 ## Postconditions
-- **Success:** The topic is active again in the team's configuration. It will appear in the next session. Its historical vote data (from before it was removed) is accessible in trend views, and the gap in sessions where it was absent is visible in the trend chart.
+- **Success:** The topic is active again in the team's configuration. It will appear in the next session. Its historical vote data (from before it was removed) is accessible in trend views. (A marker for the gap in sessions where it was absent is scoped to a separate follow-up change — see Notes; it is not part of this use case's shipped behavior.)
 - **Failure:** The topic remains removed. No configuration change is made.
 
 ---
@@ -414,22 +414,23 @@
 - [ ] The topic management screen provides access to the list of previously removed topics.
 - [ ] Each removed topic can be individually reinstated by the Facilitator.
 - [ ] A confirmation step is shown before reinstating, describing the history preservation behavior.
-- [ ] After reinstatement, the topic appears in the active topic list and is included in the next session.
+- [ ] After reinstatement, the topic appears in the active topic list and is included in the next session. (Blocked today on #175 — no shipped endpoint currently populates `session_topics` at session creation, for any topic, restored or otherwise; this is a pre-existing gap this use case inherits, not one specific to restore.)
 - [ ] Historical vote data for the topic from before its removal is preserved and accessible in trend views.
-- [ ] The trend view for the reinstated topic reflects the gap in sessions where it was absent, rather than interpolating through the gap or resetting history.
-- [ ] The re-added topic can be reordered within the active list after reinstatement.
+- [ ] The archived-topics view shows who restored a topic and when, mirroring the existing archive-provenance display (`re-add-removed-topic` design.md Decision 4).
+- [ ] The re-added topic can be reordered within the active list after reinstatement. (Currently unsatisfiable for any active topic, not a restore-specific gap — TOPIC-006, Reorder Topics, is unbuilt. See `re-add-removed-topic` proposal.md "Known Limitations.")
 
 ## Out of Scope
 - Retroactively adding the topic to sessions that occurred while it was removed.
 - Merging data from two separate topic records (re-adding restores the original topic, not a duplicate).
+- A marker in the EM trend view indicating a topic was intentionally absent for a stretch of sessions (the "trend-gap signal") — scoped to a separate follow-up change coordinated with Trend Dashboard ownership (`re-add-removed-topic` proposal.md "Scope Decision"), not part of this use case's shipped behavior.
 
 ## Dependencies
 - Use Case: Remove a Topic — the inverse of this action.
-- Trend Dashboard: must correctly render gaps in topic history when a topic was absent for one or more sessions.
+- Trend Dashboard: must correctly render gaps in topic history when a topic was absent for one or more sessions. (Applies to the trend-gap-signal follow-up change described in Notes, not to this use case's shipped scope.)
 
 ## Notes
-- Whether a reinstated topic is placed at the end of the topic order or restored to its prior position is a product decision. Appending to the end is simpler; restoring prior position may feel more natural but requires storing the original position.
-- The trend view treatment of the gap (e.g., a break in the line vs. a label indicating removed/reinstated) should be designed in conjunction with the Trend Dashboard feature set.
+- **Resolved:** a reinstated topic is appended to the end of the active topic order, not restored to its prior position (`re-add-removed-topic` design.md Decision 3). The `topics_team_order UNIQUE (team_id, display_order, status)` constraint is why archiving a topic never had to renumber the remaining active topics in the first place; restoring to the prior position would require deciding what happens if an active topic has since taken that slot, which appending avoids needing entirely.
+- **Resolved, deferred:** the trend view treatment of the gap (e.g., a break in the line vs. a label indicating removed/reinstated) is not built as part of this use case. Executive review split it into its own follow-up change, coordinated with Trend Dashboard ownership, since restore has no dependency on it in either direction. The derivation approach explored for it (based on `session_topics` absence) is preserved in `re-add-removed-topic` proposal.md's "Scope Decision" section for that follow-up to pick up.
 
 ---
 

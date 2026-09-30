@@ -63,6 +63,12 @@ export interface GetAllTopicsResponse {
     // a pre-existing row archived before the archived_by column existed;
     // none exist today.
     archivedBy: ArchivedByProvenance | null;
+    // re-add-removed-topic, design.md Decision 4 — null for a topic that
+    // has never been restored. A topic archived and restored more than once
+    // shows only the most recent restore event, the same stated limitation
+    // archivedAt/archivedBy already carry for multiple archive events.
+    restoredAt: string | null;
+    restoredBy: ArchivedByProvenance | null;
   }>;
   defaultTopicsNotActive: Array<{
     topicId: string;
@@ -87,4 +93,16 @@ export interface ArchiveTopicConfirmationRequired {
   openActionItemCount: number;
   openActionItems: Array<{ actionItemId: string; description: string }>;
   message: string;
+}
+
+// ---------------------------------------------------------------------------
+// TOPIC-005 — POST /api/v1/teams/:teamId/topics/:topicId/restore
+// (re-add-removed-topic, design.md Decision 1/3/4).
+// ---------------------------------------------------------------------------
+export interface RestoreTopicResponse {
+  topicId: string;
+  name: string;
+  status: "active";
+  displayOrder: number;
+  restoredAt: string;
 }

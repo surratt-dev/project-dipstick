@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Defines the frontend Topic Management screen: the per-team route facilitators use to view a team's active and archived topics and to remove (archive) an active topic. This spec covers: the active-topic list and its per-row configuration display; the remove-confirmation flow, including its in-place escalation for topics with open action items; the last-active-topic hard-block message; the archived-topics view and its provenance display; and the screen's nav entry point from the team page.
+Defines the frontend Topic Management screen: the per-team route facilitators use to view a team's active and archived topics, to remove (archive) an active topic, and to restore an archived topic. This spec covers: the active-topic list and its per-row configuration display; the remove-confirmation flow, including its in-place escalation for topics with open action items; the last-active-topic hard-block message; the archived-topics view and its provenance display; the restore action and its single-step confirmation; the archived-topics empty state; and the screen's nav entry point from the team page.
 
-This spec does NOT cover: the server-side authorization model or response contracts for the endpoints this screen calls (`GET /api/v1/teams/:teamId/topics/all` and `DELETE /api/v1/teams/:teamId/topics/:topicId` — see `topic-customization-lock` and `remove-topic` respectively). Access control is enforced server-side by those endpoints; this screen's own gating is a UX convenience, not the authorization boundary.
+This spec does NOT cover: the server-side authorization model or response contracts for the endpoints this screen calls (`GET /api/v1/teams/:teamId/topics/all`, `DELETE /api/v1/teams/:teamId/topics/:topicId`, and `POST /api/v1/teams/:teamId/topics/:topicId/restore` — see `topic-customization-lock`, `remove-topic`, and `restore-topic` respectively). Access control is enforced server-side by those endpoints; this screen's own gating is a UX convenience, not the authorization boundary.
 
-**Implementation note — files:** The screen is implemented in `packages/frontend/src/pages/TopicManagementPage.tsx`, registered as a protected route in `App.tsx` alongside the project's existing `ProtectedRoute` pattern (no new client-side authorization primitive). It calls `GET /api/v1/teams/:teamId/topics/all` (`teamName`, `active[]` with `firstSessionDescription`, `archived[]` with `archivedBy` — see `topic-customization-lock`) to render its lists, and `DELETE /api/v1/teams/:teamId/topics/:topicId` to remove a topic. The remove-confirmation dialog's content is swapped in place via a `RemoveTopicState` discriminated union, mirroring `MemberManagement.tsx`'s established inline-state pattern rather than introducing a new shared `Modal`/`ConfirmDialog` component. The nav entry point is a plain link added to `TeamPage.tsx`.
+**Implementation note — files:** The screen is implemented in `packages/frontend/src/pages/TopicManagementPage.tsx`, registered as a protected route in `App.tsx` alongside the project's existing `ProtectedRoute` pattern (no new client-side authorization primitive). It calls `GET /api/v1/teams/:teamId/topics/all` (`teamName`, `active[]` with `firstSessionDescription`, `archived[]` with `archivedBy`/`restoredAt`/`restoredBy` — see `topic-customization-lock`) to render its lists, `DELETE /api/v1/teams/:teamId/topics/:topicId` to remove a topic, and `POST /api/v1/teams/:teamId/topics/:topicId/restore` to restore one. The remove-confirmation dialog's content is swapped in place via a `RemoveTopicState` discriminated union, mirroring `MemberManagement.tsx`'s established inline-state pattern rather than introducing a new shared `Modal`/`ConfirmDialog` component. The restore-confirmation dialog follows the same pattern via a separate `RestoreTopicState` union, a single-step `idle → confirming → submitting → error` state with no escalation branch. The nav entry point is a plain link added to `TeamPage.tsx`.
 
 ---
 
@@ -88,6 +88,43 @@ The Topic Management screen SHALL provide access to a list of the team's archive
 #### Scenario: A facilitator inheriting a team can see provenance without asking anyone
 - **WHEN** a facilitator who has never previously worked with a team views that team's archived-topics list
 - **THEN** the facilitator can determine who archived each topic and when directly from the screen, without consulting any other system or person
+
+### Requirement: The archived-topics view provides a restore action per topic, with a confirmation naming both the team and the topic
+
+Each entry in the Topic Management screen's archived-topics view SHALL provide a "Restore" action. Selecting it SHALL always display a confirmation step, before any request is sent to the server, that names both the specific topic and the specific team, and states that the topic's historical data will be restored. No restore request SHALL be sent until the facilitator explicitly confirms. Unlike the remove-confirmation flow, this confirmation is a single step — there is no escalation branch, since restoring a topic never requires the additional warning the last-active-topic or open-action-item conditions produce for removal.
+
+This confirmation copy does not state that a gap will become visible in trend views — that signal is scoped to a separate, deferred change and is not shipped by this capability. The copy is expected to be revisited when that follow-up change ships.
+
+#### Scenario: A restore action is available for each archived topic
+- **WHEN** a facilitator views the archived-topics list for a team with at least one archived topic
+- **THEN** each entry provides a "Restore" action
+
+#### Scenario: The restore confirmation names both the topic and the team
+- **WHEN** a facilitator selects "Restore" on a topic named "Pairing Effectiveness" for a team named "Platform Squad"
+- **THEN** the confirmation dialog's text identifies both "Pairing Effectiveness" and "Platform Squad"
+
+#### Scenario: The restore confirmation states that historical data will be restored
+- **WHEN** a facilitator selects "Restore" on any archived topic
+- **THEN** the confirmation dialog states that the topic's historical data will be restored
+
+#### Scenario: Cancelling the restore confirmation makes no change
+- **WHEN** a facilitator selects "Restore" on a topic and then cancels the confirmation dialog
+- **THEN** no restore request is sent
+- **AND** the topic remains archived and visible in the archived-topics list
+
+#### Scenario: Confirming the restore updates both lists
+- **WHEN** a facilitator confirms restoring an archived topic
+- **THEN** the topic no longer appears in the archived-topics list
+- **AND** the topic appears in the active topic list
+
+### Requirement: No removed-topics list is empty-hidden, and re-adding is unavailable when none exist
+
+When a team has zero archived topics, the archived-topics view SHALL communicate this clearly (an explicit empty-state message) rather than hiding the section or leaving it ambiguous, and no restore action SHALL be shown.
+
+#### Scenario: A team with no archived topics shows a clear empty state
+- **WHEN** a facilitator views the archived-topics list for a team with zero archived topics
+- **THEN** the screen displays an explicit message indicating there are no archived topics
+- **AND** no restore action is shown
 
 ### Requirement: The Topic Management screen has a discoverable nav entry point from the team page
 
