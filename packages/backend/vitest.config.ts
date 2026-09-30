@@ -5,6 +5,7 @@ export default defineConfig({
     environment: "node",
     coverage: {
       provider: "v8",
+      reporter: ["text", "html", "clover", "json", "json-summary"],
       include: ["src/**/*.ts"],
       exclude: ["src/index.ts", "src/app.ts", "src/config.ts", "src/db.ts", "src/redis.ts"],
       thresholds: { lines: 90 },
