@@ -28,8 +28,9 @@ vi.mock("../../config.js", () => ({
 }));
 
 // Mock the timing oracle to skip the floor delay in tests
+const mockApplyTimingFloor = vi.fn().mockResolvedValue(undefined);
 vi.mock("../../content/timing-oracle.js", () => ({
-  applyTimingFloor: vi.fn().mockResolvedValue(undefined),
+  applyTimingFloor: (...args: unknown[]) => mockApplyTimingFloor(...args),
   CONTENT_TIMING_FLOOR_MS: 150,
 }));
 
@@ -464,5 +465,131 @@ describe("Cache-Control header (Task 5.7)", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/teams/:teamId/topics/all  (TOPIC-002, remove-topic Task 7)
+//
+// design.md Decision 9: the standing, org-wide facilitator model — NOT
+// evaluateTeamAccess. Query order on the success path: (1) auth
+// (evaluateStandingFacilitatorAccess), (2) team name SELECT (Decision 10's
+// confirmation-copy requirement), (3) active topics SELECT, (4) archived
+// topics SELECT (LEFT JOIN users for archivedBy), (5) defaultTopicsNotActive
+// SELECT, (6) hasCompletedFirstSession's COUNT.
+// ---------------------------------------------------------------------------
+function mockStandingAuthQuery(globalRole: string, isMember: boolean) {
+  mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: globalRole, is_member: isMember }] });
+}
+
+function mockTeamNameQuery(name = "Platform Squad") {
+  mockDbQuery.mockResolvedValueOnce({ rows: [{ name }] });
+}
+
+describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("a standing facilitator with no session history for the team can list its topics", async () => {
+    mockStandingAuthQuery("facilitator", false);
+    mockTeamNameQuery();
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // active topics
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // archived topics
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // defaultTopicsNotActive
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] }); // hasCompletedFirstSession
+
+    const app = await buildApp("facilitator-with-no-history");
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { teamId: string; teamName: string; isCustomizationLocked: boolean };
+    expect(body.teamId).toBe("team-1");
+    expect(body.teamName).toBe("Platform Squad");
+    expect(body.isCustomizationLocked).toBe(true);
+  });
+
+  it("an application_admin can list any team's topics, including one they are an active member of", async () => {
+    mockStandingAuthQuery("application_admin", true);
+    mockTeamNameQuery();
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("a caller who is neither a standing facilitator nor an admin is rejected 403", async () => {
+    mockStandingAuthQuery("engineer", false);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+
+    expect(res.statusCode).toBe(403);
+    // Only the auth query ran — no resource queries reached.
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("a facilitator who is an active member of the team is rejected 403, even though they hold the facilitator role", async () => {
+    mockStandingAuthQuery("facilitator", true);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("an archived topic's entry includes archivedAt and archivedBy matching the archiving facilitator", async () => {
+    mockStandingAuthQuery("facilitator", false);
+    mockTeamNameQuery();
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // active topics
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: "topic-1",
+          name: "Old Topic",
+          prompt: "A prompt",
+          vote_type: "finger",
+          is_default: false,
+          archived_at: new Date("2026-09-29T12:00:00.000Z"),
+          archived_by: "user-42",
+          archived_by_display_name: "Priya Nair",
+        },
+      ],
+    }); // archived topics
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // defaultTopicsNotActive
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] }); // hasCompletedFirstSession
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      archived: Array<{ topicId: string; archivedAt: string; archivedBy: { userId: string; displayName: string } | null }>;
+    };
+    expect(body.archived).toHaveLength(1);
+    expect(body.archived[0]!.archivedAt).toBe("2026-09-29T12:00:00.000Z");
+    expect(body.archived[0]!.archivedBy).toEqual({ userId: "user-42", displayName: "Priya Nair" });
+  });
+
+  it("applies the timing floor on the 403 branch", async () => {
+    mockStandingAuthQuery("engineer", false);
+    const app = await buildApp();
+    await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 200 success branch", async () => {
+    mockStandingAuthQuery("facilitator", false);
+    mockTeamNameQuery();
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] });
+    const app = await buildApp();
+    await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });

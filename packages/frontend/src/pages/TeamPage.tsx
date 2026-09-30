@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.js";
 import { SignOutButton } from "../components/SignOutButton.js";
 import { MemberManagement } from "../components/MemberManagement.js";
@@ -97,6 +97,24 @@ export function TeamPage() {
           </li>
         ))}
       </ul>
+
+      {/*
+       * remove-topic, design.md Decision 10's nav-entry-point resolution:
+       * a "Topics" link alongside the existing MemberManagement render — a
+       * screen nobody can navigate to isn't a shipped feature, particularly
+       * for a facilitator who inherits a team without a handoff
+       * conversation and has no other way to discover it exists. Server-side
+       * authorization (TOPIC-002's standing facilitator model) is what
+       * actually gates the destination; this link is a discoverable entry
+       * point, not an access-control decision.
+       */}
+      {teamId && (
+        <div style={{ marginTop: "2rem" }}>
+          <Link to={`/team/${teamId}/topics`} data-testid="nav-topic-management">
+            Topics
+          </Link>
+        </div>
+      )}
 
       {/* Member management view — shown for the team identified by the URL param */}
       {teamId && (

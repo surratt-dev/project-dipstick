@@ -54,3 +54,63 @@ export async function evaluateStandingFacilitatorAccess(
 
   return { globalRole: global_role, isMember: is_member };
 }
+
+// ---------------------------------------------------------------------------
+// checkStandingFacilitatorOrAdminAuthorization(userId, teamId)
+//
+// remove-topic, design.md Decision 1 (engineer-review correction, Finding
+// 1, BLOCKING).
+//
+// A second, decision-only policy wrapper around evaluateStandingFacilitatorAccess,
+// for endpoints that must also admit application_admin (FR-8.2 [HARD]) --
+// unlike checkStandingFacilitatorAuthorization (topics.ts, TOPIC-003), which
+// is facilitator-only and stays that way (TOPIC-003 is shipped, deployed
+// code; widening it is a separate, deliberately deferred change).
+//
+// Deliberately placed here rather than in topics.ts or content.ts: it has
+// two callers in two different route files (topics.ts's TOPIC-004,
+// content.ts's TOPIC-002), and no route file in this codebase imports from
+// another route file. Putting it in either would create an implicit
+// dependency between two features meant to be independently reviewable.
+//
+// Deliberately decision-only, unlike checkStandingFacilitatorAuthorization's
+// reply-writing shape: TOPIC-002 (a read) and TOPIC-004 (a destructive
+// write) need different rejection wording, and no single message serves
+// both correctly. This function takes no FastifyReply, writes no response,
+// and does NOT call applyTimingFloor -- each caller is responsible for both
+// of those itself, immediately before sending its own 403, on every branch
+// this function can return `authorized: false` for.
+// ---------------------------------------------------------------------------
+export type StandingFacilitatorOrAdminDecision =
+  | { authorized: true; actorGlobalRole: string }
+  | { authorized: false; reason: "NOT_A_FACILITATOR" | "FACILITATOR_IS_TEAM_MEMBER" };
+
+export async function checkStandingFacilitatorOrAdminAuthorization(
+  userId: string,
+  teamId: string,
+): Promise<StandingFacilitatorOrAdminDecision> {
+  const grant = await evaluateStandingFacilitatorAccess(userId, teamId);
+
+  // No user row for the caller at all -- treated the same as "not a
+  // facilitator", matching checkStandingFacilitatorAuthorization's existing
+  // convention (no separate 401 branch for a nonexistent user row here; the
+  // authenticated session middleware already guarantees one exists for any
+  // normal request that reaches a caller of this function).
+  if (grant === null) {
+    return { authorized: false, reason: "NOT_A_FACILITATOR" };
+  }
+
+  if (grant.globalRole === "application_admin") {
+    return { authorized: true, actorGlobalRole: grant.globalRole };
+  }
+
+  if (grant.globalRole !== "facilitator") {
+    return { authorized: false, reason: "NOT_A_FACILITATOR" };
+  }
+
+  if (grant.isMember) {
+    return { authorized: false, reason: "FACILITATOR_IS_TEAM_MEMBER" };
+  }
+
+  return { authorized: true, actorGlobalRole: grant.globalRole };
+}

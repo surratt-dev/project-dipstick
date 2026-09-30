@@ -606,7 +606,7 @@ Returns both active and archived topics for a team, including configuration deta
 
 **Auth:** Protected.
 
-**Authorization:** `facilitator` with an active session for the team, OR `application_admin`. (Participants and EMs access archived topic data via TREND-001, not this endpoint.)
+**Authorization:** `global_role = 'facilitator'` AND not an active member of the team, OR `application_admin` — the same standing, org-wide facilitator model `TOPIC-003` through `TOPIC-007` already share. **Corrected (`remove-topic` design.md Decision 9):** this endpoint's original draft required "a facilitator with an active session for the team," a session-scoped model that does not match its five sibling topic-write endpoints and was never independently reviewed as its own line item — a drafting error, not a considered decision this correction reverses. This endpoint does not require that the caller currently hold, or have ever held, an active session for the target team. (Participants and EMs access archived topic data via TREND-001, not this endpoint.)
 
 **Request**
 
@@ -622,6 +622,7 @@ Returns both active and archived topics for a team, including configuration deta
 ```typescript
 interface GetAllTopicsResponse {
   teamId: string;
+  teamName: string;  // Added (`remove-topic` design.md, Task 9.2/Decision 10) — the Topic Management screen's remove-confirmation dialog must name both the topic and the team; no other endpoint reachable by a standing, non-member facilitator returns a team's display name.
   isCustomizationLocked: boolean;
   active: Array<{
     topicId: string;
@@ -630,6 +631,7 @@ interface GetAllTopicsResponse {
     voteType: 'finger' | 'roman' | 'modified_roman';
     displayOrder: number;
     isDefault: boolean;
+    firstSessionDescription: string | null;  // Added (`remove-topic` design.md, Task 9.2) — the "View Active Topic Configuration" use case's AC requires prompt, vote type, AND description per row; the original draft omitted this field.
     teamAnnotation: string | null;
     createdAt: string;
     updatedAt: string;
@@ -641,6 +643,7 @@ interface GetAllTopicsResponse {
     voteType: 'finger' | 'roman' | 'modified_roman';
     isDefault: boolean;
     archivedAt: string;
+    archivedBy: { userId: string; displayName: string } | null;  // Added (`remove-topic` design.md Decision 6). Facilitator-visible provenance — null only for a pre-existing row archived before this column existed; none exist today. Distinct from and in addition to the audit-log record of the same event.
   }>;
   defaultTopicsNotActive: Array<{  // Canonical default topics currently absent from the active list
     topicId: string;
@@ -655,7 +658,7 @@ interface GetAllTopicsResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Authenticated user is not a facilitator with an active session for this team, and is not an `application_admin` |
+| `403 Forbidden` | Authenticated user does not satisfy (`global_role = 'facilitator'` AND not an active member of the team) OR `application_admin` — **corrected (`remove-topic` design.md Decision 9)** from "not a facilitator with an active session for this team, and is not an `application_admin`," matching the `Authorization` correction above |
 | `404 Not Found` | Team does not exist |
 
 **Notes**
@@ -743,7 +746,7 @@ Transitions a topic from `active` to `archived` status, removing it from future 
 
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` AND not a member of this team AND `isCustomizationLocked = false`.
+**Authorization:** `global_role = 'facilitator'` AND not a member of this team, OR `application_admin`, AND `isCustomizationLocked = false`. **Corrected (`remove-topic` design.md Decision 1):** the original draft omitted an `application_admin` branch, which would have violated FR-8.2 [HARD] — an admin could list a team's topics via `TOPIC-002` and see a "Remove" action render, then receive a confusing `403` on click. `TOPIC-003` (Add Custom Topic, shipped, #49/#50) is not affected by this correction and keeps its existing facilitator-only check; extending it is deliberately deferred as a separate, tracked follow-up.
 
 **Request**
 
@@ -774,6 +777,7 @@ interface ArchiveTopicConfirmationRequired {
   requiresConfirmation: true;
   reason: 'openActionItems';
   openActionItemCount: number;
+  openActionItems: Array<{ actionItemId: string; description: string }>;  // Added (`remove-topic` design.md Decision 5) — a bare count doesn't let a facilitator judge whether the open items are stale noise or live commitments.
   message: string;   // Human-readable warning
 }
 ```
@@ -783,14 +787,19 @@ interface ArchiveTopicConfirmationRequired {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not a facilitator, is a team member, customization lock active |
-| `404 Not Found` | Team or topic does not exist; topic is not active for this team |
-| `422 Unprocessable Entity` | Topic is already archived |
+| `403 Forbidden` | Not a facilitator and not an `application_admin` (`NOT_A_FACILITATOR`); facilitator is an active team member (`FACILITATOR_IS_TEAM_MEMBER`) |
+| `404 Not Found` | Team does not exist (`TEAM_NOT_FOUND`); topic does not exist for this team (`TOPIC_NOT_FOUND`) |
+| `409 Conflict` | Customization lock is active (`TOPIC_CUSTOMIZATION_LOCKED`); archiving would leave the team with zero active topics (`TOPIC_LAST_ACTIVE`) |
+| `422 Unprocessable Entity` | Topic is already archived (`TOPIC_ALREADY_ARCHIVED`) |
+
+**Corrected (`remove-topic` design.md Decision 4):** this table originally listed the customization lock under `403 Forbidden` ("Not a facilitator, is a team member, customization lock active") and a single undifferentiated `404 Not Found` row. As implemented, the lock is a state precondition, not an actor-identity/role failure, so it is `409 Conflict` — the same correction already made for `TOPIC-003` — and the `404` row is split so a caller can distinguish a nonexistent team from a nonexistent topic. `403 Forbidden` is reserved for the two actor-identity/role failures and is evaluated, and returned, before any later check in the cascade (`403` → `404 TEAM_NOT_FOUND` → `409 TOPIC_CUSTOMIZATION_LOCKED` → `404 TOPIC_NOT_FOUND` → `422 TOPIC_ALREADY_ARCHIVED` → `409 TOPIC_LAST_ACTIVE`).
 
 **Notes**
 - This is a soft-delete: `topics.status` transitions to `'archived'`; no row is deleted. Historical `votes` and `session_topics` records are unaffected (FR-8.3).
-- When the topic has open action items, the first request without `confirm=true` returns the confirmation response (HTTP `200`, not `409`). A subsequent request with `confirm=true` proceeds with the archive.
+- When the topic has open action items, the first request without `confirm=true` returns the confirmation response (HTTP `200`, not `409`). A subsequent request with `confirm=true` independently re-derives the open-action-item count and list rather than trusting any value shown in the first response, and proceeds with the archive regardless of what it finds.
 - After archiving, the topic no longer appears in future session snapshots.
+- Archiving a team's last remaining active topic is rejected with `409 TOPIC_LAST_ACTIVE` (`remove-topic` design.md Decision 3) — a hard block, not a soft warning, serialized per team via the same advisory-lock pattern `TOPIC-003`'s `displayOrder` assignment uses.
+- A successful archive sets `topics.archived_by` to the acting user's ID in the same transaction as the status transition (`remove-topic` design.md Decision 6) — surfaced back to facilitators via `TOPIC-002`'s `archived[].archivedBy`.
 
 ---
 

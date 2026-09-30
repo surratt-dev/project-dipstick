@@ -1192,7 +1192,20 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       );
 
       if (firstTopicResult.rows.length === 0) {
-        throw new Error(`Session ${sessionId} has no topic at display_order 1.`);
+        // remove-topic, design.md Decision 8: a clean 409 in place of the
+        // previous unhandled throw. Scoped narrowly to the crash itself --
+        // this does not attempt to explain or fix why session_topics might
+        // be empty here (a separately-scoped, pre-existing gap; see
+        // design.md Context and Decision 8's scope note), only to stop it
+        // from surfacing as an unhandled 500.
+        await client.query("ROLLBACK");
+        return reply.code(409).send({
+          error: {
+            category: "invalid_request" as const,
+            message: "This session has no topics configured and cannot begin voting.",
+            correlationId: crypto.randomUUID(),
+          },
+        });
       }
 
       const firstTopicRow = firstTopicResult.rows[0] as {

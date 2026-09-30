@@ -83,6 +83,19 @@ function mockPassAllGates() {
   mockLockCount(1);
 }
 
+/** DELETE cascade query #4: topic existence/status (Task 3.2/3.3). */
+function mockTopicExists(status: "active" | "archived" | null) {
+  mockDbQuery.mockResolvedValueOnce({ rows: status ? [{ id: "topic-1", status }] : [] });
+}
+
+/** Standard happy path through all four gate checks TOPIC-004 shares before its transaction. */
+function mockPassAllArchiveGates(topicStatus: "active" = "active") {
+  mockAuthQuery("facilitator", false);
+  mockTeamExists(true);
+  mockLockCount(1);
+  mockTopicExists(topicStatus);
+}
+
 const VALID_BODY = { name: "Team Health", prompt: "How healthy does the team feel?", voteType: "finger" };
 
 /** Mock transaction client that returns queued responses per client.query() call. */
@@ -773,5 +786,605 @@ describe("POST /api/v1/teams/:teamId/topics — error envelope shape (design.md 
     expect(body.code).toBeUndefined();
     expect(body.message).toBeUndefined();
     expect(body.error).toBeDefined();
+  });
+});
+
+// =============================================================================
+// DELETE /api/v1/teams/:teamId/topics/:topicId  (TOPIC-004, remove-topic)
+// =============================================================================
+
+/**
+ * Mock client for the DELETE handler's transaction. Queue order:
+ * BEGIN, pg_advisory_xact_lock, COUNT active, [open-items SELECT if reached],
+ * [UPDATE archive + INSERT audit_log if reached], COMMIT.
+ */
+function mockArchiveTransaction(opts: {
+  activeCount: number;
+  openItemsRows?: Array<{ id: string; description: string }>;
+  archivedAt?: Date;
+}) {
+  const { activeCount, openItemsRows, archivedAt = new Date("2026-09-30T00:00:00.000Z") } = opts;
+  const responses: Array<{ rows: unknown[] }> = [
+    { rows: [] }, // BEGIN
+    { rows: [] }, // pg_advisory_xact_lock
+    { rows: [{ active_count: String(activeCount) }] }, // COUNT active
+  ];
+
+  if (activeCount <= 1) {
+    responses.push({ rows: [] }); // ROLLBACK (no further queries reached)
+    const client = makeMockClient(responses);
+    mockDbConnect.mockResolvedValueOnce(client);
+    return client;
+  }
+
+  responses.push({ rows: openItemsRows ?? [] }); // open-action-items SELECT
+
+  if (openItemsRows && openItemsRows.length > 0) {
+    responses.push({ rows: [] }); // ROLLBACK
+    const client = makeMockClient(responses);
+    mockDbConnect.mockResolvedValueOnce(client);
+    return client;
+  }
+
+  responses.push({ rows: [{ archived_at: archivedAt }] }); // UPDATE archive
+  responses.push({ rows: [] }); // INSERT audit_log
+  responses.push({ rows: [] }); // COMMIT
+  const client = makeMockClient(responses);
+  mockDbConnect.mockResolvedValueOnce(client);
+  return client;
+}
+
+/** Same shape as above, but for the confirm=true path (skips the unconfirmed open-items branch). */
+function mockArchiveTransactionConfirmed(opts: {
+  activeCount: number;
+  reDerivedOpenItemsRows?: Array<{ id: string; description: string }>;
+  archivedAt?: Date;
+}) {
+  const {
+    activeCount,
+    reDerivedOpenItemsRows = [],
+    archivedAt = new Date("2026-09-30T00:00:00.000Z"),
+  } = opts;
+  const responses: Array<{ rows: unknown[] }> = [
+    { rows: [] }, // BEGIN
+    { rows: [] }, // pg_advisory_xact_lock
+    { rows: [{ active_count: String(activeCount) }] }, // COUNT active
+  ];
+
+  if (activeCount <= 1) {
+    responses.push({ rows: [] }); // ROLLBACK
+    const client = makeMockClient(responses);
+    mockDbConnect.mockResolvedValueOnce(client);
+    return client;
+  }
+
+  responses.push({ rows: reDerivedOpenItemsRows }); // re-derivation SELECT (confirm=true path)
+  responses.push({ rows: [{ archived_at: archivedAt }] }); // UPDATE archive
+  responses.push({ rows: [] }); // INSERT audit_log
+  responses.push({ rows: [] }); // COMMIT
+  const client = makeMockClient(responses);
+  mockDbConnect.mockResolvedValueOnce(client);
+  return client;
+}
+
+// -----------------------------------------------------------------------
+// Task 3.6 / 7.4-mirroring — identity/role scenarios
+// -----------------------------------------------------------------------
+describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design.md Decision 1)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("a standing facilitator who is not a team member succeeds", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransaction({ activeCount: 2 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("an application_admin succeeds for any team, including one they are an active member of", async () => {
+    mockAuthQuery("application_admin", true);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("active");
+    mockArchiveTransaction({ activeCount: 2 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("a caller who is neither a facilitator nor an admin is rejected 403 NOT_A_FACILITATOR", async () => {
+    mockAuthQuery("engineer", false);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("a facilitator who is an active member of the team is rejected 403 FACILITATOR_IS_TEAM_MEMBER", async () => {
+    mockAuthQuery("facilitator", true);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
+  });
+
+  it("treats a caller with no user row the same as not-a-facilitator (403)", async () => {
+    mockAuthQueryNoUser();
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 3.5 / spec "Archive Topic evaluates checks in a fixed order"
+// -----------------------------------------------------------------------
+describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (design.md Decision 2)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("a non-facilitator against a nonexistent team/topic receives 403, revealing nothing else", async () => {
+    mockAuthQuery("engineer", false);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("a nonexistent team is rejected 404 before the lock or topic are evaluated", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(false);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/nonexistent-team/topics/topic-1" });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("a locked team's rejection (409) takes priority over an already-archived topic's state", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
+    // The topic-existence query is never reached.
+    expect(mockDbQuery).toHaveBeenCalledTimes(4);
+  });
+
+  it("a nonexistent topic is rejected 404 TOPIC_NOT_FOUND after the lock passes", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists(null);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/nonexistent-topic" });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TOPIC_NOT_FOUND");
+  });
+
+  it("an already-archived topic is rejected 422 TOPIC_ALREADY_ARCHIVED", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("archived");
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("TOPIC_ALREADY_ARCHIVED");
+  });
+
+  it("an already-archived topic's 422 takes priority over the last-active-topic guard (the transaction is never opened)", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("archived");
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("TOPIC_ALREADY_ARCHIVED");
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 4.3/4.4 — last-active-topic guard
+// -----------------------------------------------------------------------
+describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic guard (design.md Decision 3)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("blocks archiving a team's sole remaining active topic with 409 TOPIC_LAST_ACTIVE", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransaction({ activeCount: 1 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("TOPIC_LAST_ACTIVE");
+  });
+
+  it("archiving one of several (3+) active topics succeeds, decrementing the active count by exactly one", async () => {
+    mockPassAllArchiveGates();
+    const client = mockArchiveTransaction({ activeCount: 3 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(200);
+    const updateCall = client.query.mock.calls.find((call) => (call[0] as string).includes("UPDATE topics"));
+    expect(updateCall).toBeDefined();
+  });
+
+  it("opens the transaction with the advisory lock before the active-count read (design.md Decision 3)", async () => {
+    mockPassAllArchiveGates();
+    const client = mockArchiveTransaction({ activeCount: 2 });
+
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    const calls = client.query.mock.calls.map((call) => call[0] as string);
+    const lockIndex = calls.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
+    const countIndex = calls.findIndex((sql) => sql.includes("COUNT(*) AS active_count"));
+    expect(lockIndex).toBeGreaterThan(-1);
+    expect(countIndex).toBeGreaterThan(-1);
+    expect(lockIndex).toBeLessThan(countIndex);
+  });
+
+  it("two concurrent requests against a team's exactly two active topics never both succeed", async () => {
+    // Gate checks for both requests: a shape-aware implementation, not a
+    // FIFO once-queue — genuine concurrency means the two requests' gate
+    // checks can interleave at the mock-call level in either order, and a
+    // strict queue position would make this test's outcome depend on an
+    // interleaving order this test does not (and should not need to)
+    // control. Matching on each query's distinguishing SQL fragment keeps
+    // the test correct regardless of interleaving.
+    mockDbQuery.mockImplementation((sql: unknown) => {
+      const text = sql as string;
+      if (text.includes("FROM users u")) {
+        return Promise.resolve({ rows: [{ global_role: "facilitator", is_member: false }] });
+      }
+      if (text.includes("FROM teams WHERE id")) {
+        return Promise.resolve({ rows: [{ id: "team-1" }] });
+      }
+      if (text.includes("FROM sessions WHERE team_id")) {
+        return Promise.resolve({ rows: [{ count: "1" }] });
+      }
+      if (text.includes("FROM topics WHERE id")) {
+        return Promise.resolve({ rows: [{ id: "topic-1", status: "active" }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    // First request's transaction: still 2 active topics, archives successfully.
+    mockDbConnect.mockResolvedValueOnce(
+      makeMockClient([
+        { rows: [] }, // BEGIN
+        { rows: [] }, // advisory lock
+        { rows: [{ active_count: "2" }] }, // COUNT — sees both still active
+        { rows: [] }, // open items
+        { rows: [{ archived_at: new Date("2026-09-30T00:00:00.000Z") }] }, // UPDATE
+        { rows: [] }, // audit insert
+        { rows: [] }, // COMMIT
+      ]),
+    );
+    // Second request's transaction: serialized behind the first by the
+    // advisory lock, now sees only 1 active topic remaining — blocked.
+    mockDbConnect.mockResolvedValueOnce(
+      makeMockClient([
+        { rows: [] }, // BEGIN
+        { rows: [] }, // advisory lock
+        { rows: [{ active_count: "1" }] }, // COUNT — post-first-archive state
+        { rows: [] }, // ROLLBACK
+      ]),
+    );
+
+    const app = await buildApp();
+    const [res1, res2] = await Promise.all([
+      app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-a" }),
+      app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-b" }),
+    ]);
+
+    const statuses = [res1.statusCode, res2.statusCode].sort();
+    expect(statuses).toEqual([200, 409]);
+    const rejected = res1.statusCode === 409 ? res1 : res2;
+    expect(rejected.json().error.code).toBe("TOPIC_LAST_ACTIVE");
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 5.5 — open-action-item confirmation flow
+// -----------------------------------------------------------------------
+describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item confirmation (design.md Decision 5)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("a topic with open action items returns requiresConfirmation without archiving", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransaction({
+      activeCount: 2,
+      openItemsRows: [
+        { id: "ai-1", description: "Fix the flaky test" },
+        { id: "ai-2", description: "Update the runbook" },
+      ],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.requiresConfirmation).toBe(true);
+    expect(body.reason).toBe("openActionItems");
+    expect(body.openActionItemCount).toBe(2);
+    expect(body.openActionItems).toEqual([
+      { actionItemId: "ai-1", description: "Fix the flaky test" },
+      { actionItemId: "ai-2", description: "Update the runbook" },
+    ]);
+  });
+
+  it("a topic with zero open action items archives immediately without requiring confirmation", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("archived");
+  });
+
+  it("a confirm=true request archives regardless of the current open-item count", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransactionConfirmed({
+      activeCount: 2,
+      reDerivedOpenItemsRows: [{ id: "ai-1", description: "Still open" }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/api/v1/teams/team-1/topics/topic-1?confirm=true",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("archived");
+  });
+
+  it("the confirming request re-derives the open-item state rather than trusting a prior value (staleness scenario)", async () => {
+    // First (unconfirmed) request would have shown 2 open items; by the
+    // time the confirm=true request arrives, one has been resolved. The
+    // second request's own transaction re-derives independently and the
+    // archive still succeeds, unaffected by the earlier count.
+    mockPassAllArchiveGates();
+    const client = mockArchiveTransactionConfirmed({
+      activeCount: 2,
+      reDerivedOpenItemsRows: [{ id: "ai-1", description: "Still open" }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/api/v1/teams/team-1/topics/topic-1?confirm=true",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("archived");
+
+    const auditCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect((auditCall![1] as unknown[])[5] as string).toContain('"openActionItemCount":1');
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 6.3 — audit logging for successful archives
+// -----------------------------------------------------------------------
+describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design.md Decision 7, Task 6.3)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("a successful immediate archive writes a topic.archived audit row with openActionItemCount 0", async () => {
+    mockPassAllArchiveGates();
+    const client = mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(200);
+    const auditCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall![1]).toContain("topic.archived");
+    expect(auditCall![1]).toContain("team-1");
+    expect((auditCall![1] as unknown[])[5] as string).toContain('"openActionItemCount":0');
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "topic.archived",
+      expect.objectContaining({ teamId: "team-1", topicId: "topic-1", openActionItemCount: 0 }),
+    );
+  });
+
+  it("a confirm=true archive's audit row records the freshly re-derived count", async () => {
+    mockPassAllArchiveGates();
+    const client = mockArchiveTransactionConfirmed({
+      activeCount: 2,
+      reDerivedOpenItemsRows: [
+        { id: "ai-1", description: "a" },
+        { id: "ai-2", description: "b" },
+        { id: "ai-3", description: "c" },
+      ],
+    });
+
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1?confirm=true" });
+
+    const auditCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect((auditCall![1] as unknown[])[5] as string).toContain('"openActionItemCount":3');
+  });
+
+  it("no audit_log row is written via the transaction client when rejected by identity/role (never opens a transaction)", async () => {
+    mockAuthQuery("engineer", false);
+
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("no topic.archived audit row is written when the request only receives requiresConfirmation", async () => {
+    mockPassAllArchiveGates();
+    const client = mockArchiveTransaction({
+      activeCount: 2,
+      openItemsRows: [{ id: "ai-1", description: "open" }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().requiresConfirmation).toBe(true);
+    const auditCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditCall).toBeUndefined();
+    expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "topic.archived",
+      expect.anything(),
+    );
+  });
+
+  it("the lock-denied rejection is audited under the shared topic.write_denied_locked operation, not a new variant", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(409);
+    const auditCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditCall![1]).toContain("topic.write_denied_locked");
+  });
+
+  it("records metadata.attempted_operation as topic.archived, not the POST endpoint's topic.custom_added", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+
+    expect(res.statusCode).toBe(409);
+    const auditCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    const metadata = JSON.parse((auditCall![1] as unknown[])[5] as string);
+    expect(metadata.attempted_operation).toBe("topic.archived");
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 3.4/4.2/5.4/11.2 — timing floor applied on every branch
+// -----------------------------------------------------------------------
+describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied on every branch", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("applies the timing floor on the 403 branch", async () => {
+    mockAuthQuery("engineer", false);
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 404 (team) branch", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(false);
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 409 lock branch", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 404 (topic) branch", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists(null);
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 422 branch", async () => {
+    mockPassAllArchiveGates("archived");
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 409 TOPIC_LAST_ACTIVE branch", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransaction({ activeCount: 1 });
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 200 requiresConfirmation branch", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransaction({ activeCount: 2, openItemsRows: [{ id: "ai-1", description: "open" }] });
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 200 success branch", async () => {
+    mockPassAllArchiveGates();
+    mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
+    const app = await buildApp();
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });

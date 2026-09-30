@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Defines the server-side rule that a team's topic configuration cannot be customized until that team has completed its first session, the single reusable function that computes this lock state, and the read-side/write-side surfaces that must consult it. This spec covers: the shared, uncached lock-check function; the `isCustomizationLocked` flag on the active-topics read endpoint; the check-ordering and status-code contract for topic-write endpoints (403 identity/role, then 409 lock, with a timing floor closing the resulting enumeration side-channel); the standard error envelope used for lock rejections; and the audit trail for denied lock-bypass attempts.
+Defines the server-side rule that a team's topic configuration cannot be customized until that team has completed its first session, the single reusable function that computes this lock state, and the read-side/write-side surfaces that must consult it. This spec covers: the shared, uncached lock-check function; the `isCustomizationLocked` flag on the active-topics read endpoint; the check-ordering and status-code contract for topic-write endpoints (403 identity/role, then 409 lock, with a timing floor closing the resulting enumeration side-channel); the standard error envelope used for lock rejections; the audit trail for denied lock-bypass attempts; and `GET /api/v1/teams/:teamId/topics/all`'s own authorization model and response contract (team name, per-topic description, and archived-topic provenance), since that endpoint is this capability's other consumer of the lock flag and the standing facilitator model.
 
-This spec does NOT cover: the specific fields or business rules of any individual topic-write endpoint (see `add-custom-topic` for `POST /api/v1/teams/:teamId/topics`), or the standing, org-wide facilitator authorization model itself (defined by the `evaluateStandingFacilitatorAccess` helper and referenced here only as the identity/role check that runs before the lock).
+This spec does NOT cover: the specific fields or business rules of any individual topic-write endpoint (see `add-custom-topic` for `POST /api/v1/teams/:teamId/topics` and `remove-topic` for `DELETE /api/v1/teams/:teamId/topics/:topicId`), or the standing, org-wide facilitator authorization model itself (defined by the `evaluateStandingFacilitatorAccess` helper and referenced here only as the identity/role check that runs before the lock). The Topic Management screen's UI behavior built against `GET /api/v1/teams/:teamId/topics/all` is covered by `topic-management-screen`, not here.
 
 **Implementation note — shared functions:** The lock-check function is `hasCompletedFirstSession(teamId)` in `packages/backend/src/auth/topic-lock-helper.ts`. It is called by both `GET /api/v1/teams/:teamId/topics` (`packages/backend/src/routes/content.ts`) and `POST /api/v1/teams/:teamId/topics` (`packages/backend/src/routes/topics.ts`). No other code path independently queries `sessions.status = 'complete'` to answer this question.
 
@@ -99,3 +99,54 @@ Every topic-write request rejected with `409 Conflict` under the customization l
 #### Scenario: Denied attempts against different endpoints all use the same audit operation
 - **WHEN** requests to two different topic-write endpoints are each rejected under the customization lock
 - **THEN** both rejections write an `audit_log` row with `operation = 'topic.write_denied_locked'`, distinguished from each other only by their metadata (e.g., endpoint identifier), not by a different operation name
+
+### Requirement: The all-topics endpoint uses the standing, org-wide facilitator authorization model, matching every other topic-write endpoint it serves
+
+`GET /api/v1/teams/:teamId/topics/all` SHALL authorize requests using the same standing, org-wide facilitator model as `POST /api/v1/teams/:teamId/topics`, `DELETE /api/v1/teams/:teamId/topics/:topicId`, and every other topic-write endpoint this capability gates: `global_role = 'facilitator'` AND the caller is not an active member of the target team, OR `global_role = 'application_admin'`. This endpoint SHALL NOT require that the caller currently hold, or have ever held, an active session for the target team. No completed-session relationship, and no prior facilitation history with the specific team, is required.
+
+This endpoint SHALL apply the same constant minimum response-time floor (`applyTimingFloor`) at every early-return from this authorization check (`403 Forbidden`, on either rejection reason) as every other endpoint this capability's timing-floor requirement already covers, so that response latency does not distinguish "never going to be authorized" from "authorized" for a caller probing this endpoint.
+
+#### Scenario: A standing facilitator with no session history for the team can list its topics
+- **WHEN** a facilitator who is not an active member of a team, and who has never run any session for that team, requests that team's full topic list (active and archived)
+- **THEN** the response is `200 OK` with the team's active and archived topics
+
+#### Scenario: An application admin can list any team's topics
+- **WHEN** an authenticated user with `global_role = 'application_admin'` requests a team's full topic list
+- **THEN** the response is `200 OK` with the team's active and archived topics
+
+#### Scenario: A caller who is neither a standing facilitator nor an admin is rejected
+- **WHEN** a caller who does not have `global_role = 'facilitator'` (and is not an `application_admin`), or who is an active member of the target team, requests that team's full topic list
+- **THEN** the response is `403 Forbidden`
+
+#### Scenario: A facilitator who is an active member of the team is rejected
+- **WHEN** a facilitator who is an active member of the target team requests that team's full topic list
+- **THEN** the response is `403 Forbidden`, even though the caller holds `global_role = 'facilitator'`
+
+#### Scenario: A 403 rejection is not detectably faster than a 200 success
+- **WHEN** a caller who fails this endpoint's authorization check submits a request, and a separately-measured authorized caller's request against the same endpoint is also submitted
+- **THEN** the `403` response's timing is not detectably faster than the `200` response's timing, because both apply the same minimum response-time floor
+
+### Requirement: The all-topics endpoint's response carries the team's display name, each active topic's description, and each archived topic's provenance — extensions beyond the originally-drafted contract
+
+`GET /api/v1/teams/:teamId/topics/all`'s response SHALL include, in addition to the topic lists themselves:
+
+- A top-level `teamName: string`, the target team's display name. Before this endpoint shipped, no endpoint reachable by a standing, non-member facilitator returned a team's display name; this field exists so the Topic Management screen's remove-confirmation dialog can name the team it is acting on (see `topic-management-screen`'s "names both the topic and the team" requirement), without a second round trip against an endpoint this contract does not otherwise specify.
+- Each `active[]` entry's `firstSessionDescription: string | null`, matching the existing View Active Topic Configuration acceptance criteria ("prompt, vote type, and description" per row) so the Topic Management screen's active list is not a stripped-down name list.
+- Each `archived[]` entry's `archivedAt` (the timestamp the topic transitioned to `archived`) and `archivedBy` (the archiving user's ID and display name, or `null` if unavailable — `null` only for a topic archived before the `archived_by` column existed; none exist today).
+
+None of these three fields were present in this endpoint's originally-drafted response contract; each was added to close a gap the Topic Management screen's own stated requirements exposed once that screen was actually built against this endpoint. All three are accepted on the same footing: they are a strict subset of what the standing, org-wide facilitator model already discloses to this caller — the full topic list and content of a team they are, by design, trusted to read and archive from — not a new category of disclosure, and none is personal data about an individual beyond a facilitator's own display name, which is already visible org-wide in other bounded contexts (e.g., team membership screens). The `archivedBy`/`archivedAt` pair is a facilitator-facing read path, distinct from and in addition to any audit-log record of the same event — a facilitator viewing this endpoint's response SHALL NOT need to consult the audit log to determine who archived a topic or when.
+
+**Implementation note — `defaultTopicsNotActive`:** The response also includes a top-level `defaultTopicsNotActive: Array<{ topicId, name, isArchived }>`, listing the team's canonical default topics that are not currently in the `active` list. This field was part of the originally-drafted TOPIC-002 contract and is correctly computed by this endpoint's query, but it is forward-looking data for a future "Re-Add a Previously Removed Topic" use case, which is out of scope for `remove-topic`. Neither this change's Topic Management screen (`topic-management-screen`) nor any other consumer in this change reads it. It is documented here only so its presence in the response shape is not mistaken for an unspecified or accidental field.
+
+#### Scenario: The response includes the team's display name
+- **WHEN** a standing facilitator requests a team's full topic list
+- **THEN** the response includes a top-level `teamName` matching the target team's display name
+
+#### Scenario: An active topic's entry includes its first-session description
+- **WHEN** a standing facilitator requests a team's full topic list, and one of its active topics has a non-null description
+- **THEN** the corresponding entry in the `active` array includes `firstSessionDescription` matching that topic's stored description
+
+#### Scenario: An archived topic's entry includes who archived it and when
+- **WHEN** a standing facilitator requests a team's full topic list, and that team has an archived topic
+- **THEN** the corresponding entry in the `archived` array includes `archivedAt` matching the time it was archived
+- **AND** includes `archivedBy` with the archiving user's ID and display name

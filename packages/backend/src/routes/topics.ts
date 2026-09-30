@@ -1,10 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
-import { evaluateStandingFacilitatorAccess } from "../auth/standing-facilitator-access-helper.js";
+import {
+  evaluateStandingFacilitatorAccess,
+  checkStandingFacilitatorOrAdminAuthorization,
+} from "../auth/standing-facilitator-access-helper.js";
 import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
+import { getOpenActionItemsForTopic } from "../auth/open-action-items-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import type { SessionData } from "../auth/session-store.js";
+import type { ArchiveTopicResponse, ArchiveTopicConfirmationRequired } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // Topic write routes — topic-customization-lock-and-add-custom-topic (#49/#50)
@@ -204,7 +209,13 @@ async function writeLockDenialAudit(
 async function checkCustomizationLockGate(
   request: FastifyRequest,
   reply: FastifyReply,
-  params: { actorUserId: string; actorGlobalRole: string; teamId: string; endpoint: string },
+  params: {
+    actorUserId: string;
+    actorGlobalRole: string;
+    teamId: string;
+    endpoint: string;
+    attemptedOperation: string;
+  },
   startTime: number,
 ): Promise<{ rejected: boolean }> {
   const unlocked = await hasCompletedFirstSession(params.teamId);
@@ -215,7 +226,7 @@ async function checkCustomizationLockGate(
       actorGlobalRole: params.actorGlobalRole,
       teamId: params.teamId,
       endpoint: params.endpoint,
-      attemptedOperation: "topic.custom_added",
+      attemptedOperation: params.attemptedOperation,
     });
 
     await applyTimingFloor(startTime);
@@ -312,6 +323,77 @@ function validateAddCustomTopicBody(body: AddCustomTopicRequestBody): Validation
   };
 }
 
+// ---------------------------------------------------------------------------
+// Task 3.1 — TOPIC-004 identity/role check
+//
+// design.md Decision 1 (engineer-review correction, Finding 1, BLOCKING):
+// calls the shared, decision-only checkStandingFacilitatorOrAdminAuthorization
+// (auth/standing-facilitator-access-helper.ts) rather than reusing
+// checkStandingFacilitatorAuthorization (TOPIC-003, above) verbatim -- that
+// check has no application_admin branch and would violate FR-8.2 [HARD] for
+// this endpoint. Because the shared function is decision-only (no reply, no
+// applyTimingFloor), this wrapper writes its own TOPIC-004-appropriate
+// message and applies the timing floor itself, on both reason branches.
+// ---------------------------------------------------------------------------
+async function checkArchiveTopicAuthorization(
+  reply: FastifyReply,
+  userId: string,
+  teamId: string,
+  startTime: number,
+): Promise<AuthorizationResult> {
+  const decision = await checkStandingFacilitatorOrAdminAuthorization(userId, teamId);
+
+  if (!decision.authorized) {
+    const message =
+      decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
+        ? "A facilitator cannot archive a topic for a team they are a member of."
+        : "Only a facilitator or an application admin can archive a topic.";
+
+    await applyTimingFloor(startTime);
+    await reply.code(403).send(buildErrorEnvelope("forbidden", message, decision.reason));
+    return { rejected: true };
+  }
+
+  return { rejected: false, actorGlobalRole: decision.actorGlobalRole };
+}
+
+// ---------------------------------------------------------------------------
+// Task 3.2/3.3 — topic existence/ownership and status checks
+//
+// Evaluated only after Task 3.1 (identity/role), team existence, and the
+// customization lock all pass (design.md Decision 2's cascade, steps 4-5).
+// ---------------------------------------------------------------------------
+async function checkTopicExistsAndActive(
+  reply: FastifyReply,
+  teamId: string,
+  topicId: string,
+  startTime: number,
+): Promise<{ rejected: boolean }> {
+  const result = await db.query<{ id: string; status: string }>(
+    `SELECT id, status FROM topics WHERE id = $1 AND team_id = $2`,
+    [topicId, teamId],
+  );
+
+  if (result.rows.length === 0) {
+    await applyTimingFloor(startTime);
+    await reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+    return { rejected: true };
+  }
+
+  const topicRow = result.rows[0] as { id: string; status: string };
+  if (topicRow.status !== "active") {
+    await applyTimingFloor(startTime);
+    await reply
+      .code(422)
+      .send(
+        buildErrorEnvelope("invalid_request", "This topic is already archived.", "TOPIC_ALREADY_ARCHIVED"),
+      );
+    return { rejected: true };
+  }
+
+  return { rejected: false };
+}
+
 export async function topicRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   // POST /api/v1/teams/:teamId/topics  (TOPIC-003, Add Custom Topic)
@@ -351,6 +433,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
         actorGlobalRole: authResult.actorGlobalRole,
         teamId,
         endpoint,
+        attemptedOperation: "topic.custom_added",
       },
       startTime,
     );
@@ -451,5 +534,211 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       isDefault: false,
       createdAt: createdAt.toISOString(),
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // DELETE /api/v1/teams/:teamId/topics/:topicId  (TOPIC-004, Archive Topic)
+  //
+  // Check-ordering cascade (design.md Decision 2, spec.md "Archive Topic
+  // evaluates checks in a fixed order"):
+  //   1. Identity/role authorization (Task 3.1) -- 403 NOT_A_FACILITATOR /
+  //      FACILITATOR_IS_TEAM_MEMBER, extended to admit application_admin.
+  //   2. Team existence (reused unchanged from TOPIC-003) -- 404.
+  //   3. Customization lock (reused unchanged from TOPIC-003) -- 409
+  //      TOPIC_CUSTOMIZATION_LOCKED, audited via writeLockDenialAudit.
+  //   4. Topic existence/ownership (Task 3.2) -- 404 TOPIC_NOT_FOUND.
+  //   5. Topic status (Task 3.3) -- 422 TOPIC_ALREADY_ARCHIVED.
+  //   6. Last-active-topic guard (Task 4.1) -- 409 TOPIC_LAST_ACTIVE, inside
+  //      a per-team advisory-lock-held transaction.
+  //   7. Open-action-item confirmation (Task 5.1/5.2) -- 200
+  //      requiresConfirmation, same transaction.
+  //   8. Success: archive UPDATE + audit row (Task 5.3/6.1), same
+  //      transaction, 200.
+  //
+  // Every early-return in this cascade, plus both 200 outcomes in steps
+  // 7-8, applies applyTimingFloor(startTime) (design.md Decision 2's
+  // amendment, Task 3.4/4.2/5.4) -- no branch is exempt.
+  // -------------------------------------------------------------------------
+  app.delete<{
+    Params: { teamId: string; topicId: string };
+    Querystring: { confirm?: string };
+  }>("/api/v1/teams/:teamId/topics/:topicId", async (request, reply) => {
+    const startTime = Date.now();
+    const session = request.session as unknown as SessionData;
+    const { teamId, topicId } = request.params;
+    const endpoint = "DELETE /api/v1/teams/:teamId/topics/:topicId";
+    const confirmed = request.query.confirm === "true";
+
+    // Task 3.1 / Task 3.6 — 403, checked first.
+    const authResult = await checkArchiveTopicAuthorization(reply, session.userId, teamId, startTime);
+    if (authResult.rejected) {
+      return reply;
+    }
+
+    // Team existence — 404, checked second. Reused unchanged from TOPIC-003.
+    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    if (existsResult.rejected) {
+      return reply;
+    }
+
+    // Customization lock — 409, checked third. Reused unchanged from
+    // TOPIC-003, including its writeLockDenialAudit call (the shared
+    // topic.write_denied_locked operation, no new per-endpoint variant).
+    const lockResult = await checkCustomizationLockGate(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.archived",
+      },
+      startTime,
+    );
+    if (lockResult.rejected) {
+      return reply;
+    }
+
+    // Task 3.2/3.3 — topic existence (404) then topic status (422), checked
+    // fourth and fifth.
+    const topicCheck = await checkTopicExistsAndActive(reply, teamId, topicId, startTime);
+    if (topicCheck.rejected) {
+      return reply;
+    }
+
+    // Task 4.1/5.1-5.3/6.1 — last-active-topic guard, open-action-item
+    // confirmation flow, and the archive transition, all inside one
+    // transaction guarded by the same per-team advisory lock TOPIC-003's
+    // POST /topics already uses (design.md Decision 3's SQL block).
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1::text))", [teamId]);
+
+      const activeCountResult = await client.query<{ active_count: string }>(
+        `SELECT COUNT(*) AS active_count FROM topics WHERE team_id = $1 AND status = 'active'`,
+        [teamId],
+      );
+      const activeCount = parseInt(
+        (activeCountResult.rows[0] as { active_count: string }).active_count,
+        10,
+      );
+
+      // Task 4.1/4.2 — last-active-topic guard.
+      if (activeCount <= 1) {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply
+          .code(409)
+          .send(
+            buildErrorEnvelope(
+              "precondition_failed",
+              "This is the team's last active topic. At least one active topic must remain.",
+              "TOPIC_LAST_ACTIVE",
+            ),
+          );
+      }
+
+      let openActionItemCount: number;
+
+      if (!confirmed) {
+        // Task 5.1 — unconfirmed path: one or more open action items
+        // rolls back and returns 200 requiresConfirmation without
+        // archiving. Zero open items proceeds to archive with a known
+        // count of 0.
+        const openItems = await getOpenActionItemsForTopic(topicId, client);
+        if (openItems.length > 0) {
+          await client.query("ROLLBACK");
+          await applyTimingFloor(startTime);
+          const confirmationResponse: ArchiveTopicConfirmationRequired = {
+            requiresConfirmation: true,
+            reason: "openActionItems",
+            openActionItemCount: openItems.length,
+            openActionItems: openItems,
+            message: `${openItems.length} open action item${
+              openItems.length === 1 ? "" : "s"
+            } will stay open, but nothing will remind anyone about them going forward.`,
+          };
+          return reply.code(200).send(confirmationResponse);
+        }
+        openActionItemCount = 0;
+      } else {
+        // Task 5.2 — confirm=true: never trust a client-supplied count or
+        // list. Independently re-derive it inside this transaction. This
+        // re-derivation does not gate the outcome (the archive proceeds
+        // regardless of what it returns), but the result is not discarded
+        // — it is written into the success audit row below (design.md
+        // Decision 5's engineer-review correction, Finding 2), so the
+        // re-derivation is an observable record, not inert work.
+        const reDerivedItems = await getOpenActionItemsForTopic(topicId, client);
+        openActionItemCount = reDerivedItems.length;
+      }
+
+      // Task 5.3 — archive UPDATE.
+      const archiveResult = await client.query<{ archived_at: Date }>(
+        `UPDATE topics SET status = 'archived', archived_at = now(), archived_by = $1
+         WHERE id = $2 AND team_id = $3 AND status = 'active'
+         RETURNING archived_at`,
+        [session.userId, topicId, teamId],
+      );
+
+      if (archiveResult.rows.length === 0) {
+        // Topic was archived by a concurrent request between Task 3.3's
+        // pre-check and this UPDATE (both serialized per-team by the
+        // advisory lock, but the pre-check itself runs before the lock is
+        // taken) — same state the pre-check would have rejected.
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply
+          .code(422)
+          .send(
+            buildErrorEnvelope("invalid_request", "This topic is already archived.", "TOPIC_ALREADY_ARCHIVED"),
+          );
+      }
+
+      const archivedAt = (archiveResult.rows[0] as { archived_at: Date }).archived_at;
+
+      // Task 6.1 — success audit row, same transaction as the UPDATE.
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          authResult.actorGlobalRole,
+          request.ip,
+          "topic.archived",
+          teamId,
+          JSON.stringify({ topic_id: topicId, openActionItemCount }),
+        ],
+      );
+
+      await client.query("COMMIT");
+
+      // Task 6.2 — structured-log counterpart, matching topic.custom_added's
+      // pairing.
+      emitAuditEvent(request.log, "topic.archived", {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        topicId,
+        openActionItemCount,
+      });
+
+      await applyTimingFloor(startTime);
+      const successResponse: ArchiveTopicResponse = {
+        topicId,
+        status: "archived",
+        archivedAt: archivedAt.toISOString(),
+      };
+      return reply.code(200).send(successResponse);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 }

@@ -349,7 +349,18 @@ export type AuditEventName =
   // standing, org-wide facilitator model would otherwise leave on the
   // success path. metadata: { topic_id }.
   | "topic.write_denied_locked"
-  | "topic.custom_added";
+  | "topic.custom_added"
+  // topic.archived: remove-topic, design.md Decision 7. Fired by
+  // DELETE /api/v1/teams/:teamId/topics/:topicId (TOPIC-004) on every
+  // successful archive, in the same database transaction as the topics
+  // UPDATE (status/archived_at/archived_by) — topic.custom_added is the
+  // direct precedent (an access/existence-establishing event audited in the
+  // same transaction as the rows it authorizes). metadata: { topic_id,
+  // openActionItemCount } — the count is always the freshest value the
+  // server derived for that request (0 for an immediate archive, the
+  // re-derived count for a confirm=true archive), never a client-supplied
+  // value (design.md Decision 5's engineer-review correction, Finding 2).
+  | "topic.archived";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

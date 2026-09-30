@@ -31,7 +31,14 @@ export type {
   TeamNameCollisionResponse,
 } from "./types/session-creation.js";
 export type { Vote, VoteType } from "./types/vote.js";
-export type { Topic, TopicStatus } from "./types/topic.js";
+export type {
+  Topic,
+  TopicStatus,
+  ArchivedByProvenance,
+  GetAllTopicsResponse,
+  ArchiveTopicResponse,
+  ArchiveTopicConfirmationRequired,
+} from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";
 export type {
   VoteDistributionBucket,

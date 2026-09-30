@@ -181,6 +181,8 @@
 
 # Use Case: Remove a Topic
 
+**Terminology note, corrected (`remove-topic` design.md, shipped `TOPIC-004`):** this use case's "remove"/"removed" vocabulary is superseded by the shipped archive/restore model — `topics.status` transitions between `'active'` and `'archived'`, tracked with `archivedAt`/`archivedBy`, not a `removed` flag. The Main Flow, Postconditions, and Acceptance Criteria below describe the same user-facing behavior this use case always specified; only the underlying state name has changed from what this document originally drafted.
+
 ## Summary
 **Actor:** Facilitator
 
@@ -208,7 +210,7 @@
 
 ## Alternate Flows
 - **Facilitator cancels the confirmation prompt:** No change is made. The topic remains active.
-- **Facilitator attempts to remove the last remaining topic:** The Application prevents the removal and displays a message that at least one topic must remain in the session. (Or this is not enforced — see Notes.)
+- **Facilitator attempts to remove the last remaining topic:** **Resolved (`remove-topic` design.md Decision 3):** this is a hard block, not a soft warning. The Application rejects the request and displays a message that at least one active topic must remain; the topic is not modified.
 - **Remove fails due to a system error:** The Application displays an error. The topic remains active. The Facilitator can retry.
 
 ## Postconditions
@@ -225,11 +227,12 @@
 - [ ] Historical session data for the removed topic is accessible in the trend dashboard (it is not deleted).
 - [ ] The topic's removal is reflected in the next session — it does not appear in the session flow.
 - [ ] Both default and custom topics can be removed using the same mechanism.
+- [ ] **Added (`remove-topic` design.md Decision 6, Task 10.7):** the archived-topics view shows, for each removed topic, who archived it and when (`archivedBy`/`archivedAt`) — visible directly on the screen, without requiring the Facilitator to consult the audit log or ask a colleague.
 
 ## Out of Scope
 - Permanently deleting a topic's historical data.
 - Removing topics from past sessions retroactively (historical session records are immutable).
-- Archiving topics in a way that differs from removal (no archive state is defined).
+- **Corrected (`remove-topic` design.md Decision 6, Task 10.5):** this line originally read "Archiving topics in a way that differs from removal (no archive state is defined)." That is factually superseded — the shipped schema (`topics.status`, `archivedAt`, `archivedBy`) and `TOPIC-004`'s contract define exactly this archive state; "removal," in this document's original vocabulary, always meant this same soft-delete/archive transition, never a hard delete.
 
 ## Dependencies
 - Use Case: Enforce Topic Customization Lock for First Session — customization must be unlocked.
@@ -237,8 +240,8 @@
 - Trend Dashboard: must handle gaps in topic data for removed topics.
 
 ## Notes
-- Whether the application enforces a minimum topic count (preventing removal of the last topic) is an open question. In practice, a session with zero topics cannot proceed, but this may be handled at session start rather than at topic removal time.
-- Removal does not affect in-progress sessions. If a session is currently active, the removed topic will not be excluded from it until the next session begins. This edge case may need a decision.
+- **Resolved (`remove-topic` design.md Decision 3):** the application enforces a minimum topic count. Archiving a team's last remaining active topic is rejected with a hard `409` block (`TOPIC_LAST_ACTIVE`), serialized against concurrent requests per team — this is no longer an open question.
+- **Resolved (`remove-topic` design.md Context, `specs/remove-topic/spec.md`'s "An in-progress session is unaffected by a concurrent archive" scenario):** removal does not affect in-progress sessions. A session's topic sequence is snapshotted into `session_topics` at session creation, independent of `topics.status` — archiving a topic while a session that already includes it is in progress leaves that session's topic sequence unchanged, and the archived topic still appears normally for the remainder of that session. This is no longer an open edge case needing a decision.
 
 ---
 
