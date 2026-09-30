@@ -240,12 +240,17 @@ CREATE TABLE topics (
     created_at          timestamptz     NOT NULL DEFAULT now(),
     updated_at          timestamptz     NOT NULL DEFAULT now(),
     archived_at         timestamptz     NULL   -- Set when status transitions to 'archived'
-
-    CONSTRAINT topics_team_order UNIQUE (team_id, display_order, status)
 );
 
--- Index: active topics for a team (used for session setup and topic management views)
-CREATE INDEX idx_topics_team_active
+-- Unique index: display_order is unique only among a team's ACTIVE topics
+-- (migration 18_topics_active_order_partial_unique.sql, reorder-topics
+-- design.md Decision 1). It replaces the original
+-- topics_team_order UNIQUE (team_id, display_order, status) constraint and
+-- supersedes the former non-unique idx_topics_team_active (same columns and
+-- predicate). An archived topic's display_order is not meaningful and not
+-- maintained. Also serves active-topic reads for session setup and topic
+-- management views.
+CREATE UNIQUE INDEX topics_team_active_order
     ON topics (team_id, display_order)
     WHERE status = 'active';
 

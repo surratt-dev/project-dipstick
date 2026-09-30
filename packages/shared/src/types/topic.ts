@@ -106,3 +106,29 @@ export interface RestoreTopicResponse {
   displayOrder: number;
   restoredAt: string;
 }
+
+// ---------------------------------------------------------------------------
+// TOPIC-006 — PUT /api/v1/teams/:teamId/topics/order (reorder-topics,
+// design.md Decision 2/7/8).
+// ---------------------------------------------------------------------------
+export interface ReorderTopicsRequest {
+  orderedTopicIds: string[];
+}
+
+// Named so the Topic Management screen's 200 handler has a type to map
+// against when it patches data.active in response order (design.md
+// Decision 8). displayOrder is 1-based and dense (1..N) after a save that
+// changes the order; on a no-op save it is the stored value, which may have
+// gaps left by archives.
+export interface ReorderedTopic {
+  topicId: string;
+  name: string;
+  displayOrder: number;
+}
+
+export interface ReorderTopicsResponse {
+  topics: ReorderedTopic[];
+  // Creation time of the team's lobby/pre_session/active/wrap_up session, if
+  // one exists. Always null for an application_admin (design.md Decision 7).
+  openSessionCreatedAt: string | null;
+}

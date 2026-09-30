@@ -250,7 +250,7 @@
 # Use Case: Reorder Topics
 
 ## Summary
-**Actor:** Facilitator
+**Actor:** Facilitator (or Application Administrator, per FR-8.2)
 
 **Trigger:** The Facilitator wants to change the sequence in which topics appear during a session to better match the team's preferred flow.
 
@@ -279,7 +279,7 @@
 - **Only one topic exists:** Reorder controls are not shown or are disabled, as there is nothing to reorder.
 
 ## Postconditions
-- **Success:** The team's topic configuration reflects the new order. All future sessions will present topics in the updated sequence.
+- **Success:** The team's topic configuration reflects the new order. Sessions created after the save present topics in the updated sequence; sessions already created keep their order.
 - **Failure:** The topic order is unchanged from the last saved state.
 
 ---
@@ -289,20 +289,21 @@
 - [ ] The Facilitator can change the position of any active topic relative to any other.
 - [ ] The new order is visually reflected immediately when the Facilitator moves a topic.
 - [ ] The new order is not applied until the Facilitator explicitly saves it.
-- [ ] After saving, the new order is used in all subsequent sessions.
+- [ ] After saving, the new order is used in all subsequent sessions. (Blocked end to end today on #175 — no shipped endpoint currently populates `session_topics` at session creation, for any topic; this is a pre-existing gap this use case inherits, not one specific to reorder.)
 - [ ] Reordering is not available when only one topic exists.
-- [ ] Reorder controls are only available to the Facilitator, not to Engineers.
+- [ ] Reorder controls are only available to the Facilitator, not to Engineers. (The screen's access rule is inherited from the existing `topic-management-screen` access-denied requirement.)
 
 ## Out of Scope
 - Automatically reordering topics based on any criteria (reordering is always manual).
-- Reordering topics within an in-progress session (topic order is fixed at session start).
+- Reordering topics within an in-progress session (topic order is fixed at session creation).
 
 ## Dependencies
 - Use Case: Enforce Topic Customization Lock for First Session — customization must be unlocked.
+- BRD FR-2.7 — setting a session's topic order before the session is created, via the team configuration.
 
 ## Notes
-- Whether the application warns the Facilitator before discarding unsaved reorder changes (e.g., on navigation away) is a UX decision that should be made during implementation.
-- The reorder interaction should be usable on both desktop and tablet. A drag-and-drop control alone may not be sufficient for non-pointer devices; an alternative (move up/move down controls) may be needed.
+- Unsaved reorder changes: closing or refreshing the tab triggers the browser's `beforeunload` prompt. In-app navigation, including browser Back/Forward, is not intercepted in v1 and discards the draft per the "reorders but does not save before navigating away" alternate flow (`reorder-topics` design.md Decision 8).
+- The reorder interaction is Move to top / Move up / Move down / Move to bottom buttons on each row, usable on desktop and tablet. Drag-and-drop is not provided in v1 (deferred to #181, `reorder-topics` design.md Decision 11).
 
 ---
 
@@ -417,7 +418,7 @@
 - [ ] After reinstatement, the topic appears in the active topic list and is included in the next session. (Blocked today on #175 — no shipped endpoint currently populates `session_topics` at session creation, for any topic, restored or otherwise; this is a pre-existing gap this use case inherits, not one specific to restore.)
 - [ ] Historical vote data for the topic from before its removal is preserved and accessible in trend views.
 - [ ] The archived-topics view shows who restored a topic and when, mirroring the existing archive-provenance display (`re-add-removed-topic` design.md Decision 4).
-- [ ] The re-added topic can be reordered within the active list after reinstatement. (Currently unsatisfiable for any active topic, not a restore-specific gap — TOPIC-006, Reorder Topics, is unbuilt. See `re-add-removed-topic` proposal.md "Known Limitations.")
+- [ ] The re-added topic can be reordered within the active list after reinstatement.
 
 ## Out of Scope
 - Retroactively adding the topic to sessions that occurred while it was removed.
@@ -429,7 +430,7 @@
 - Trend Dashboard: must correctly render gaps in topic history when a topic was absent for one or more sessions. (Applies to the trend-gap-signal follow-up change described in Notes, not to this use case's shipped scope.)
 
 ## Notes
-- **Resolved:** a reinstated topic is appended to the end of the active topic order, not restored to its prior position (`re-add-removed-topic` design.md Decision 3). The `topics_team_order UNIQUE (team_id, display_order, status)` constraint is why archiving a topic never had to renumber the remaining active topics in the first place; restoring to the prior position would require deciding what happens if an active topic has since taken that slot, which appending avoids needing entirely.
+- **Resolved:** a reinstated topic is appended to the end of the active topic order, not restored to its prior position (`re-add-removed-topic` design.md Decision 3). Archiving a topic never has to renumber the remaining active topics because `display_order` is unique only among a team's active topics (partial unique index `topics_team_active_order`, migration 18, `reorder-topics` design.md Decision 1; this replaced the original `topics_team_order UNIQUE (team_id, display_order, status)` constraint); restoring to the prior position would require deciding what happens if an active topic has since taken that slot, which appending avoids needing entirely.
 - **Resolved, deferred:** the trend view treatment of the gap (e.g., a break in the line vs. a label indicating removed/reinstated) is not built as part of this use case. Executive review split it into its own follow-up change, coordinated with Trend Dashboard ownership, since restore has no dependency on it in either direction. The derivation approach explored for it (based on `session_topics` absence) is preserved in `re-add-removed-topic` proposal.md's "Scope Decision" section for that follow-up to pick up.
 
 ---

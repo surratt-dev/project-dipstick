@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines `DELETE /api/v1/teams/:teamId/topics/:topicId`, which lets a standing, org-wide facilitator (one not an active member of the target team) or an application administrator archive an active topic on a team once that team's topic customization lock (see the `topic-customization-lock` capability) is no longer active. This spec covers: the soft-delete archive semantics and historical-data preservation; the fixed check-ordering cascade (identity/role, team existence, lock, topic existence, topic status, then the last-active-topic guard) and its anti-enumeration timing-floor guarantee; the hard block on archiving a team's last active topic, serialized per team against concurrent requests; the open-action-items confirmation flow; and provenance/audit logging of successful archives.
+Defines `DELETE /api/v1/teams/:teamId/topics/:topicId`, which lets a standing, org-wide facilitator (one not an active member of the target team) or an application administrator archive an active topic on a team once that team's topic customization lock (see the `topic-customization-lock` capability) is no longer active. This spec covers: the soft-delete archive semantics and historical-data preservation; the fixed check-ordering cascade (identity/role, team existence, lock, topic existence, topic status, then the last-active-topic guard) and its anti-enumeration timing-floor guarantee; the hard block on archiving a team's last active topic, serialized per team against concurrent requests; the open-action-items confirmation flow; provenance/audit logging of successful archives; and the rule that `display_order` uniqueness is enforced only among a team's active topics (migration `18_topics_active_order_partial_unique.sql`).
 
 This spec does NOT cover: the lock-check function itself, the `isCustomizationLocked` read-side flag, or the general 403/409 rejection contract shared across topic-write endpoints (see `topic-customization-lock`) — this spec states this endpoint's own use of that shared contract and adds only what is specific to it (soft-delete semantics, the last-active-topic guard, open-action-items confirmation, and archive provenance/audit). It also does not cover the Topic Management screen's UI behavior (see `topic-management-screen`) or the `GET /api/v1/teams/:teamId/topics/all` read endpoint's own authorization/provenance contract (see `topic-customization-lock`, which covers that endpoint).
 
@@ -139,3 +139,20 @@ Every accepted `DELETE /api/v1/teams/:teamId/topics/:topicId` request SHALL, in 
 - **WHEN** an archive request is rejected by identity/role, team existence, topic existence, topic status, or the last-active-topic guard
 - **THEN** no `audit_log` row with `operation = 'topic.archived'` is written
 - **AND** the topic's `archived_at`/`archived_by` remain unset
+
+### Requirement: Display-order uniqueness applies only among a team's active topics
+
+The database SHALL enforce that no two **active** topics on the same team share a `display_order`. It SHALL NOT enforce uniqueness of `display_order` among archived topics, or between an archived and an active topic. An archived topic's `display_order` is not meaningful and is not maintained: the archived-topics list orders by `archived_at`, and restore re-appends at the end of the active order. This replaces the `topics_team_order UNIQUE (team_id, display_order, status)` constraint with a partial unique index on `(team_id, display_order) WHERE status = 'active'`.
+
+#### Scenario: Archiving a topic whose position an archived topic already holds succeeds
+- **WHEN** a team has an archived topic at `display_order = k` and an active topic at `display_order = k`, and a standing facilitator archives the active topic
+- **THEN** the response is `200 OK` and the topic is archived
+- **AND** no `500` or unique-violation error occurs
+
+#### Scenario: The archive, add, archive sequence no longer fails
+- **WHEN** on an unlocked team with active topics at positions `1..11`, the facilitator archives the topic at position 11, adds a custom topic (assigned position 11), and then archives that custom topic
+- **THEN** every request succeeds
+
+#### Scenario: Two active topics on the same team still cannot share a position
+- **WHEN** a write attempts to give two active topics on the same team the same `display_order`
+- **THEN** the database rejects the write with a unique violation

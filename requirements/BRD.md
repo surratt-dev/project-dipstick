@@ -226,7 +226,7 @@ Requirements are marked **[HARD]** where the behavior is non-negotiable and cann
 
 **FR-2.6** [HARD] The facilitator shall explicitly start the session, transitioning it from the lobby state to the active state. Voting shall not be available until the session is in the active state.
 
-**FR-2.7** [PREF] The application should allow the facilitator to re-order the default topic queue before starting the session.
+**FR-2.7** [PREF] The application should allow the facilitator to set the order in which a session's topics are presented before that session is created, by reordering the team's topic configuration (TOPIC-006). The order in effect when a session is created is the order that session uses. This does not apply to a team's first session, which always uses the canonical default order (FR-8.2 customization lock). The application does not provide a separate per-session reorder path.
 
 ### FR-3: Pre-Session Action Item Review
 
