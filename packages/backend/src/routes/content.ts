@@ -11,6 +11,7 @@ import {
   buildFacilitatorQueryResult,
 } from "../content/team-content-serializers.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
+import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
 import type { SessionData } from "../auth/session-store.js";
 import type {
   TeamAccessGrant,
@@ -487,8 +488,15 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       [teamId],
     );
 
+    // topic-customization-lock-and-add-custom-topic, design.md Decision 1 /
+    // Task 2.1: isCustomizationLocked is computed via the single shared
+    // lock-check function -- the same one TOPIC-003's write-side gate calls
+    // (topics.ts) -- never an independently inlined query here. Present on
+    // every successful response regardless of caller role (Task 2.2).
+    const isCustomizationLocked = !(await hasCompletedFirstSession(teamId));
+
     await applyTimingFloor(startTime);
-    return noStore(reply).send({ teamId, topics: result.rows });
+    return noStore(reply).send({ teamId, topics: result.rows, isCustomizationLocked });
   });
 
   // -------------------------------------------------------------------------

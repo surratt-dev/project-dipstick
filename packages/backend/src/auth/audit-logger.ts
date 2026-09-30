@@ -324,7 +324,32 @@ export type AuditEventName =
   // reconstructable from the audit trail even though nothing changed in
   // action_item_history. metadata: { action_item_id, previous_owner_id,
   // new_owner_id, session_id, no_op? }.
-  | "action_item.owner_reassigned";
+  | "action_item.owner_reassigned"
+  // topic.write_denied_locked / topic.custom_added:
+  // topic-customization-lock-and-add-custom-topic (#49/#50), design.md
+  // Decision 8 and its security-review (Finding 3) amendment.
+  //
+  // topic.write_denied_locked: fired by any topic-write endpoint's lock-gate
+  // check (Task 3.3) when the customization lock is active. Written
+  // synchronously, before the 409 response is sent, matching
+  // team.role_change_denied's precedent (a blocked attempt on a privileged
+  // boundary is itself a security-relevant fact). A single operation name is
+  // shared across every topic-write endpoint this lock ever gates
+  // (TOPIC-003 today, TOPIC-004-007 later) -- endpoints are distinguished
+  // only by this event's metadata (endpoint identifier, attempted
+  // operation), never by a per-endpoint operation variant. metadata: {
+  // endpoint, attempted_operation }.
+  //
+  // topic.custom_added: fired by POST /api/v1/teams/:teamId/topics
+  // (TOPIC-003) on every successful write, in the same database transaction
+  // as the topic INSERT -- session.draft_created and
+  // team.created_with_session are the direct precedent (an
+  // access/existence-establishing event audited in the same transaction as
+  // the rows it authorizes). Closes the non-repudiation gap Decision 3's
+  // standing, org-wide facilitator model would otherwise leave on the
+  // success path. metadata: { topic_id }.
+  | "topic.write_denied_locked"
+  | "topic.custom_added";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

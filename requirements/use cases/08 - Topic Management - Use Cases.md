@@ -82,7 +82,7 @@
 6. Add, remove, reorder, and annotate controls are not available.
 
 ## Alternate Flows
-- **Facilitator bypasses the UI and submits a topic modification request directly (e.g., via API):** The Application validates the lock server-side and rejects the request with an authorization error. No topic configuration change is made.
+- **Facilitator bypasses the UI and submits a topic modification request directly (e.g., via API):** The Application validates the lock server-side and rejects the request with a `409 Conflict` state-precondition response — the lock is a fact about the team's session history, not about the caller's identity or role, so it is distinguished from an authorization failure at the API boundary. No topic configuration change is made. (Corrected per `topic-customization-lock-and-add-custom-topic` design.md Decision 2: an actor-identity/role failure, e.g. a caller who is not a facilitator, still receives a `403 Forbidden`, evaluated and returned before the lock check ever runs.)
 - **First session completes while the Facilitator is viewing the locked topic management screen:** The Application unlocks customization. The Facilitator must reload or navigate away and back to access the editing controls (real-time unlock is a nice-to-have, not a requirement).
 
 ## Postconditions
@@ -127,33 +127,34 @@
 ## Preconditions
 - The Facilitator is authenticated.
 - The team has at least one completed session (topic customization is unlocked).
-- The Facilitator is accessing the topic management area for the team they are facilitating.
+- The Facilitator is eligible to facilitate any team they are not an active member of — the standing, org-wide facilitator model. (Corrected per `topic-customization-lock-and-add-custom-topic` design.md Decision 3: no prior facilitation relationship with this specific team is required. This aligns with Use Case: View Active Topic Configuration's "any team they are eligible to facilitate" phrasing rather than implying an existing facilitation relationship with the specific team.)
 
 ## Main Flow
 1. The Facilitator navigates to the topic management screen for the team.
 2. The Facilitator selects the option to add a new topic.
-3. The Application presents a form with fields for: topic prompt (required), vote type (required — Finger, Roman, or Modified Roman), and topic description (optional).
-4. The Facilitator enters the topic prompt, selects a vote type, and optionally enters a description.
+3. The Application presents a form with fields for: topic name (required), topic prompt (required, distinct from the name), vote type (required — Finger, Roman, or Modified Roman), and topic description (optional).
+4. The Facilitator enters the topic name, enters the topic prompt, selects a vote type, and optionally enters a description.
 5. The Facilitator submits the form.
-6. The Application validates that the prompt is not empty and a vote type has been selected.
+6. The Application validates that the name is not empty, the prompt is not empty, and a vote type has been selected.
 7. The Application creates the new topic record associated with the team, marked as a custom topic.
 8. The Application appends the new topic to the end of the team's topic order.
 9. The Application displays the updated topic list with the new topic visible.
 
 ## Alternate Flows
+- **Facilitator submits without a name:** The Application displays a validation error and does not save. The form remains open with the entered values preserved.
 - **Facilitator submits without a prompt:** The Application displays a validation error and does not save. The form remains open with the entered values preserved.
 - **Facilitator submits without selecting a vote type:** The Application displays a validation error and does not save.
 - **The Facilitator adds a topic with a prompt identical to an existing topic:** The Application does not enforce uniqueness of prompts. The duplicate is saved as a distinct topic. (A warning may be appropriate — see Notes.)
 - **Save fails due to a system error:** The Application displays an error. No topic is created. The Facilitator can retry.
 
 ## Postconditions
-- **Success:** A new custom topic exists in the team's topic configuration, appended at the end of the current order, with the specified prompt, vote type, and description. It will appear in the next session run for this team.
+- **Success:** A new custom topic exists in the team's topic configuration, appended at the end of the current order, with the specified name, prompt, vote type, and description. It will appear in the next session run for this team.
 - **Failure:** No topic is created. The team's topic configuration is unchanged.
 
 ---
 
 ## Acceptance Criteria
-- [ ] The add topic form requires a non-empty prompt and a vote type selection before allowing submission.
+- [ ] The add topic form requires a non-empty name, a non-empty prompt, and a vote type selection before allowing submission.
 - [ ] All three vote types (Finger, Roman, Modified Roman) are available for selection.
 - [ ] A successfully added topic appears in the team's topic list immediately after saving.
 - [ ] A newly added topic is appended to the end of the topic order by default.

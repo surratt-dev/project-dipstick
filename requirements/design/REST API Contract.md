@@ -716,12 +716,16 @@ interface AddCustomTopicResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not a facilitator; facilitator is a team member; customization lock is active |
+| `403 Forbidden` | Not a facilitator (`NOT_A_FACILITATOR`); facilitator is a team member (`FACILITATOR_IS_TEAM_MEMBER`) |
 | `404 Not Found` | Team does not exist |
+| `409 Conflict` | Customization lock is active (`TOPIC_CUSTOMIZATION_LOCKED`) |
 | `422 Unprocessable Entity` | Required fields missing, empty, or exceed length limits |
+
+**Corrected (`topic-customization-lock-and-add-custom-topic` design.md Decision 2):** the customization lock is a state precondition about the team's session history, not an actor-identity/role failure, so it is rejected with `409 Conflict`, not the `403 Forbidden` this table previously listed for all three causes. `403 Forbidden` is reserved for the two actor-identity/role failures above and is evaluated — and returned — before the lock check ever runs (design.md Decision 9's full cascade: `403` → `404` → `409` → `422`).
 
 **Notes**
 - The customization lock check (`isCustomizationLocked`) is enforced server-side. The lock applies when the team has zero completed sessions (FR-8.2).
+- Every rejection above is carried in this codebase's standard error envelope, `{ error: { category, code, message, correlationId } }` — not a bare top-level `{ code, message }` body.
 - Prompt uniqueness is not enforced — duplicate prompts are allowed.
 - `isDefault` is always `false` for custom topics.
 
