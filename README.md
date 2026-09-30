@@ -4,7 +4,6 @@
 [![Integration Tests](https://github.com/surratt-dev/project-dipstick/actions/workflows/integration.yml/badge.svg?branch=main)](https://github.com/surratt-dev/project-dipstick/actions/workflows/integration.yml)
 [![Docker Build](https://github.com/surratt-dev/project-dipstick/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/surratt-dev/project-dipstick/actions/workflows/docker.yml)
 [![Release](https://github.com/surratt-dev/project-dipstick/actions/workflows/release.yml/badge.svg)](https://github.com/surratt-dev/project-dipstick/actions/workflows/release.yml)
-[![Coverage (shared)](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/briansurratt/291eca18f17a5e76adc083dedf63842e/raw/dipstick-coverage-shared.json)](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml?query=branch%3Amain)
 [![Coverage (backend)](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/briansurratt/291eca18f17a5e76adc083dedf63842e/raw/dipstick-coverage-backend.json)](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml?query=branch%3Amain)
 [![Coverage (frontend)](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/briansurratt/291eca18f17a5e76adc083dedf63842e/raw/dipstick-coverage-frontend.json)](https://github.com/surratt-dev/project-dipstick/actions/workflows/ci.yml?query=branch%3Amain)
 [![Latest release](https://img.shields.io/github/v/release/surratt-dev/project-dipstick?sort=semver)](https://github.com/surratt-dev/project-dipstick/releases/latest)
