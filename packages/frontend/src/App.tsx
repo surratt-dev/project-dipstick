@@ -16,6 +16,7 @@ import { EmTrendDataPage } from "./pages/EmTrendDataPage.js";
 import { EmActionItemsPage } from "./pages/EmActionItemsPage.js";
 import { SessionCreationPage } from "./pages/SessionCreationPage.js";
 import { DraftSessionHost } from "./pages/DraftSessionHost.js";
+import { TopicManagementPage } from "./pages/TopicManagementPage.js";
 
 // session-creation-existing-team design.md Decision D5. Routing carve-out
 // order:
@@ -90,6 +91,23 @@ export function App() {
             element={
               <ProtectedRoute>
                 <TeamPage />
+              </ProtectedRoute>
+            }
+          />
+          {/*
+           * remove-topic, design.md Decision 10 / Task 9.1: the Topic
+           * Management screen. ProtectedRoute-gated per this file's existing
+           * pattern (server-side dual authorization via TOPIC-002's standing
+           * facilitator model; TopicManagementPage itself renders a 403
+           * access-denied state on denial — no client-side gating primitive
+           * beyond ProtectedRoute's session check, matching every other
+           * route in this file).
+           */}
+          <Route
+            path="/team/:teamId/topics"
+            element={
+              <ProtectedRoute>
+                <TopicManagementPage />
               </ProtectedRoute>
             }
           />

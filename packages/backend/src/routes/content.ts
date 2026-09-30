@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { evaluateTeamAccess } from "../auth/team-content-access-helper.js";
+import { checkStandingFacilitatorOrAdminAuthorization } from "../auth/standing-facilitator-access-helper.js";
 import {
   serializeForMemberParticipant,
   serializeForMemberEM,
@@ -19,6 +20,7 @@ import type {
   FacilitatorTrendDataUnavailable,
   FacilitatorContentView,
   ConnectionRecoveryEntry,
+  GetAllTopicsResponse,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -497,6 +499,160 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
 
     await applyTimingFloor(startTime);
     return noStore(reply).send({ teamId, topics: result.rows, isCustomizationLocked });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/teams/:teamId/topics/all  (TOPIC-002, remove-topic Task 7)
+  //
+  // design.md Decision 9: corrected to the standing, org-wide facilitator
+  // model TOPIC-003..007 already share (global_role = 'facilitator' AND not
+  // an active member of the team, OR application_admin) — NOT
+  // evaluateTeamAccess (TOPIC-001's session-scoped model, used by every
+  // other handler in this file). Placed here rather than topics.ts because
+  // it is a read endpoint and content.ts is this codebase's established
+  // home for team-content reads, even though its authorization helper is
+  // shared with topics.ts.
+  //
+  // Powers the Topic Management screen (Task 9): the active list, the
+  // archived list with archivedBy provenance (Decision 6), and
+  // defaultTopicsNotActive (the canonical default topics currently absent
+  // from this team's active list, per the sentinel __default_topics__
+  // team's is_default rows — the same provisioning source
+  // facilitator-sessions.ts's session-creation copy reads from).
+  // -------------------------------------------------------------------------
+  const DEFAULT_TOPICS_TEAM_ID = "00000000-0000-0000-0000-000000000001";
+
+  app.get<{
+    Params: { teamId: string };
+  }>("/api/v1/teams/:teamId/topics/all", async (request, reply) => {
+    const startTime = Date.now();
+    const session = request.session as unknown as SessionData;
+    const { teamId } = request.params;
+
+    // Task 7.1/7.2 — decision-only shared authorization, same function
+    // TOPIC-004 (topics.ts) uses. This handler writes its own reply and
+    // applies the timing floor itself, on both reason branches — the
+    // shared function does neither.
+    const decision = await checkStandingFacilitatorOrAdminAuthorization(session.userId, teamId);
+    if (!decision.authorized) {
+      await applyTimingFloor(startTime);
+      return noStore(reply)
+        .code(403)
+        .send({
+          error: {
+            category: "forbidden" as const,
+            message:
+              decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
+                ? "A facilitator cannot view topic management for a team they are a member of."
+                : "Only a facilitator or an application admin can view this team's topic list.",
+            correlationId: crypto.randomUUID(),
+          },
+        });
+    }
+
+    // Task 9.2/Decision 10's confirmation-copy requirement: the dialog
+    // names both the topic and the team. No other endpoint reachable by a
+    // standing, non-member facilitator returns a team's display name, so
+    // this handler carries it directly.
+    const teamResult = await db.query<{ name: string }>(`SELECT name FROM teams WHERE id = $1`, [teamId]);
+    const teamName = teamResult.rows[0]?.name ?? "";
+
+    const activeResult = await db.query<{
+      id: string;
+      name: string;
+      prompt: string;
+      vote_type: string;
+      display_order: number;
+      is_default: boolean;
+      first_session_description: string | null;
+      created_at: Date;
+      updated_at: Date;
+    }>(
+      `SELECT id, name, prompt, vote_type, display_order, is_default,
+              first_session_description, created_at, updated_at
+       FROM topics
+       WHERE team_id = $1 AND status = 'active'
+       ORDER BY display_order ASC`,
+      [teamId],
+    );
+
+    // Task 7.3/Decision 6 — archivedBy via a join to users, not a second
+    // round trip.
+    const archivedResult = await db.query<{
+      id: string;
+      name: string;
+      prompt: string;
+      vote_type: string;
+      is_default: boolean;
+      archived_at: Date;
+      archived_by: string | null;
+      archived_by_display_name: string | null;
+    }>(
+      `SELECT t.id, t.name, t.prompt, t.vote_type, t.is_default, t.archived_at,
+              t.archived_by, u.display_name AS archived_by_display_name
+       FROM topics t
+       LEFT JOIN users u ON u.id = t.archived_by
+       WHERE t.team_id = $1 AND t.status = 'archived'
+       ORDER BY t.archived_at DESC`,
+      [teamId],
+    );
+
+    const defaultTopicsResult = await db.query<{
+      default_topic_id: string;
+      default_topic_name: string;
+      team_topic_id: string | null;
+      team_topic_status: string | null;
+    }>(
+      `SELECT dt.id AS default_topic_id, dt.name AS default_topic_name,
+              t.id AS team_topic_id, t.status AS team_topic_status
+       FROM topics dt
+       LEFT JOIN topics t ON t.team_id = $1 AND t.name = dt.name
+       WHERE dt.team_id = $2 AND dt.is_default = true
+       ORDER BY dt.display_order ASC`,
+      [teamId, DEFAULT_TOPICS_TEAM_ID],
+    );
+
+    const isCustomizationLocked = !(await hasCompletedFirstSession(teamId));
+
+    const responseBody: GetAllTopicsResponse = {
+      teamId,
+      teamName,
+      isCustomizationLocked,
+      active: activeResult.rows.map((row) => ({
+        topicId: row.id,
+        name: row.name,
+        prompt: row.prompt,
+        voteType: row.vote_type as GetAllTopicsResponse["active"][number]["voteType"],
+        displayOrder: row.display_order,
+        isDefault: row.is_default,
+        firstSessionDescription: row.first_session_description,
+        teamAnnotation: null,
+        createdAt: row.created_at.toISOString(),
+        updatedAt: row.updated_at.toISOString(),
+      })),
+      archived: archivedResult.rows.map((row) => ({
+        topicId: row.id,
+        name: row.name,
+        prompt: row.prompt,
+        voteType: row.vote_type as GetAllTopicsResponse["archived"][number]["voteType"],
+        isDefault: row.is_default,
+        archivedAt: row.archived_at.toISOString(),
+        archivedBy:
+          row.archived_by && row.archived_by_display_name
+            ? { userId: row.archived_by, displayName: row.archived_by_display_name }
+            : null,
+      })),
+      defaultTopicsNotActive: defaultTopicsResult.rows
+        .filter((row) => row.team_topic_status !== "active")
+        .map((row) => ({
+          topicId: row.team_topic_id ?? row.default_topic_id,
+          name: row.default_topic_name,
+          isArchived: row.team_topic_status === "archived",
+        })),
+    };
+
+    await applyTimingFloor(startTime);
+    return noStore(reply).send(responseBody);
   });
 
   // -------------------------------------------------------------------------

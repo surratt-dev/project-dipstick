@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { TeamPage } from "../TeamPage.js";
 
 vi.mock("../../auth/AuthContext.js", () => ({
@@ -135,6 +135,24 @@ describe("TeamPage", () => {
         "You've joined the team. Your facilitator will share what comes next.",
       ),
     ).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // remove-topic, design.md Decision 10's nav-entry-point resolution
+  // (tasks.md Task 9.6) — a discoverable link to Topic Management.
+  // ---------------------------------------------------------------------------
+  it("renders a discoverable Topics nav link to /team/:teamId/topics", () => {
+    render(
+      <MemoryRouter initialEntries={["/team/t1"]}>
+        <Routes>
+          <Route path="/team/:teamId" element={<TeamPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByTestId("nav-topic-management");
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/team/t1/topics");
   });
 });
 

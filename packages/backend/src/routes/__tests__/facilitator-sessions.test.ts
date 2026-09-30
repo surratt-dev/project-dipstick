@@ -1425,6 +1425,49 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     // Neither the reveal-write style publish nor a partial response ever ran.
     expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // Task 8.1/8.2 (remove-topic, design.md Decision 8) — the zero-active-topics
+  // crash fix. Previously an unhandled `throw new Error(...)` inside the
+  // transaction, surfaced as an unhandled 500; now a clean 409 with no
+  // sessions.status transition.
+  // -------------------------------------------------------------------------
+  it("returns a clean 409 (not an unhandled 500) when the session has no session_topics row at display_order 1", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          status: "pre_session", is_first_session: false,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] });
+
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // SELECT first topic — no session_topics row at display_order 1
+      { rows: [] }, // ROLLBACK
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.error.category).toBe("invalid_request");
+    expect(body.error.message).toBe(
+      "This session has no topics configured and cannot begin voting.",
+    );
+    expect(body.error.code).toBeUndefined();
+
+    const rollbackCall = client.query.mock.calls.find((call) => call[0] === "ROLLBACK");
+    expect(rollbackCall).toBeDefined();
+    const updateSessionsCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).toLowerCase().includes("update sessions"),
+    );
+    expect(updateSessionsCall).toBeUndefined();
+    expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
