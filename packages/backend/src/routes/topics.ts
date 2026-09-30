@@ -9,7 +9,11 @@ import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
 import { getOpenActionItemsForTopic } from "../auth/open-action-items-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import type { SessionData } from "../auth/session-store.js";
-import type { ArchiveTopicResponse, ArchiveTopicConfirmationRequired } from "@dipstick/shared";
+import type {
+  ArchiveTopicResponse,
+  ArchiveTopicConfirmationRequired,
+  RestoreTopicResponse,
+} from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // Topic write routes — topic-customization-lock-and-add-custom-topic (#49/#50)
@@ -394,6 +398,75 @@ async function checkTopicExistsAndActive(
   return { rejected: false };
 }
 
+// ---------------------------------------------------------------------------
+// Task 2.1 — TOPIC-005 identity/role check
+//
+// design.md Decision 1: calls the shared, decision-only
+// checkStandingFacilitatorOrAdminAuthorization verbatim — the same function
+// TOPIC-002/TOPIC-004 already call — not a new, TOPIC-005-specific check.
+// Because the shared function is decision-only (no reply, no
+// applyTimingFloor), this wrapper writes its own TOPIC-005-appropriate
+// message and applies the timing floor itself, on both reason branches.
+// ---------------------------------------------------------------------------
+async function checkRestoreTopicAuthorization(
+  reply: FastifyReply,
+  userId: string,
+  teamId: string,
+  startTime: number,
+): Promise<AuthorizationResult> {
+  const decision = await checkStandingFacilitatorOrAdminAuthorization(userId, teamId);
+
+  if (!decision.authorized) {
+    const message =
+      decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
+        ? "A facilitator cannot restore a topic for a team they are a member of."
+        : "Only a facilitator or an application admin can restore a topic.";
+
+    await applyTimingFloor(startTime);
+    await reply.code(403).send(buildErrorEnvelope("forbidden", message, decision.reason));
+    return { rejected: true };
+  }
+
+  return { rejected: false, actorGlobalRole: decision.actorGlobalRole };
+}
+
+// ---------------------------------------------------------------------------
+// Task 2.3/2.4 — TOPIC-005 topic existence/ownership and status checks
+//
+// Evaluated only after the identity/role, team existence, and customization
+// lock checks all pass (design.md Decision 2's cascade, steps 4-5). Mirrors
+// checkTopicExistsAndActive's shape, inverted for restore's direction: the
+// precondition is status = 'archived', not status = 'active'.
+// ---------------------------------------------------------------------------
+async function checkTopicExistsAndArchived(
+  reply: FastifyReply,
+  teamId: string,
+  topicId: string,
+  startTime: number,
+): Promise<{ rejected: boolean }> {
+  const result = await db.query<{ id: string; status: string }>(
+    `SELECT id, status FROM topics WHERE id = $1 AND team_id = $2`,
+    [topicId, teamId],
+  );
+
+  if (result.rows.length === 0) {
+    await applyTimingFloor(startTime);
+    await reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+    return { rejected: true };
+  }
+
+  const topicRow = result.rows[0] as { id: string; status: string };
+  if (topicRow.status !== "archived") {
+    await applyTimingFloor(startTime);
+    await reply
+      .code(422)
+      .send(buildErrorEnvelope("invalid_request", "This topic is already active.", "TOPIC_ALREADY_ACTIVE"));
+    return { rejected: true };
+  }
+
+  return { rejected: false };
+}
+
 export async function topicRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   // POST /api/v1/teams/:teamId/topics  (TOPIC-003, Add Custom Topic)
@@ -732,6 +805,163 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
         topicId,
         status: "archived",
         archivedAt: archivedAt.toISOString(),
+      };
+      return reply.code(200).send(successResponse);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/teams/:teamId/topics/:topicId/restore  (TOPIC-005, Restore
+  // Topic)
+  //
+  // Check-ordering cascade (design.md Decision 2, spec.md "Restore Topic
+  // evaluates checks in a fixed order"):
+  //   1. Identity/role authorization (Decision 1) -- 403 NOT_A_FACILITATOR /
+  //      FACILITATOR_IS_TEAM_MEMBER, admits application_admin.
+  //   2. Team existence (reused unchanged from TOPIC-003/004) -- 404.
+  //   3. Customization lock (reused unchanged from TOPIC-003/004) -- 409
+  //      TOPIC_CUSTOMIZATION_LOCKED, audited via writeLockDenialAudit.
+  //   4. Topic existence/ownership -- 404 TOPIC_NOT_FOUND.
+  //   5. Topic status -- 422 TOPIC_ALREADY_ACTIVE.
+  //   6. Advisory-lock-guarded append-position reposition and status flip
+  //      (Decision 3) -- 200 OK.
+  //
+  // One step shorter than TOPIC-004's cascade by design: restoring a topic
+  // only ever increases a team's active count, so no last-active-topic-shaped
+  // guard exists in this direction (design.md Decision 2).
+  //
+  // Every early-return in this cascade, plus the 200 success outcome,
+  // applies applyTimingFloor(startTime) -- no branch is exempt.
+  // -------------------------------------------------------------------------
+  app.post<{
+    Params: { teamId: string; topicId: string };
+  }>("/api/v1/teams/:teamId/topics/:topicId/restore", async (request, reply) => {
+    const startTime = Date.now();
+    const session = request.session as unknown as SessionData;
+    const { teamId, topicId } = request.params;
+    const endpoint = "POST /api/v1/teams/:teamId/topics/:topicId/restore";
+
+    // Step 1 -- 403, checked first.
+    const authResult = await checkRestoreTopicAuthorization(reply, session.userId, teamId, startTime);
+    if (authResult.rejected) {
+      return reply;
+    }
+
+    // Step 2 -- 404, checked second. Reused unchanged from TOPIC-003/004.
+    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    if (existsResult.rejected) {
+      return reply;
+    }
+
+    // Step 3 -- 409, checked third. Reused unchanged from TOPIC-003/004,
+    // including its writeLockDenialAudit call (the shared
+    // topic.write_denied_locked operation, no new per-endpoint variant).
+    const lockResult = await checkCustomizationLockGate(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.restored",
+      },
+      startTime,
+    );
+    if (lockResult.rejected) {
+      return reply;
+    }
+
+    // Steps 4/5 -- topic existence (404) then topic status (422).
+    const topicCheck = await checkTopicExistsAndArchived(reply, teamId, topicId, startTime);
+    if (topicCheck.rejected) {
+      return reply;
+    }
+
+    // Step 6 -- append-position reposition, status flip, and provenance,
+    // all inside one transaction guarded by the same per-team advisory lock
+    // TOPIC-003/004 already use (design.md Decision 3's SQL block).
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1::text))", [teamId]);
+
+      const maxResult = await client.query<{ new_position: number }>(
+        `SELECT COALESCE(MAX(display_order), 0) + 1 AS new_position
+         FROM topics
+         WHERE team_id = $1 AND status = 'active'`,
+        [teamId],
+      );
+      const newPosition = (maxResult.rows[0] as { new_position: number }).new_position;
+
+      const restoreResult = await client.query<{ name: string; restored_at: Date }>(
+        `UPDATE topics
+            SET status = 'active',
+                display_order = $1,
+                restored_at = now(),
+                restored_by = $2
+          WHERE id = $3 AND team_id = $4 AND status = 'archived'
+          RETURNING name, restored_at`,
+        [newPosition, session.userId, topicId, teamId],
+      );
+
+      if (restoreResult.rows.length === 0) {
+        // Topic was restored (or re-archived) by a concurrent request
+        // between the topic-status pre-check and this UPDATE -- both
+        // serialized per-team by the advisory lock, but the pre-check
+        // itself runs before the lock is taken. Same race shape as the
+        // DELETE handler's TOPIC_ALREADY_ARCHIVED branch above, mirrored
+        // for restore (design.md Decision 3).
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply
+          .code(422)
+          .send(
+            buildErrorEnvelope("invalid_request", "This topic is already active.", "TOPIC_ALREADY_ACTIVE"),
+          );
+      }
+
+      const restoredRow = restoreResult.rows[0] as { name: string; restored_at: Date };
+
+      // Task 4.1 — success audit row, same transaction as the UPDATE.
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          authResult.actorGlobalRole,
+          request.ip,
+          "topic.restored",
+          teamId,
+          JSON.stringify({ topic_id: topicId }),
+        ],
+      );
+
+      await client.query("COMMIT");
+
+      // Task 4.2 — structured-log counterpart, matching topic.archived's
+      // pairing.
+      emitAuditEvent(request.log, "topic.restored", {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        topicId,
+      });
+
+      await applyTimingFloor(startTime);
+      const successResponse: RestoreTopicResponse = {
+        topicId,
+        name: restoredRow.name,
+        status: "active",
+        displayOrder: newPosition,
+        restoredAt: restoredRow.restored_at.toISOString(),
       };
       return reply.code(200).send(successResponse);
     } catch (err) {

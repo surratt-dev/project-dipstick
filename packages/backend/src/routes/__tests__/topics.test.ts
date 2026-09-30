@@ -1388,3 +1388,433 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });
+
+// =============================================================================
+// POST /api/v1/teams/:teamId/topics/:topicId/restore  (TOPIC-005,
+// re-add-removed-topic)
+// =============================================================================
+
+/** Standard happy path through all four gate checks TOPIC-005 shares before its transaction. */
+function mockPassAllRestoreGates(topicStatus: "archived" = "archived") {
+  mockAuthQuery("facilitator", false);
+  mockTeamExists(true);
+  mockLockCount(1);
+  mockTopicExists(topicStatus);
+}
+
+/**
+ * Mock client for the restore handler's transaction. Queue order:
+ * BEGIN, pg_advisory_xact_lock, MAX(display_order) read,
+ * UPDATE ... RETURNING (empty rows on the zero-rows race branch),
+ * [INSERT audit_log, COMMIT] or [ROLLBACK].
+ */
+function mockRestoreTransaction(opts: {
+  newPosition: number;
+  name?: string;
+  restoredAt?: Date;
+  zeroRows?: boolean;
+}) {
+  const { newPosition, name = "Topic A", restoredAt = new Date("2026-09-30T00:00:00.000Z"), zeroRows = false } =
+    opts;
+  const responses: Array<{ rows: unknown[] }> = [
+    { rows: [] }, // BEGIN
+    { rows: [] }, // pg_advisory_xact_lock
+    { rows: [{ new_position: newPosition }] }, // MAX read
+  ];
+
+  if (zeroRows) {
+    responses.push({ rows: [] }); // UPDATE — zero rows (concurrent race)
+    responses.push({ rows: [] }); // ROLLBACK
+    const client = makeMockClient(responses);
+    mockDbConnect.mockResolvedValueOnce(client);
+    return client;
+  }
+
+  responses.push({ rows: [{ name, restored_at: restoredAt }] }); // UPDATE
+  responses.push({ rows: [] }); // INSERT audit_log
+  responses.push({ rows: [] }); // COMMIT
+  const client = makeMockClient(responses);
+  mockDbConnect.mockResolvedValueOnce(client);
+  return client;
+}
+
+// -----------------------------------------------------------------------
+// Task 2.7/3.9 — identity/role scenarios
+// -----------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (design.md Decision 1)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("a standing facilitator who is not a team member succeeds", async () => {
+    mockPassAllRestoreGates();
+    mockRestoreTransaction({ newPosition: 3 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("an application_admin succeeds for any team, including one they are an active member of", async () => {
+    mockAuthQuery("application_admin", true);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("archived");
+    mockRestoreTransaction({ newPosition: 3 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("a caller who is neither a facilitator nor an admin is rejected 403 NOT_A_FACILITATOR", async () => {
+    mockAuthQuery("engineer", false);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("a facilitator who is an active member of the team is rejected 403 FACILITATOR_IS_TEAM_MEMBER", async () => {
+    mockAuthQuery("facilitator", true);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
+  });
+
+  it("treats a caller with no user row the same as not-a-facilitator (403)", async () => {
+    mockAuthQueryNoUser();
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 2.6 — "Restore Topic evaluates checks in a fixed order"
+// -----------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering (design.md Decision 2)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("a non-facilitator against a nonexistent team/topic receives 403, revealing nothing else", async () => {
+    mockAuthQuery("engineer", false);
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("a nonexistent team is rejected 404 before the lock or topic are evaluated", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(false);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/nonexistent-team/topics/topic-1/restore",
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("a locked team's rejection (409) takes priority over an already-active topic's state", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
+    // The topic-existence query is never reached.
+    expect(mockDbQuery).toHaveBeenCalledTimes(4);
+  });
+
+  it("a nonexistent topic is rejected 404 TOPIC_NOT_FOUND after the lock passes", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists(null);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/teams/team-1/topics/nonexistent-topic/restore",
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TOPIC_NOT_FOUND");
+  });
+
+  it("an already-active topic is rejected 422 TOPIC_ALREADY_ACTIVE, and the transaction is never opened", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("active");
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 3.1/3.5/3.6/3.8 — append-position reposition, zero-rows race, and
+// provenance
+// -----------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and provenance (design.md Decision 3/4)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("appends the restored topic at max(active display_order) + 1", async () => {
+    mockPassAllRestoreGates();
+    const client = mockRestoreTransaction({ newPosition: 4 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.displayOrder).toBe(4);
+    expect(body.status).toBe("active");
+
+    const updateCall = client.query.mock.calls.find((call) => (call[0] as string).includes("UPDATE topics"));
+    expect(updateCall).toBeDefined();
+    expect((updateCall![1] as unknown[])[0]).toBe(4);
+  });
+
+  it("opens the transaction with the advisory lock before the MAX(display_order) read (design.md Decision 3)", async () => {
+    mockPassAllRestoreGates();
+    const client = mockRestoreTransaction({ newPosition: 2 });
+
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    const calls = client.query.mock.calls.map((call) => call[0] as string);
+    const lockIndex = calls.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
+    const maxIndex = calls.findIndex((sql) => sql.includes("COALESCE(MAX(display_order)"));
+    expect(lockIndex).toBeGreaterThan(-1);
+    expect(maxIndex).toBeGreaterThan(-1);
+    expect(lockIndex).toBeLessThan(maxIndex);
+  });
+
+  it("the UPDATE leaves archived_at/archived_by untouched, setting only restored_at/restored_by (design.md Decision 4)", async () => {
+    mockPassAllRestoreGates();
+    const client = mockRestoreTransaction({ newPosition: 2 });
+
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    const updateCall = client.query.mock.calls.find((call) => (call[0] as string).includes("UPDATE topics"));
+    const sql = updateCall![0] as string;
+    expect(sql).toContain("restored_at = now()");
+    expect(sql).toContain("restored_by = $2");
+    expect(sql).not.toContain("archived_at");
+    expect(sql).not.toContain("archived_by");
+  });
+
+  it("a zero-rows UPDATE (concurrent race) rolls back and responds 422 TOPIC_ALREADY_ACTIVE", async () => {
+    mockPassAllRestoreGates();
+    const client = mockRestoreTransaction({ newPosition: 2, zeroRows: true });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
+    const rollbackCall = client.query.mock.calls.find((call) => call[0] === "ROLLBACK");
+    expect(rollbackCall).toBeDefined();
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 4.3/4.4 — audit logging for successful restores
+// -----------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (design.md Decision 6)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("a successful restore writes a topic.restored audit row", async () => {
+    mockPassAllRestoreGates();
+    const client = mockRestoreTransaction({ newPosition: 2 });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(200);
+    const auditCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall![1]).toContain("topic.restored");
+    expect(auditCall![1]).toContain("team-1");
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "topic.restored",
+      expect.objectContaining({ teamId: "team-1", topicId: "topic-1" }),
+    );
+  });
+
+  it("no audit_log row is written when rejected at identity/role (never opens a transaction)", async () => {
+    mockAuthQuery("engineer", false);
+
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("no topic.restored audit row is written when rejected by the zero-rows race (422)", async () => {
+    mockPassAllRestoreGates();
+    const client = mockRestoreTransaction({ newPosition: 2, zeroRows: true });
+
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    const auditCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditCall).toBeUndefined();
+  });
+
+  it("the lock-denied rejection is audited under the shared topic.write_denied_locked operation, not a new variant", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    expect(res.statusCode).toBe(409);
+    const auditCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    );
+    expect(auditCall![1]).toContain("topic.write_denied_locked");
+    const metadata = JSON.parse((auditCall![1] as unknown[])[5] as string);
+    expect(metadata.attempted_operation).toBe("topic.restored");
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 8.2 — timing floor applied on every branch
+// -----------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor applied on every branch", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("applies the timing floor on the 403 branch", async () => {
+    mockAuthQuery("engineer", false);
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 404 (team) branch", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(false);
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 409 lock branch", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 404 (topic) branch", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists(null);
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 422 TOPIC_ALREADY_ACTIVE (precheck) branch", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("active");
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 422 TOPIC_ALREADY_ACTIVE (zero-rows race) branch", async () => {
+    mockPassAllRestoreGates();
+    mockRestoreTransaction({ newPosition: 2, zeroRows: true });
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies the timing floor on the 200 success branch", async () => {
+    mockPassAllRestoreGates();
+    mockRestoreTransaction({ newPosition: 2 });
+    const app = await buildApp();
+    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+});
+
+// -----------------------------------------------------------------------
+// Error envelope shape (design.md Decision 4, matching TOPIC-003/004)
+// -----------------------------------------------------------------------
+describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — error envelope shape", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("the 422 TOPIC_ALREADY_ACTIVE rejection carries the stable reason code and message, nested under error", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("active");
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    const body = res.json();
+    expect(body.error.category).toBe("invalid_request");
+    expect(body.error.code).toBe("TOPIC_ALREADY_ACTIVE");
+    expect(body.error.message).toBe("This topic is already active.");
+    expect(typeof body.error.correlationId).toBe("string");
+    expect(body.error.correlationId.length).toBeGreaterThan(0);
+  });
+
+  it("never ships a bare top-level { code, message } body without the error envelope", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+    mockTopicExists("active");
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+
+    const body = res.json();
+    expect(body.code).toBeUndefined();
+    expect(body.message).toBeUndefined();
+    expect(body.error).toBeDefined();
+  });
+});

@@ -4,11 +4,13 @@ import type {
   GetAllTopicsResponse,
   ArchiveTopicResponse,
   ArchiveTopicConfirmationRequired,
+  RestoreTopicResponse,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // TopicManagementPage — remove-topic, design.md Decision 10, tasks.md
-// Section 9.
+// Section 9. Extended by re-add-removed-topic, design.md Decision 5, tasks.md
+// Section 6.
 //
 // A minimal, calm screen: the active topic list with a "Remove" action per
 // row (Task 9.2), a single confirmation dialog that escalates in place when
@@ -16,10 +18,14 @@ import type {
 // (Task 9.3, following MemberManagement.tsx's existing two-step
 // confirm/re-submit pattern — no new shared Modal/ConfirmDialog component),
 // a specific message for the last-active-topic hard block (Task 9.4), and
-// the archived-topics view with facilitator-visible provenance (Task 9.5).
+// the archived-topics view with facilitator-visible provenance (Task 9.5),
+// now extended with a "Restore" action and a single-step confirmation
+// dialog (re-add-removed-topic Task 6.1-6.3) reusing this same local-state,
+// no-shared-Modal pattern.
 // ---------------------------------------------------------------------------
 
 type ActiveTopic = GetAllTopicsResponse["active"][number];
+type ArchivedTopic = GetAllTopicsResponse["archived"][number];
 
 type RemoveTopicState =
   | { status: "idle" }
@@ -33,6 +39,15 @@ type RemoveTopicState =
       message: string;
     }
   | { status: "blocked_last_active"; topicId: string; message: string }
+  | { status: "error"; topicId: string; message: string };
+
+// Task 6.2 (design.md Decision 5): a single-step confirmation — no
+// escalation branch exists in this direction, since restoring only ever
+// increases the active count.
+type RestoreTopicState =
+  | { status: "idle" }
+  | { status: "confirming"; topic: ArchivedTopic }
+  | { status: "submitting"; topic: ArchivedTopic }
   | { status: "error"; topicId: string; message: string };
 
 const VOTE_TYPE_LABELS: Record<string, string> = {
@@ -127,6 +142,53 @@ function RemoveTopicDialog({ state, teamName, onCancel, onConfirm, onConfirmAnyw
   );
 }
 
+interface RestoreTopicDialogProps {
+  state: Extract<RestoreTopicState, { status: "confirming" | "submitting" }>;
+  teamName: string;
+  onCancel: () => void;
+  onConfirm: (topic: ArchivedTopic) => void;
+}
+
+// Task 6.3 (design.md Decision 5): a single dialog, matching
+// RemoveTopicDialog's plain, one-line tone. No "gap will be visible in
+// trend views" clause — the trend-gap signal is deferred to a follow-up
+// change (proposal.md "Scope Decision").
+function RestoreTopicDialog({ state, teamName, onCancel, onConfirm }: RestoreTopicDialogProps) {
+  const topic = state.topic;
+  const isSubmitting = state.status === "submitting";
+
+  return (
+    <div
+      role="alertdialog"
+      aria-labelledby="restore-topic-dialog-heading"
+      data-testid="restore-topic-dialog"
+      style={{
+        marginTop: "1rem",
+        padding: "1rem",
+        backgroundColor: "#e8f5e9",
+        border: "1px solid #a5d6a7",
+        borderRadius: "4px",
+      }}
+    >
+      <p id="restore-topic-dialog-heading" data-testid="restore-topic-dialog-heading">
+        Restore &ldquo;{topic.name}&rdquo; for {teamName}? Historical data will be restored.
+      </p>
+      <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
+        <button
+          onClick={() => onConfirm(topic)}
+          disabled={isSubmitting}
+          data-testid={`confirm-restore-${topic.topicId}`}
+        >
+          {isSubmitting ? "Restoring…" : "Confirm"}
+        </button>
+        <button onClick={onCancel} disabled={isSubmitting} data-testid={`cancel-restore-${topic.topicId}`}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function TopicManagementPage() {
   const { teamId } = useParams<{ teamId: string }>();
   const [data, setData] = useState<GetAllTopicsResponse | null>(null);
@@ -134,6 +196,7 @@ export function TopicManagementPage() {
   const [loading, setLoading] = useState(true);
   const [showArchived, setShowArchived] = useState(false);
   const [removeState, setRemoveState] = useState<RemoveTopicState>({ status: "idle" });
+  const [restoreState, setRestoreState] = useState<RestoreTopicState>({ status: "idle" });
 
   const loadTopics = useCallback(async () => {
     if (!teamId) return;
@@ -238,6 +301,53 @@ export function TopicManagementPage() {
     [teamId, loadTopics],
   );
 
+  const startRestore = useCallback((topic: ArchivedTopic) => {
+    setRestoreState({ status: "confirming", topic });
+  }, []);
+
+  const cancelRestore = useCallback(() => {
+    setRestoreState({ status: "idle" });
+  }, []);
+
+  const submitRestore = useCallback(
+    async (topic: ArchivedTopic) => {
+      if (!teamId) return;
+      setRestoreState({ status: "submitting", topic });
+
+      try {
+        const res = await fetch(`/api/v1/teams/${teamId}/topics/${topic.topicId}/restore`, {
+          method: "POST",
+          credentials: "include",
+        });
+
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+          setRestoreState({
+            status: "error",
+            topicId: topic.topicId,
+            message: body?.error?.message ?? "Unable to restore this topic.",
+          });
+          return;
+        }
+
+        (await res.json()) as RestoreTopicResponse;
+
+        // Success — close the dialog and refresh the list (Task 6.3): the
+        // restored topic disappears from archived[] and appears in
+        // active[] on the next fetch.
+        setRestoreState({ status: "idle" });
+        await loadTopics();
+      } catch {
+        setRestoreState({
+          status: "error",
+          topicId: topic.topicId,
+          message: "Network error while restoring.",
+        });
+      }
+    },
+    [teamId, loadTopics],
+  );
+
   if (loading) return <p>Loading topics…</p>;
 
   if (error) {
@@ -259,6 +369,9 @@ export function TopicManagementPage() {
     removeState.status === "awaiting_open_items_confirmation"
       ? removeState
       : null;
+
+  const restoreDialogState =
+    restoreState.status === "confirming" || restoreState.status === "submitting" ? restoreState : null;
 
   return (
     <div
@@ -414,6 +527,45 @@ export function TopicManagementPage() {
                     Archived {new Date(topic.archivedAt).toLocaleString()}
                     {topic.archivedBy ? ` by ${topic.archivedBy.displayName}` : ""}
                   </div>
+                  {/* Task 6.1b/Decision 4: a second provenance line, present
+                      only when this topic has previously been restored. */}
+                  {topic.restoredAt && (
+                    <div data-testid={`restored-provenance-${topic.topicId}`}>
+                      Restored {new Date(topic.restoredAt).toLocaleString()}
+                      {topic.restoredBy ? ` by ${topic.restoredBy.displayName}` : ""}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: "0.5rem" }}>
+                    <button onClick={() => startRestore(topic)} data-testid={`restore-topic-${topic.topicId}`}>
+                      Restore
+                    </button>
+                  </div>
+
+                  {restoreState.status === "error" && restoreState.topicId === topic.topicId && (
+                    <div
+                      role="alert"
+                      data-testid={`restore-error-${topic.topicId}`}
+                      style={{
+                        marginTop: "0.75rem",
+                        padding: "0.75rem 1rem",
+                        backgroundColor: "#fce4e4",
+                        border: "1px solid #e57373",
+                        borderRadius: "4px",
+                      }}
+                    >
+                      {restoreState.message}
+                    </div>
+                  )}
+
+                  {restoreDialogState && restoreDialogState.topic.topicId === topic.topicId && (
+                    <RestoreTopicDialog
+                      state={restoreDialogState}
+                      teamName={data.teamName || "this team"}
+                      onCancel={cancelRestore}
+                      onConfirm={(t) => void submitRestore(t)}
+                    />
+                  )}
                 </li>
               ))}
             </ul>
