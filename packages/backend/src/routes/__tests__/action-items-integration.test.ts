@@ -136,4 +136,90 @@ describe.skipIf(!dbUp)("action-items — real Postgres round-trip (task 6.3)", (
       await db.query(`DELETE FROM users WHERE id = $1`, [userId]);
     }
   });
+
+  // ---------------------------------------------------------------------
+  // Task 4.12 (reassign-action-item-owner, VOTE-004, GitHub issue #108):
+  // the action_item_history_owner_columns_symmetric CHECK constraint
+  // (migration 15) — real Postgres coverage, since a mocked unit test
+  // cannot prove a database CHECK constraint exists or enforces the
+  // symmetric-nullability invariant it claims to (design.md Decision D7).
+  // ---------------------------------------------------------------------
+  describe("action_item_history owner-columns CHECK constraint (migration 15)", () => {
+    it("rejects an insert with exactly one of previous_owner_id/new_owner_id non-null", async () => {
+      const userId = "55555555-5555-5555-5555-555555555555";
+      const otherUserId = "66666666-6666-6666-6666-666666666666";
+      const teamId = "77777777-7777-7777-7777-777777777777";
+      const sessionId = "88888888-8888-8888-8888-888888888888";
+      const itemId = "99999999-9999-9999-9999-999999999999";
+      const { db } = mods;
+
+      try {
+        await db.query(
+          `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
+           VALUES ($1, $2, 'test-issuer', 'Integration Test User (owner columns)', $3, 'engineer')`,
+          [userId, `sub-${userId}`, `${userId}@example.com`],
+        );
+        await db.query(
+          `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
+           VALUES ($1, $2, 'test-issuer', 'Integration Test User 2 (owner columns)', $3, 'engineer')`,
+          [otherUserId, `sub-${otherUserId}`, `${otherUserId}@example.com`],
+        );
+        await db.query(`INSERT INTO teams (id, name, created_by_user_id) VALUES ($1, $2, $3)`, [
+          teamId,
+          "Integration Test Team (owner columns)",
+          userId,
+        ]);
+        await db.query(
+          `INSERT INTO sessions (id, team_id, facilitator_id, status)
+           VALUES ($1, $2, $3, 'complete')`,
+          [sessionId, teamId, userId],
+        );
+        await db.query(
+          `INSERT INTO action_items (id, team_id, session_id, owner_id, description, status)
+           VALUES ($1, $2, $3, $4, 'Integration test action item (owner columns)', 'open')`,
+          [itemId, teamId, sessionId, userId],
+        );
+
+        // Exactly one of the two columns non-null: rejected by the CHECK
+        // constraint (previous_owner_id set, new_owner_id NULL).
+        await expect(
+          db.query(
+            `INSERT INTO action_item_history
+               (action_item_id, changed_by_user_id, previous_status, new_status, previous_owner_id, session_id)
+             VALUES ($1, $2, 'open', 'open', $3, $4)`,
+            [itemId, userId, userId, sessionId],
+          ),
+        ).rejects.toThrow(/action_item_history_owner_columns_symmetric/);
+
+        // Both non-null: accepted, and previous_status = new_status holds
+        // for this reassignment-only row (the application-level invariant
+        // spec.md states, not DB-enforced).
+        const insertResult = await db.query<{ previous_status: string; new_status: string }>(
+          `INSERT INTO action_item_history
+             (action_item_id, changed_by_user_id, previous_status, new_status, previous_owner_id, new_owner_id, session_id)
+           VALUES ($1, $2, 'open', 'open', $3, $4, $5)
+           RETURNING previous_status, new_status`,
+          [itemId, userId, userId, otherUserId, sessionId],
+        );
+        expect(insertResult.rows[0]?.previous_status).toBe(insertResult.rows[0]?.new_status);
+
+        // Both null: a valid, ordinary status-change row (pre-existing shape).
+        await expect(
+          db.query(
+            `INSERT INTO action_item_history
+               (action_item_id, changed_by_user_id, previous_status, new_status, session_id)
+             VALUES ($1, $2, 'open', 'in_progress', $3)`,
+            [itemId, userId, sessionId],
+          ),
+        ).resolves.toBeDefined();
+      } finally {
+        await db.query(`DELETE FROM action_item_history WHERE action_item_id = $1`, [itemId]);
+        await db.query(`DELETE FROM action_items WHERE id = $1`, [itemId]);
+        await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
+        await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
+        await db.query(`DELETE FROM users WHERE id = $1`, [userId]);
+        await db.query(`DELETE FROM users WHERE id = $1`, [otherUserId]);
+      }
+    });
+  });
 });

@@ -310,7 +310,21 @@ export type AuditEventName =
   // membership_removed_at checks evaluateSessionSubscriberAccess Path 1
   // already applies.
   | "session.participant_registered"
-  | "session.participant_registration_rejected";
+  | "session.participant_registration_rejected"
+  // action_item.owner_reassigned: reassign-action-item-owner (VOTE-004,
+  // GitHub issue #108), design.md Decision D10. This endpoint's `audit_log`
+  // row is written in the same transaction as the action_items.owner_id
+  // update (or, on the same-owner no-op path per Decision D6's amendment,
+  // the updated_at-only bump) and, for a real reassignment, the
+  // action_item_history insert — matching action_item.status_changed's
+  // dual-write shape. Unlike that event, this one also fires on the no-op
+  // path (metadata.no_op: true), since a same-owner reassignment still
+  // resets action_items.updated_at — the pre-session review screen's
+  // staleness signal — on demand and repeatably, and that effect must be
+  // reconstructable from the audit trail even though nothing changed in
+  // action_item_history. metadata: { action_item_id, previous_owner_id,
+  // new_owner_id, session_id, no_op? }.
+  | "action_item.owner_reassigned";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

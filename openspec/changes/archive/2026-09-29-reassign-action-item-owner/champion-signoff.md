@@ -1,0 +1,26 @@
+# Champion Sign-Off — `reassign-action-item-owner` (VOTE-004 / #108)
+
+**Reviewer:** Devon Calloway, Internal Champion
+**Scope:** Fidelity check against the ritual's structural constraints, per proposal.md's own stated test — the no-manager-participation rule and facilitator authority being session-scoped, not standing. Read proposal.md, design.md, tasks.md, both implementation review files, and spot-checked the shipped handler in `packages/backend/src/routes/action-items.ts`.
+
+## Verdict: Clean pass.
+
+## What I checked, and why I believe it holds
+
+**No-manager-participation rule (BRD FR-9.5).** This endpoint never lets a facilitator hand an accountable action item to an Engineering Manager. The new-owner eligibility check in the shipped handler reads a membership row unfiltered (`SELECT role, removed_at FROM team_memberships WHERE user_id = $1 AND team_id = $2`) and rejects with `422` unless `removed_at IS NULL AND role === 'participant'` — checked as an exact string match against `role`, not "does a membership row exist." `membership_role` is a closed two-value enum (`participant`, `engineering_manager`, `migrations/1_create_enums.sql`), so there's no silent third value this check could miss. Both branches — EM rejected, soft-removed member rejected — have independent test coverage, not one test standing in for both. This is precisely the shape I'd have insisted on if I'd been in the room: the constraint is enforced as a positive assertion ("must be exactly this role") rather than a negative one ("must not be found to be excluded"), which is the difference between a wall and a guideline.
+
+I also specifically wanted to know whether the design or implementation ever took a shortcut through `evaluateTeamAccess` for this check, since that helper's `LEFT JOIN ... AND tm.removed_at IS NULL` shape would quietly fold a soft-removed member into "no row" and misroute it. Both implementation reviews (architect and security) independently traced this and confirmed the new-owner membership lookup is its own standalone query, not routed through that helper. That's exactly the kind of implementation pitfall that turns a correct design into a leaky one, and it was caught and named explicitly in design.md (D5's implementation note) before it could become a bug.
+
+**Facilitator authority is session-scoped, not standing.** The endpoint's authorization reuses VOTE-002's `EXISTS (SELECT 1 FROM sessions WHERE facilitator_id = $1 AND team_id = $2 AND status = ANY(ACTIVELY_FACILITATING_STATUSES))` query verbatim — no reference to `users.global_role` anywhere in the authorization path. The one place `global_role` is read in this handler, it's attached to the audit row as metadata, not consulted as a gate. This matters to me specifically because the REST API Contract document, before this change, described VOTE-004's authorization as `global_role = 'facilitator'` — a standing role check that was never actually implemented and would have been a real crack in "facilitator authority is earned by running the session, not held." That stale, wrong line is now corrected in place, dated, citing the actual mechanism. I'd rather a contract be embarrassingly corrected in public than quietly leave a standing-authority description sitting next to session-scoped code for the next person to copy from.
+
+**Structural, not configurable.** Neither constraint is exposed as a toggle, a default, or an admin setting anywhere in this diff. Both are hard-coded checks in the query/validation path. That's the property I care about most across this whole project — once something is configurable, someone configures it — and this change doesn't introduce a new place where either constraint could be softened later without touching code and tests directly.
+
+**One thing I verified rather than assumed:** the security reviewer's implementation-stage Medium finding (the same-owner no-op `UPDATE` was initially missing the `status != 'resolved'` guard that the real-reassignment path got under D11) is fixed in the code I read — the no-op path's `UPDATE` now carries the identical `AND status != 'resolved'` guard and `rowCount` check, with an inline comment citing the extension. This wasn't a constraint I named up front, but it's adjacent to the kind of "the exception becomes the norm" pattern I watch for — an unguarded second write path against a supposedly-terminal state is exactly how invariants erode in practice. Good that it was caught before merge, not after.
+
+## Not this change's problem, noted so nobody re-litigates it here
+
+This endpoint is a server-side primitive with no facilitator-facing UI yet (#68). It doesn't touch the simultaneous reveal or the facilitator-from-another-team requirement at all — those live entirely in session/voting mechanics this change doesn't go near. I have no concerns there because there's nothing here that could touch them.
+
+## Bottom line
+
+The ritual's intent is preserved. A team that never talks to me, using only this endpoint's contract, cannot reassign an action item to an EM, and cannot exercise facilitator authority without an active session — both by construction, not by convention. No exceptions, no toggles, no silent scope creep into the constraints I actually lose sleep over. Ship it.
