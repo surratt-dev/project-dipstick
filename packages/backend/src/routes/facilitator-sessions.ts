@@ -11,6 +11,7 @@ import {
   clearFacilitatorConnectedFlag,
 } from "../realtime/ws-pubsub.js";
 import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-access-helper.js";
+import { evaluateStandingFacilitatorAccess } from "../auth/standing-facilitator-access-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
 import type {
@@ -258,19 +259,13 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
-    const actorResult = await db.query<{ global_role: string; is_member: boolean }>(
-      `SELECT u.global_role,
-              (tm.id IS NOT NULL) AS is_member
-       FROM users u
-       LEFT JOIN team_memberships tm
-             ON tm.user_id = u.id
-            AND tm.team_id = $2
-            AND tm.removed_at IS NULL
-       WHERE u.id = $1`,
-      [session.userId, teamId],
-    );
+    // topic-customization-lock-and-add-custom-topic, design.md Decision 9's
+    // engineer-review (M2) addendum: this is the shared standing-facilitator
+    // authorization query, extracted so POST /api/v1/teams/:teamId/topics
+    // (topics.ts) reuses it verbatim rather than duplicating it a third time.
+    const actorGrant = await evaluateStandingFacilitatorAccess(session.userId, teamId);
 
-    if (actorResult.rows.length === 0) {
+    if (actorGrant === null) {
       return reply.code(401).send({
         error: {
           category: "session_expired" as const,
@@ -280,10 +275,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       });
     }
 
-    const { global_role, is_member } = actorResult.rows[0] as {
-      global_role: string;
-      is_member: boolean;
-    };
+    const { globalRole: global_role, isMember: is_member } = actorGrant;
 
     if (global_role !== "facilitator") {
       return reply.code(403).send({

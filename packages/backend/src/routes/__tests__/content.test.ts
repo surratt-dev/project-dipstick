@@ -299,6 +299,90 @@ describe("GET /api/v1/teams/:teamId/action-items", () => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/teams/:teamId/topics
+// topic-customization-lock-and-add-custom-topic, design.md Decision 1 /
+// tasks.md Task 2.1-2.3.
+//
+// isCustomizationLocked is computed via the shared hasCompletedFirstSession
+// lock-check function (topic-lock-helper.ts), which issues one additional
+// db.query call (COUNT(*) FROM sessions ...) after the topics SELECT.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics — isCustomizationLocked (Task 2.1-2.3)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("includes isCustomizationLocked: true for a team with zero completed sessions", async () => {
+    mockMemberGrant("participant");
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ id: "topic-1", name: "Topic 1", prompt: "Prompt 1", vote_type: "finger", display_order: 0, status: "active" }],
+    }); // topics SELECT
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] }); // hasCompletedFirstSession
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const body = res.json() as { isCustomizationLocked: boolean };
+    expect(body.isCustomizationLocked).toBe(true);
+  });
+
+  it("includes isCustomizationLocked: false for a team with at least one completed session", async () => {
+    mockMemberGrant("participant");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // topics SELECT (empty list)
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] }); // hasCompletedFirstSession
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { isCustomizationLocked: boolean };
+    expect(body.isCustomizationLocked).toBe(false);
+  });
+
+  it("is present regardless of caller role — facilitator grant", async () => {
+    mockFacilitatorGrant();
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // topics SELECT
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] }); // hasCompletedFirstSession
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { isCustomizationLocked: boolean };
+    expect(body.isCustomizationLocked).toBe(true);
+  });
+
+  it("is present regardless of caller role — engineering_manager grant", async () => {
+    mockMemberGrant("engineering_manager");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // topics SELECT
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "2" }] }); // hasCompletedFirstSession
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { isCustomizationLocked: boolean };
+    expect(body.isCustomizationLocked).toBe(false);
+  });
+
+  it("does not remap existing snake_case fields to camelCase (design.md Decision 5 addendum)", async () => {
+    mockMemberGrant("participant");
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ id: "topic-1", name: "Topic 1", prompt: "Prompt 1", vote_type: "finger", display_order: 0, status: "active" }],
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+
+    const body = res.json() as { topics: Array<Record<string, unknown>> };
+    expect(body.topics[0]).toHaveProperty("vote_type");
+    expect(body.topics[0]).toHaveProperty("display_order");
+    expect(body.topics[0]).not.toHaveProperty("voteType");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Authorization-before-lookup (Task 5.6 / Decision 7)
 //
 // Unauthorized requests must not reveal resource existence.
