@@ -62,29 +62,17 @@ jobs:
       - run: npm run test:coverage -w packages/backend
       - run: npm run test:coverage -w packages/frontend
 
-      # Publish per-package line coverage to a gist that the README's
+      # Publish backend and frontend line coverage to a gist that the README's
       # shields.io endpoint badges read. Only on main (PRs from forks have no
       # secrets) and only once the gist is configured — see docs/ci-cd.md.
       - name: Read coverage percentages
         id: coverage
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.COVERAGE_GIST_ID != ''
         run: |
-          for pkg in shared backend frontend; do
+          for pkg in backend frontend; do
             pct=$(jq -r '.total.lines.pct' "packages/$pkg/coverage/coverage-summary.json")
             echo "$pkg=$pct" >> "$GITHUB_OUTPUT"
           done
-      - name: Publish shared coverage badge
-        if: steps.coverage.outcome == 'success'
-        uses: schneegans/dynamic-badges-action@v1.7.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: ${{ vars.COVERAGE_GIST_ID }}
-          filename: dipstick-coverage-shared.json
-          label: coverage (shared)
-          message: ${{ steps.coverage.outputs.shared }}%
-          valColorRange: ${{ steps.coverage.outputs.shared }}
-          minColorRange: 50
-          maxColorRange: 100
       - name: Publish backend coverage badge
         if: steps.coverage.outcome == 'success'
         uses: schneegans/dynamic-badges-action@v1.7.0
