@@ -48,7 +48,7 @@ No **BREAKING** changes. Every schema change is additive and nullable. Every res
 - `packages/frontend/src/pages/TopicManagementPage.tsx`: the editor. No new dependencies.
 
 **Known Limitations (stated plainly):**
-> No participant or facilitator will see a team definition in a live session until both #175 (session_topics population) and #57/#56 (session screens) are delivered. This change delivers storage, the write endpoint, the management-screen editor, and annotation-bearing session payloads verified against fixtures. Team definitions are captured after the session on the Topic Management screen, not in the room. The template team can currently be targeted by topic writes (sibling-wide gap shared with TOPIC-004/005/006; #TBD (template-team write guard, see handoffs/new-issue-template-team-write-guard.md)).
+> No participant or facilitator will see a team definition in a live session until both #175 (session_topics population) and #57/#56 (session screens) are delivered. This change delivers storage, the write endpoint, the management-screen editor, and annotation-bearing session payloads verified against fixtures. Team definitions are captured after the session on the Topic Management screen, not in the room. The template team can currently be targeted by topic writes (sibling-wide gap shared with TOPIC-004/005/006; #188 (template-team write guard)).
 
 - The WebSocket reconnect snapshot carries no prompt and so no annotation. Widening it belongs to #57.
 - Overwrites are as irreversible as clears, and there is no version history (the use case rules it out). Visible current text and provenance are the mitigation.
