@@ -44,6 +44,8 @@ export type {
   ReorderTopicsResponse,
   UpdateTopicAnnotationRequest,
   UpdateTopicAnnotationResponse,
+  AddCustomTopicRequest,
+  AddCustomTopicResponse,
 } from "./types/topic.js";
 export { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";

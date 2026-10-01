@@ -522,6 +522,10 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     expect(res.statusCode).toBe(200);
   });
 
+  // topic-add-form-and-empty-state task 1.3: this rejection is also the
+  // coverage for Add Custom Topic's "Engineers cannot add topics" acceptance
+  // criterion -- an engineer (or engineering manager) never reaches the
+  // Topic Management screen, so no add control can be shown to them.
   it("a caller who is neither a standing facilitator nor an admin is rejected 403", async () => {
     mockStandingAuthQuery("engineer", false);
 
@@ -714,6 +718,47 @@ describe("GET /api/v1/teams/:teamId/topics/all — team annotation (topic-annota
   it("canEditAnnotations is false for an application admin", async () => {
     mockAllTopics("application_admin", []);
     expect((await getAll()).canEditAnnotations).toBe(false);
+  });
+
+  // topic-add-form-and-empty-state task 1.3 (design.md Decision 1).
+  it("canAddTopics is true for a standing facilitator", async () => {
+    mockAllTopics("facilitator", []);
+    expect((await getAll()).canAddTopics).toBe(true);
+  });
+
+  it("canAddTopics is false for an application admin (temporary, #176), with the full lists still returned", async () => {
+    mockAllTopics("application_admin", [{ ...activeRow, team_annotation: null }], [
+      {
+        id: "topic-old",
+        name: "Old Topic",
+        prompt: "A prompt",
+        vote_type: "finger",
+        is_default: false,
+        archived_at: new Date("2026-09-29T12:00:00.000Z"),
+        archived_by: null,
+        archived_by_display_name: null,
+        restored_at: null,
+        restored_by: null,
+        restored_by_display_name: null,
+        team_annotation: null,
+      },
+    ]);
+    const body = await getAll();
+    expect(body.canAddTopics).toBe(false);
+    expect(body.active).toHaveLength(1);
+    expect(body.archived).toHaveLength(1);
+  });
+
+  it("canAddTopics does not depend on the lock: a locked team still reports true for a facilitator", async () => {
+    mockStandingAuthQuery("facilitator", false);
+    mockTeamNameQuery();
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] }); // no completed session: locked
+    const body = await getAll();
+    expect(body.isCustomizationLocked).toBe(true);
+    expect(body.canAddTopics).toBe(true);
   });
 
   it("an application admin still receives teamAnnotation and annotationUpdatedBy, read-only (security R4)", async () => {

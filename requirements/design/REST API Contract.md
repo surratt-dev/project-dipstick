@@ -628,6 +628,7 @@ interface GetAllTopicsResponse {
   teamName: string;  // Added (`remove-topic` design.md, Task 9.2/Decision 10) — the Topic Management screen's remove-confirmation dialog must name both the topic and the team; no other endpoint reachable by a standing, non-member facilitator returns a team's display name.
   isCustomizationLocked: boolean;
   canEditAnnotations: boolean;  // Added (`topic-annotation` design.md Decision 8). true for a standing facilitator, false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7). Presentation only; TOPIC-007 enforces independently.
+  canAddTopics: boolean;  // Added (`topic-add-form-and-empty-state` design.md Decision 1). true for a standing facilitator TOPIC-002 admits; false for an application_admin. The false value is TEMPORARY, pending #176 (TOPIC-003 currently rejects administrators, contrary to FR-8.2); the #176 fix makes it true for administrators in the same change. Not derived from canEditAnnotations, whose admin exclusion (FR-8.7) is permanent. Does not consider isCustomizationLocked. Presentation only; TOPIC-003 enforces authorization and the lock independently.
   active: Array<{
     topicId: string;
     name: string;
@@ -674,7 +675,7 @@ interface GetAllTopicsResponse {
 
 **Notes**
 - **Annotation fields (`topic-annotation`):** `teamAnnotation`, `annotationUpdatedAt`, and `annotationUpdatedBy` are returned on active **and** archived entries, to standing facilitators and to administrators alike. Administrators receive them **read-only** (`canEditAnnotations: false`): topic configuration is administrative data they already read, and TOPIC-007's administrator exclusion concerns who authors the team's words, not who may view the configuration.
-- `defaultTopicsNotActive` enables the "restore defaults" UI path (FR-8.6). It enumerates canonical default topics (`is_default = true`) that are currently absent from the team's active topic list — whether because they were archived or were never seeded.
+- `defaultTopicsNotActive` enables the "restore defaults" UI path (FR-8.6). It enumerates canonical default topics (`is_default = true`) that are currently absent from the team's active topic list — whether because they were archived or were never seeded. **Not read by the Topic Management screen** (`topic-add-form-and-empty-state`; `topic-management-screen` requirement "The screen does not read `defaultTopicsNotActive`"): its name-based join can mis-match a custom topic that shares a default topic's name, and its `topicId` can refer to the template team. Whether to fix or drop the field is tracked in #197.
 - **Scope boundary:** This endpoint serves topic *configuration* only. Trend dashboard consumers (participants, EMs, facilitators viewing history) must use TREND-001, which includes archived topics in its `topics` array via `topicStatus: 'archived'`. Do not call TOPIC-002 from trend dashboard UI flows.
 
 ---
@@ -706,7 +707,7 @@ interface AddCustomTopicRequest {
   name: string;                                          // Required. Max 100 characters.
   prompt: string;                                        // Required. Max 500 characters.
   voteType: 'finger' | 'roman' | 'modified_roman';       // Required.
-  firstSessionDescription?: string;                     // Optional. Max 500 characters.
+  firstSessionDescription?: string | null;              // Optional; omitted or null means no description. Max 500 characters. Not trimmed by the server (the Topic Management screen sends the trimmed text, or null when blank). Shared type: `AddCustomTopicRequest` in `packages/shared/src/types/topic.ts`.
 }
 ```
 
@@ -734,13 +735,13 @@ interface AddCustomTopicResponse {
 | `403 Forbidden` | Not a facilitator (`NOT_A_FACILITATOR`); facilitator is a team member (`FACILITATOR_IS_TEAM_MEMBER`) |
 | `404 Not Found` | Team does not exist |
 | `409 Conflict` | Customization lock is active (`TOPIC_CUSTOMIZATION_LOCKED`) |
-| `422 Unprocessable Entity` | Required fields missing, empty, or exceed length limits |
+| `422 Unprocessable Entity` | `VALIDATION_FAILED`, with `field` set to the first failing of `name`, `prompt`, `voteType`, `firstSessionDescription` (checked in that order): required fields missing, empty after trimming, or exceeding length limits. The Topic Management screen maps `field` to its own copy and does not display `message`. |
 
 **Corrected (`topic-customization-lock-and-add-custom-topic` design.md Decision 2):** the customization lock is a state precondition about the team's session history, not an actor-identity/role failure, so it is rejected with `409 Conflict`, not the `403 Forbidden` this table previously listed for all three causes. `403 Forbidden` is reserved for the two actor-identity/role failures above and is evaluated — and returned — before the lock check ever runs (design.md Decision 9's full cascade: `403` → `404` → `409` → `422`).
 
 **Notes**
 - The customization lock check (`isCustomizationLocked`) is enforced server-side. The lock applies when the team has zero completed sessions (FR-8.2).
-- Every rejection above is carried in this codebase's standard error envelope, `{ error: { category, code, message, correlationId } }` — not a bare top-level `{ code, message }` body.
+- Every rejection above is carried in this codebase's standard error envelope, `{ error: { category, code, message, correlationId } }` (plus `field` on `VALIDATION_FAILED`) — not a bare top-level `{ code, message }` body.
 - Prompt uniqueness is not enforced — duplicate prompts are allowed.
 - `isDefault` is always `false` for custom topics.
 
@@ -2989,7 +2990,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TEAM-005 | No | Yes (non-member teams) | No | Yes | |
 | TEAM-006 | No | Yes | No | Yes | |
 | TOPIC-001 | Own team (read) | Teams with active session | No | Yes | |
-| TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins |
+| TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins; `canAddTopics` false for admins (temporary, pending #176) |
 | TOPIC-003 | No | Yes (non-member teams, post-lock) | No | No | Facilitator-only (code: `checkStandingFacilitatorAuthorization`); customization lock enforced |
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced (FR-8.2) |
 | TOPIC-007 | No | Yes (non-member teams, post-lock) | No | **No** (`403 NOT_A_FACILITATOR`) | Facilitator-only (BRD FR-8.7); customization lock enforced (`409`) |

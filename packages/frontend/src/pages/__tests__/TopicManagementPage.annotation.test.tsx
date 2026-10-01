@@ -75,6 +75,7 @@ function makeTopics(overrides: Partial<GetAllTopicsResponse> = {}): GetAllTopics
     teamName: "Platform Squad",
     isCustomizationLocked: false,
     canEditAnnotations: true,
+    canAddTopics: true,
     active: [
       activeTopic("topic-1", "Pipeline", {
         displayOrder: 1,
@@ -142,6 +143,7 @@ async function renderLoaded() {
   render(
     <MemoryRouter initialEntries={["/team/team-1/topics"]}>
       <Routes>
+        {/* Unkeyed is safe only because this suite never changes team; production mounts TopicManagementRoute (keyed on teamId). */}
         <Route path="/team/:teamId/topics" element={<TopicManagementPage />} />
         <Route path="/team/:teamId" element={<div>Team Page</div>} />
       </Routes>

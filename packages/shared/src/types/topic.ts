@@ -26,6 +26,35 @@ export interface Topic {
 }
 
 // ---------------------------------------------------------------------------
+// TOPIC-003 — POST /api/v1/teams/:teamId/topics (Add Custom Topic).
+// topic-add-form-and-empty-state design.md Decision 9: one compile-time
+// contract shared by the Topic Management screen's add form and the
+// backend validator (whose 422 `error.field` is typed
+// `keyof AddCustomTopicRequest`).
+// ---------------------------------------------------------------------------
+export interface AddCustomTopicRequest {
+  name: string;
+  prompt: string;
+  voteType: VoteType;
+  // Optional; null or omitted means "no description". The server does not
+  // trim it, so the screen sends the trimmed text or null.
+  firstSessionDescription?: string | null;
+}
+
+// Deliberately omits firstSessionDescription (and the annotation fields):
+// TOPIC-003 does not echo the description, so the screen refetches
+// TOPIC-002 after a 201 rather than building a row from this body.
+export interface AddCustomTopicResponse {
+  topicId: string;
+  name: string;
+  prompt: string;
+  voteType: VoteType;
+  displayOrder: number;
+  isDefault: false;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // TOPIC-002 — GET /api/v1/teams/:teamId/topics/all (remove-topic, design.md
 // Decision 9/6). Used by the Topic Management screen.
 // ---------------------------------------------------------------------------
@@ -48,6 +77,14 @@ export interface GetAllTopicsResponse {
   // false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7).
   // Presentation only -- TOPIC-007 enforces independently.
   canEditAnnotations: boolean;
+  // topic-add-form-and-empty-state design.md Decision 1: true for a standing
+  // facilitator TOPIC-002 admits, false for an application_admin. The false
+  // value for administrators is TEMPORARY, pending #176 (TOPIC-003 rejects
+  // admins today); it is not a product rule and must never be merged with
+  // canEditAnnotations, whose admin exclusion (FR-8.7) is permanent.
+  // Presentation only -- TOPIC-003 enforces authorization and the lock
+  // independently. Does not consider isCustomizationLocked.
+  canAddTopics: boolean;
   active: Array<{
     topicId: string;
     name: string;
