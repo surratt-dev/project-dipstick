@@ -132,7 +132,7 @@
 ## Main Flow
 1. The Facilitator navigates to the topic management screen for the team.
 2. The Facilitator selects the option to add a new topic.
-3. The Application presents a form with fields for: topic name (required), topic prompt (required, distinct from the name), vote type (required — Finger, Roman, or Modified Roman), and topic description (optional). (Clarified per `topic-add-form-and-empty-state`: "distinct from the name" means the prompt is a separate field; the name and prompt may hold the same text. For a custom topic the description is shown on the Topic Management screen only — it is not shown to participants during sessions; see `openspec/changes/archive/2026-10-01-topic-add-form-and-empty-state/handoffs/custom-topic-description-never-shown-in-session.md`, issue number pending.)
+3. The Application presents a form with fields for: topic name (required), topic prompt (required, distinct from the name), vote type (required — Finger, Roman, or Modified Roman), and topic description (optional). (Clarified per `topic-add-form-and-empty-state`: "distinct from the name" means the prompt is a separate field; the name and prompt may hold the same text. For a custom topic the description is shown on the Topic Management screen only — it is not shown to participants during sessions; see #198, with the proposed fix in #199.)
 4. The Facilitator enters the topic name, enters the topic prompt, selects a vote type, and optionally enters a description.
 5. The Facilitator submits the form.
 6. The Application validates that the name is not empty, the prompt is not empty, and a vote type has been selected.
@@ -462,7 +462,7 @@
 5. If customization is unlocked, the Application displays editing controls alongside each topic and options to add topics or access the removed topics list.
 
 ## Alternate Flows
-- **Team has no active topics (all have been removed):** The Application displays an empty state with a prompt to re-add topics or add a custom one.
+- **Team has no active topics (for example after a data error):** The Application displays an empty state. Removing the last active topic is blocked (`409 TOPIC_LAST_ACTIVE`), so this state cannot be reached by removing topics through the UI; it arises from a concurrent-archive race (#184), a team created with zero default topics (#200), or a manual data fix. What the empty state offers depends on whether the team is locked, whether archived topics exist, and whether the caller can add topics: it offers re-adding from the archived list and/or adding a custom topic only where those actions can succeed, and no actions otherwise (see the `topic-management-screen` spec, added by `topic-add-form-and-empty-state`).
 - **Facilitator does not have access to this team's configuration:** The Application displays an access error. (Access rules for topic management outside a live session should be defined — see Notes.)
 
 ## Postconditions

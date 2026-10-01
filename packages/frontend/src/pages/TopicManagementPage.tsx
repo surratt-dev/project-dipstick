@@ -1538,7 +1538,7 @@ export function TopicManagementPage() {
           // Design.md Decision 7. The screen never reads
           // data.defaultTopicsNotActive (its name join is wrong when a custom
           // topic shares a default's name, and its topicId can point at the
-          // template team): see handoffs/default-topics-not-active-name-join.md.
+          // template team): see #197.
           <ActiveTopicsEmptyState
             variant={activeEmptyStateVariant(data.isCustomizationLocked, data.archived.length, canAddTopics)}
             archivedCount={data.archived.length}

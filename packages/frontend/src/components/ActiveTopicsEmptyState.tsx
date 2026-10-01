@@ -16,7 +16,7 @@ import type { ActiveEmptyStateVariant } from "../pages/addCustomTopic.js";
 // application administrators (#176). Remove them in the #176 fix.
 //
 // Row 1's copy names a human group, not an application role, support
-// channel, or control (H1; handoffs/zero-topic-team-recovery-path.md).
+// channel, or control (H1; recovery path tracked in #200).
 // No illustration: the state is rare and should be small.
 // ---------------------------------------------------------------------------
 
