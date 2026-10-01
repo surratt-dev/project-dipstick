@@ -46,6 +46,7 @@ function makeTopics(ids: string[] = IDS): GetAllTopicsResponse {
     teamName: "Platform Squad",
     isCustomizationLocked: false,
     canEditAnnotations: true,
+    canAddTopics: true,
     active: ids.map((id, i) => ({
       topicId: id,
       name: NAMES[IDS.indexOf(id)]!,
@@ -136,6 +137,7 @@ function renderPage() {
   return render(
     <MemoryRouter initialEntries={["/team/team-1/topics"]}>
       <Routes>
+        {/* Unkeyed is safe only because this suite never changes team; production mounts TopicManagementRoute (keyed on teamId). */}
         <Route path="/team/:teamId/topics" element={<TopicManagementPage />} />
         <Route
           path="/team/:teamId"

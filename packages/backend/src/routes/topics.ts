@@ -17,6 +17,9 @@ import type {
   ReorderedTopic,
   ReorderTopicsResponse,
   UpdateTopicAnnotationResponse,
+  AddCustomTopicRequest,
+  AddCustomTopicResponse,
+  VoteType,
 } from "@dipstick/shared";
 import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 
@@ -269,18 +272,23 @@ interface AddCustomTopicRequestBody {
   firstSessionDescription?: unknown;
 }
 
-interface ValidatedAddCustomTopicBody {
-  name: string;
-  prompt: string;
-  voteType: "finger" | "roman" | "modified_roman";
+// topic-add-form-and-empty-state design.md Decision 9: the validated body,
+// the vote-type list, and the 422 `field` are typed against the shared
+// AddCustomTopicRequest, so the screen's field map and this validator share
+// one compile-time contract.
+interface ValidatedAddCustomTopicBody extends AddCustomTopicRequest {
   firstSessionDescription: string | null;
 }
 
-const VALID_VOTE_TYPES = ["finger", "roman", "modified_roman"] as const;
+// Architect implementation review N6: `satisfies Record<VoteType, true>`
+// makes a missing (or unknown) vote type a compile error, so this list
+// cannot silently drift from the shared VoteType union.
+const VOTE_TYPE_SET = { finger: true, roman: true, modified_roman: true } as const satisfies Record<VoteType, true>;
+const VALID_VOTE_TYPES = Object.keys(VOTE_TYPE_SET) as readonly VoteType[];
 
 type ValidationResult =
   | { valid: true; data: ValidatedAddCustomTopicBody }
-  | { valid: false; field: string; message: string };
+  | { valid: false; field: keyof AddCustomTopicRequest; message: string };
 
 function validateAddCustomTopicBody(body: AddCustomTopicRequestBody): ValidationResult {
   const rawName = body.name;
@@ -332,7 +340,7 @@ function validateAddCustomTopicBody(body: AddCustomTopicRequestBody): Validation
     data: {
       name: trimmedName,
       prompt: trimmedPrompt,
-      voteType: rawVoteType as ValidatedAddCustomTopicBody["voteType"],
+      voteType: rawVoteType as VoteType,
       firstSessionDescription,
     },
   };
@@ -824,7 +832,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     });
 
     await applyTimingFloor(startTime);
-    return reply.code(201).send({
+    const response: AddCustomTopicResponse = {
       topicId,
       name,
       prompt,
@@ -832,7 +840,8 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       displayOrder,
       isDefault: false,
       createdAt: createdAt.toISOString(),
-    });
+    };
+    return reply.code(201).send(response);
   });
 
   // -------------------------------------------------------------------------

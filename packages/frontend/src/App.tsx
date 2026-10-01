@@ -16,7 +16,7 @@ import { EmTrendDataPage } from "./pages/EmTrendDataPage.js";
 import { EmActionItemsPage } from "./pages/EmActionItemsPage.js";
 import { SessionCreationPage } from "./pages/SessionCreationPage.js";
 import { DraftSessionHost } from "./pages/DraftSessionHost.js";
-import { TopicManagementPage } from "./pages/TopicManagementPage.js";
+import { TopicManagementRoute } from "./pages/TopicManagementPage.js";
 
 // session-creation-existing-team design.md Decision D5. Routing carve-out
 // order:
@@ -107,7 +107,7 @@ export function App() {
             path="/team/:teamId/topics"
             element={
               <ProtectedRoute>
-                <TopicManagementPage />
+                <TopicManagementRoute />
               </ProtectedRoute>
             }
           />

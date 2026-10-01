@@ -132,7 +132,7 @@
 ## Main Flow
 1. The Facilitator navigates to the topic management screen for the team.
 2. The Facilitator selects the option to add a new topic.
-3. The Application presents a form with fields for: topic name (required), topic prompt (required, distinct from the name), vote type (required — Finger, Roman, or Modified Roman), and topic description (optional).
+3. The Application presents a form with fields for: topic name (required), topic prompt (required, distinct from the name), vote type (required — Finger, Roman, or Modified Roman), and topic description (optional). (Clarified per `topic-add-form-and-empty-state`: "distinct from the name" means the prompt is a separate field; the name and prompt may hold the same text. For a custom topic the description is shown on the Topic Management screen only — it is not shown to participants during sessions; see `openspec/changes/archive/2026-10-01-topic-add-form-and-empty-state/handoffs/custom-topic-description-never-shown-in-session.md`, issue number pending.)
 4. The Facilitator enters the topic name, enters the topic prompt, selects a vote type, and optionally enters a description.
 5. The Facilitator submits the form.
 6. The Application validates that the name is not empty, the prompt is not empty, and a vote type has been selected.
@@ -148,7 +148,7 @@
 - **Save fails due to a system error:** The Application displays an error. No topic is created. The Facilitator can retry.
 
 ## Postconditions
-- **Success:** A new custom topic exists in the team's topic configuration, appended at the end of the current order, with the specified name, prompt, vote type, and description. It will appear in the next session run for this team.
+- **Success:** A new custom topic exists in the team's topic configuration, appended at the end of the current order, with the specified name, prompt, vote type, and description. It will appear in the next session run for this team. (Note per `topic-add-form-and-empty-state`: "It will appear in the next session run" is pending #175; the Topic Management screen does not promise in-session display.)
 - **Failure:** No topic is created. The team's topic configuration is unchanged.
 
 ---
@@ -172,7 +172,7 @@
 - Vote type definitions must be available in the application.
 
 ## Notes
-- Whether the application should warn when a prompt closely resembles an existing topic is an open question. A simple duplicate-prompt warning could prevent accidental near-duplicates.
+- Whether the application should warn when a prompt closely resembles an existing topic is an open question. A simple duplicate-prompt warning could prevent accidental near-duplicates. (Resolved for the Topic Management screen by `topic-add-form-and-empty-state`: an exact match — trimmed, case-insensitive — of the name or prompt against the team's active and archived topics shows a non-blocking warning before the request; no fuzzy matching. The server still does not enforce uniqueness.)
 - The description field is distinct from the team annotation (see Use Case: Annotate Topic with Shared Team Definition). The description is set at creation; the annotation is a living team-owned definition that can be updated over time.
 
 ---
