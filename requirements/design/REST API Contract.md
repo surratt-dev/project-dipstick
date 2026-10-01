@@ -572,7 +572,10 @@ interface GetActiveTopicsResponse {
     displayOrder: number;
     isDefault: boolean;
     firstSessionDescription: string | null;  // Extended description for first-session mode
-    teamAnnotation: string | null;           // Team-specific annotation
+    // teamAnnotation: NOT returned; deferred until a consumer exists (see the TOPIC-001 follow-up).
+    // topic-annotation design.md Decision 8: this endpoint currently admits engineering managers,
+    // so EMs must be denied here before it may ever return the team's definition. In-session
+    // display reads SESSION-005/012's currentTopic.topicAnnotation (the snapshot), never this endpoint.
     createdAt: string;
     updatedAt: string;
   }>;
@@ -606,7 +609,7 @@ Returns both active and archived topics for a team, including configuration deta
 
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` AND not an active member of the team, OR `application_admin` — the same standing, org-wide facilitator model `TOPIC-003` through `TOPIC-007` already share. **Corrected (`remove-topic` design.md Decision 9):** this endpoint's original draft required "a facilitator with an active session for the team," a session-scoped model that does not match its five sibling topic-write endpoints and was never independently reviewed as its own line item — a drafting error, not a considered decision this correction reverses. This endpoint does not require that the caller currently hold, or have ever held, an active session for the target team. (Participants and EMs access archived topic data via TREND-001, not this endpoint.)
+**Authorization:** `global_role = 'facilitator'` AND not an active member of the team, OR `application_admin` — the same standing, org-wide facilitator model `TOPIC-004` through `TOPIC-006` already share (`TOPIC-003` and `TOPIC-007` use the same non-member facilitator rule but exclude `application_admin` from writing; see their entries). **`TOPIC-007` (topic-annotation, BRD FR-8.7) is facilitator-only for writes; administrators read annotations here read-only.** **Corrected (`remove-topic` design.md Decision 9):** this endpoint's original draft required "a facilitator with an active session for the team," a session-scoped model that does not match its five sibling topic-write endpoints and was never independently reviewed as its own line item — a drafting error, not a considered decision this correction reverses. This endpoint does not require that the caller currently hold, or have ever held, an active session for the target team. (Participants and EMs access archived topic data via TREND-001, not this endpoint.)
 
 **Request**
 
@@ -624,6 +627,7 @@ interface GetAllTopicsResponse {
   teamId: string;
   teamName: string;  // Added (`remove-topic` design.md, Task 9.2/Decision 10) — the Topic Management screen's remove-confirmation dialog must name both the topic and the team; no other endpoint reachable by a standing, non-member facilitator returns a team's display name.
   isCustomizationLocked: boolean;
+  canEditAnnotations: boolean;  // Added (`topic-annotation` design.md Decision 8). true for a standing facilitator, false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7). Presentation only; TOPIC-007 enforces independently.
   active: Array<{
     topicId: string;
     name: string;
@@ -632,7 +636,9 @@ interface GetAllTopicsResponse {
     displayOrder: number;
     isDefault: boolean;
     firstSessionDescription: string | null;  // Added (`remove-topic` design.md, Task 9.2) — the "View Active Topic Configuration" use case's AC requires prompt, vote type, AND description per row; the original draft omitted this field.
-    teamAnnotation: string | null;
+    teamAnnotation: string | null;  // `topic-annotation`: read from topics.team_annotation (previously hard-coded null).
+    annotationUpdatedAt: string | null;  // Added (`topic-annotation`). Provenance of the last change, including a clear.
+    annotationUpdatedBy: { userId: string; displayName: string } | null;  // Added (`topic-annotation`). Same shape and null rule as archivedBy.
     createdAt: string;
     updatedAt: string;
   }>;
@@ -646,6 +652,9 @@ interface GetAllTopicsResponse {
     archivedBy: { userId: string; displayName: string } | null;  // Added (`remove-topic` design.md Decision 6). Facilitator-visible provenance — null only for a pre-existing row archived before this column existed; none exist today. Distinct from and in addition to the audit-log record of the same event.
     restoredAt: string | null;  // Added (`re-add-removed-topic` design.md Decision 4). Null for a topic that has never been restored.
     restoredBy: { userId: string; displayName: string } | null;  // Added (`re-add-removed-topic` design.md Decision 4). Facilitator-visible provenance for TOPIC-005's restore — mirrors archivedBy's shape. A topic archived and restored more than once shows only the most recent restore event, the same stated limitation archivedAt/archivedBy already carry for multiple archive events.
+    teamAnnotation: string | null;  // Added (`topic-annotation`). Shown read-only so the facilitator sees what returns on restore.
+    annotationUpdatedAt: string | null;  // Added (`topic-annotation`).
+    annotationUpdatedBy: { userId: string; displayName: string } | null;  // Added (`topic-annotation`).
   }>;
   defaultTopicsNotActive: Array<{  // Canonical default topics currently absent from the active list
     topicId: string;
@@ -664,6 +673,7 @@ interface GetAllTopicsResponse {
 | `404 Not Found` | Team does not exist |
 
 **Notes**
+- **Annotation fields (`topic-annotation`):** `teamAnnotation`, `annotationUpdatedAt`, and `annotationUpdatedBy` are returned on active **and** archived entries, to standing facilitators and to administrators alike. Administrators receive them **read-only** (`canEditAnnotations: false`): topic configuration is administrative data they already read, and TOPIC-007's administrator exclusion concerns who authors the team's words, not who may view the configuration.
 - `defaultTopicsNotActive` enables the "restore defaults" UI path (FR-8.6). It enumerates canonical default topics (`is_default = true`) that are currently absent from the team's active topic list — whether because they were archived or were never seeded.
 - **Scope boundary:** This endpoint serves topic *configuration* only. Trend dashboard consumers (participants, EMs, facilitators viewing history) must use TREND-001, which includes archived topics in its `topics` array via `topicStatus: 'archived'`. Do not call TOPIC-002 from trend dashboard UI flows.
 
@@ -947,54 +957,71 @@ PUT /api/v1/teams/:teamId/topics/:topicId/annotation
 ```
 
 **Description**
-Sets or clears the team-specific annotation on a topic.
+Sets or clears the team-specific annotation on a topic: the team's definition of what the topic means, shown on screens as "Our team's definition". Rewritten by `topic-annotation` (#53); see `openspec/changes/topic-annotation/design.md` (archived with the change).
 
-**Auth:** Protected.
+**Auth:** Protected. An unauthenticated request is rejected with `401` by the shared authentication layer before the cascade below runs.
 
-**Authorization:** `global_role = 'facilitator'` AND not a member of this team AND `isCustomizationLocked = false`.
+**Authorization:** **Facilitator-only.** `global_role = 'facilitator'` AND not an active member of the team. **`application_admin` is rejected with `403 NOT_A_FACILITATOR`** (BRD FR-8.7). This deliberately differs from TOPIC-004/005/006, which admit administrators under FR-8.2: the annotation is the team's words, recorded by the facilitator who was in the room, and administrators have no session context. The customization lock is enforced as `409`, not `403` (below).
 
 **Request**
 
 | Location | Name | Type | Required | Description |
 |---|---|---|---|---|
 | Path | `teamId` | `uuid` | Yes | Team identifier |
-| Path | `topicId` | `uuid` | Yes | Topic to annotate |
+| Path | `topicId` | `uuid` | Yes | Topic to annotate. A non-UUID value answers `404 TOPIC_NOT_FOUND`. |
 
 **Request Body**
 
 ```typescript
 interface UpdateTopicAnnotationRequest {
-  annotation: string;   // Empty string clears the annotation. Max 500 characters.
+  annotation: string;   // Required string. "" (after normalization) clears. null is rejected, not a clear.
 }
 ```
 
+Body rules, evaluated in this order:
+1. The body must be a JSON object whose `annotation` is a string. A non-object body (bare string, array), a missing field, `null`, or a non-string → `422 INVALID_ANNOTATION`, message "annotation must be a string.". Unknown top-level keys are ignored.
+2. Normalize: every `\r\n` → `\n`, then trim leading and trailing whitespace. Interior whitespace and line breaks are kept.
+3. Reject (never strip) disallowed characters, **checked before length**: U+0000, an unpaired UTF-16 surrogate, any other C0 control except line feed and tab (U+0001–U+0008, U+000B, U+000C, U+000D, U+000E–U+001F; a lone `\r` included), U+007F, and the bidi embedding/override/isolate controls U+202A–U+202E and U+2066–U+2069 → `422 INVALID_ANNOTATION`, message "Team definition contains characters that can't be saved.".
+4. Length: at most **500 UTF-16 code units** after normalization (JavaScript `String.length`, the unit a browser `<textarea maxlength>` enforces; an emoji outside the Basic Multilingual Plane counts as 2) → otherwise `422 INVALID_ANNOTATION`, message "Team definition must be 500 characters or fewer.".
+
+All three body failures carry `field: "annotation"`, and no error body echoes the submitted value. An empty normalized value clears the annotation (stored `NULL`).
+
 **Response**
 
-`200 OK`
+`200 OK`, with `Cache-Control: no-store` on **every** response (set first, so the `403`s and an unhandled `500` carry it too).
 
 ```typescript
 interface UpdateTopicAnnotationResponse {
   topicId: string;
-  annotation: string | null;   // null if annotation was cleared
-  updatedAt: string;
+  teamAnnotation: string | null;        // null after a clear
+  annotationUpdatedAt: string | null;
+  annotationUpdatedBy: { userId: string; displayName: string } | null;  // non-null only when both are known
 }
 ```
 
-**Error Responses**
+Renamed from the draft's `annotation`/`updatedAt` so the frontend uses one name everywhere (TOPIC-002 uses the same fields).
 
-| Status | When |
-|---|---|
-| `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not a facilitator, is a team member, customization lock active |
-| `404 Not Found` | Team or topic does not exist; topic is not active for this team |
-| `422 Unprocessable Entity` | `annotation` exceeds 500 characters |
+**Error Responses** (cascade order; the first failure returns)
+
+| Status | Code | When |
+|---|---|---|
+| `401 Unauthorized` | | No valid session (shared authentication layer) |
+| `403 Forbidden` | `NOT_A_FACILITATOR` | Caller's `global_role` is not `facilitator`, **including `application_admin`** |
+| `403 Forbidden` | `FACILITATOR_IS_TEAM_MEMBER` | Facilitator is an active member of the team |
+| `404 Not Found` | `TEAM_NOT_FOUND` | Team does not exist |
+| `409 Conflict` | `TOPIC_CUSTOMIZATION_LOCKED` | Team has no completed session. Writes a `topic.write_denied_locked` audit row with `attempted_operation: "topic.annotation_updated"`. Takes priority over any body error. |
+| `422 Unprocessable Entity` | `INVALID_ANNOTATION` | Body rules 1–4 above; `field: "annotation"`. Takes priority over a missing topic. |
+| `404 Not Found` | `TOPIC_NOT_FOUND` | Topic does not exist on this team (including another team's topic and a non-UUID `topicId`) |
+| `422 Unprocessable Entity` | `TOPIC_ALREADY_ARCHIVED` | Topic is archived (replaces the draft's `404`, matching TOPIC-004) |
+
+Every non-2xx uses the standard envelope `{ error: { category, code, message, correlationId } }` (plus `field` on `INVALID_ANNOTATION`). Malformed JSON and a non-UUID `teamId` behave as on TOPIC-004/005/006. Every handled exit applies the timing floor.
 
 **Notes**
-- An empty string is treated as a clear operation (sets the field to `NULL`), not a no-op.
-- The annotation is included in session topic snapshots (visible to participants during sessions). Changes apply to future sessions only; historical sessions retain the annotation as it was at session creation time.
-
-> **Open question:** The character limit for annotations is not specified in the use case. This contract specifies 500 characters for consistency with resolution notes. Confirm with BA.
-
+- **No-op:** if the normalized value equals the stored value (an empty value equals `NULL`), the response is `200` with the current state and **existing** provenance. Nothing is written and nothing is audited.
+- **Write:** a changed value updates `team_annotation`, `annotation_updated_by` (the caller), and `annotation_updated_at = now()` (a clear records the clearer), in a row-locked transaction scoped by `team_id` and `status = 'active'`. `updated_at` is not touched. Concurrent writes are last-writer-wins, with no precondition token.
+- **Audit:** a changed value writes `topic.annotation_updated` with `metadata: { topic_id, action: "set" | "cleared", length }` in the same transaction. **The text is never written to the audit log or the structured application log.**
+- **Snapshot:** sessions never read this value live. When `session_topics` rows are written (#175), `session_topics.topic_annotation` is copied from `team_annotation` in the same write as the rest of the row. SESSION-005/012 return `currentTopic.topicAnnotation` from that snapshot, so an edit affects only sessions whose topics are snapshotted after it.
+- Annotations survive archive and restore. Default and custom topics are both annotatable. New-team seeding never copies an annotation from the template team.
 ---
 
 ## Group 4: Session Lifecycle
@@ -1342,6 +1369,7 @@ interface BeginVotingResponse {
     voteType: 'finger' | 'roman' | 'modified_roman';
     phase: 'voting';
     firstSessionDescription: string | null;  // Non-null when isFirstSession = true
+    topicAnnotation: string | null;  // Added (`topic-annotation`). From session_topics.topic_annotation (the snapshot) ONLY, never live topics.team_annotation. The only source for in-session display of the team definition.
   };
 }
 ```
@@ -1815,6 +1843,7 @@ interface TopicAdvanceResponse {
     topicPrompt: string;
     voteType: 'finger' | 'roman' | 'modified_roman';
     phase: 'voting';
+    topicAnnotation: string | null;  // Added (`topic-annotation`). From the session_topics snapshot only, as on SESSION-005.
   };
   // Present only when status === 'wrap_up' (no next topic remained):
   wrapUpStartedAt?: string;
@@ -2960,7 +2989,10 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TEAM-005 | No | Yes (non-member teams) | No | Yes | |
 | TEAM-006 | No | Yes | No | Yes | |
 | TOPIC-001 | Own team (read) | Teams with active session | No | Yes | |
-| TOPIC-002 to TOPIC-007 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced |
+| TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins |
+| TOPIC-003 | No | Yes (non-member teams, post-lock) | No | No | Facilitator-only (code: `checkStandingFacilitatorAuthorization`); customization lock enforced |
+| TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced (FR-8.2) |
+| TOPIC-007 | No | Yes (non-member teams, post-lock) | No | **No** (`403 NOT_A_FACILITATOR`) | Facilitator-only (BRD FR-8.7); customization lock enforced (`409`) |
 | SESSION-001 | No | Yes (non-member teams) | No | Yes | Cross-team check re-enforced |
 | SESSION-002 | If participant | If facilitator | No | Yes | Live sessions only |
 | SESSION-003 | Yes (team member, participant role) | No | No | Yes | EM role blocked |
@@ -2996,7 +3028,7 @@ The following open questions must be resolved before the affected endpoints can 
 | OQ-4 | TREND-001 | The Project Trend computation algorithm (`projectTrend.value`) is not specified in any reviewed document. Cannot be implemented until the algorithm is defined. | BA to specify |
 | OQ-5 | TREND-005 | ADR-007 restricts facilitator history access to during an active session, but OR-6.3 requires the briefing to be accessible pre-session. These are in direct conflict. Current implementation follows OR-6.3. | SA + BA to resolve formally |
 | OQ-6 | TEAM-005 | The authorization scope for role management (facilitator-only, non-member requirement) has not been fully validated against the BRD. May need to be opened to any authenticated user. | BA to confirm |
-| OQ-7 | TOPIC-007, SESSION-011 | Character limits for topic annotations (500 chars assumed) and session annotations (60 chars from use case guidance) are not formally specified. | BA to confirm |
+| OQ-7 | TOPIC-007, SESSION-011 | Character limits for topic annotations (500 chars assumed) and session annotations (60 chars from use case guidance) are not formally specified. **Resolved for TOPIC-007 only (`topic-annotation`):** 500 UTF-16 code units after `\r\n` → `\n` normalization and trim (see TOPIC-007). The SESSION-011 part remains open. | BA to confirm (SESSION-011) |
 | OQ-8 | ACTION-002 | Whether description/owner edits during wrap-up are recorded in `action_item_history` is unspecified. Current contract does not write history for pre-finalization edits. | BA to confirm |
 
 ---

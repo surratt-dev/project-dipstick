@@ -36,6 +36,7 @@ vi.mock("../../content/timing-oracle.js", () => ({
 
 import Fastify from "fastify";
 import { contentRoutes } from "../content.js";
+import type { GetAllTopicsResponse } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -591,5 +592,202 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// topic-annotation Task 5.3 — TOPIC-002 annotation fields and
+// canEditAnnotations; TOPIC-001 carries no annotation (design.md Decision 8).
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all — team annotation (topic-annotation design.md Decision 8)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const activeRow = {
+    id: "topic-1",
+    name: "Pipeline",
+    prompt: "Confidence in the pipeline",
+    vote_type: "finger",
+    display_order: 0,
+    is_default: true,
+    first_session_description: null,
+    created_at: new Date("2026-09-01T00:00:00.000Z"),
+    updated_at: new Date("2026-09-01T00:00:00.000Z"),
+  };
+
+  function mockAllTopics(
+    globalRole: string,
+    active: Array<Record<string, unknown>>,
+    archived: Array<Record<string, unknown>> = [],
+  ) {
+    mockStandingAuthQuery(globalRole, false);
+    mockTeamNameQuery();
+    mockDbQuery.mockResolvedValueOnce({ rows: active });
+    mockDbQuery.mockResolvedValueOnce({ rows: archived });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
+  }
+
+  async function getAll() {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    expect(res.statusCode).toBe(200);
+    return res.json() as GetAllTopicsResponse;
+  }
+
+  it("an annotated active topic returns its text and provenance", async () => {
+    mockAllTopics("facilitator", [
+      {
+        ...activeRow,
+        team_annotation: "Our build and deploy pipeline",
+        annotation_updated_at: new Date("2026-09-20T10:00:00.000Z"),
+        annotation_updated_by: "user-f",
+        annotation_updated_by_display_name: "Fran Facilitator",
+      },
+    ]);
+
+    const body = await getAll();
+
+    expect(body.active[0]).toMatchObject({
+      teamAnnotation: "Our build and deploy pipeline",
+      annotationUpdatedAt: "2026-09-20T10:00:00.000Z",
+      annotationUpdatedBy: { userId: "user-f", displayName: "Fran Facilitator" },
+    });
+  });
+
+  it("an unannotated topic returns all three fields as null", async () => {
+    mockAllTopics("facilitator", [
+      {
+        ...activeRow,
+        team_annotation: null,
+        annotation_updated_at: null,
+        annotation_updated_by: null,
+        annotation_updated_by_display_name: null,
+      },
+    ]);
+
+    const body = await getAll();
+
+    expect(body.active[0]?.teamAnnotation).toBeNull();
+    expect(body.active[0]?.annotationUpdatedAt).toBeNull();
+    expect(body.active[0]?.annotationUpdatedBy).toBeNull();
+  });
+
+  it("an archived topic returns its teamAnnotation and provenance", async () => {
+    mockAllTopics(
+      "facilitator",
+      [],
+      [
+        {
+          id: "topic-old",
+          name: "Old Topic",
+          prompt: "A prompt",
+          vote_type: "finger",
+          is_default: false,
+          archived_at: new Date("2026-09-29T12:00:00.000Z"),
+          archived_by: "user-42",
+          archived_by_display_name: "Priya Nair",
+          restored_at: null,
+          restored_by: null,
+          restored_by_display_name: null,
+          team_annotation: "X",
+          annotation_updated_at: new Date("2026-09-10T00:00:00.000Z"),
+          annotation_updated_by: "user-f",
+          annotation_updated_by_display_name: "Fran Facilitator",
+        },
+      ],
+    );
+
+    const body = await getAll();
+
+    expect(body.archived[0]).toMatchObject({
+      teamAnnotation: "X",
+      annotationUpdatedAt: "2026-09-10T00:00:00.000Z",
+      annotationUpdatedBy: { userId: "user-f", displayName: "Fran Facilitator" },
+    });
+  });
+
+  it("canEditAnnotations is true for a standing facilitator", async () => {
+    mockAllTopics("facilitator", []);
+    expect((await getAll()).canEditAnnotations).toBe(true);
+  });
+
+  it("canEditAnnotations is false for an application admin", async () => {
+    mockAllTopics("application_admin", []);
+    expect((await getAll()).canEditAnnotations).toBe(false);
+  });
+
+  it("an application admin still receives teamAnnotation and annotationUpdatedBy, read-only (security R4)", async () => {
+    mockAllTopics("application_admin", [
+      {
+        ...activeRow,
+        team_annotation: "X",
+        annotation_updated_at: new Date("2026-09-20T10:00:00.000Z"),
+        annotation_updated_by: "user-f",
+        annotation_updated_by_display_name: "Fran Facilitator",
+      },
+    ]);
+
+    const body = await getAll();
+
+    expect(body.canEditAnnotations).toBe(false);
+    expect(body.active[0]?.teamAnnotation).toBe("X");
+    expect(body.active[0]?.annotationUpdatedBy).toEqual({ userId: "user-f", displayName: "Fran Facilitator" });
+  });
+
+  it("provenance is null when the editing user has no display name", async () => {
+    mockAllTopics("facilitator", [
+      {
+        ...activeRow,
+        team_annotation: "X",
+        annotation_updated_at: new Date("2026-09-20T10:00:00.000Z"),
+        annotation_updated_by: "user-gone",
+        annotation_updated_by_display_name: null,
+      },
+    ]);
+
+    const body = await getAll();
+
+    expect(body.active[0]?.annotationUpdatedBy).toBeNull();
+    expect(body.active[0]?.annotationUpdatedAt).toBe("2026-09-20T10:00:00.000Z");
+  });
+
+  it("both the active and archived queries select the annotation columns joined to users", async () => {
+    mockAllTopics("facilitator", []);
+    await getAll();
+
+    const activeSql = String(mockDbQuery.mock.calls[2]?.[0]);
+    const archivedSql = String(mockDbQuery.mock.calls[3]?.[0]);
+    for (const sql of [activeSql, archivedSql]) {
+      expect(sql).toContain("t.team_annotation");
+      expect(sql).toContain("t.annotation_updated_at");
+      expect(sql).toMatch(/LEFT JOIN users annotation_user ON annotation_user\.id = t\.annotation_updated_by/);
+    }
+  });
+});
+
+describe("GET /api/v1/teams/:teamId/topics (TOPIC-001) — no annotation fields (topic-annotation security R7)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("does not select team_annotation or its provenance", async () => {
+    mockMemberGrant("participant");
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ id: "t1", name: "N", prompt: "P", vote_type: "finger", display_order: 0, status: "active" }],
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+
+    expect(res.statusCode).toBe(200);
+    const topicsSql = String(mockDbQuery.mock.calls.find((c) => String(c[0]).includes("FROM topics"))?.[0]);
+    // Strip SQL comments before checking, so only the executable text counts.
+    const executable = topicsSql.replace(/--.*$/gm, "");
+    expect(executable).not.toMatch(/annotation/);
+    const body = res.json() as { topics: Array<Record<string, unknown>> };
+    for (const topic of body.topics) {
+      for (const key of ["teamAnnotation", "team_annotation", "annotationUpdatedBy", "annotationUpdatedAt"]) {
+        expect(topic).not.toHaveProperty(key);
+      }
+    }
   });
 });

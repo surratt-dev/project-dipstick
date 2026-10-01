@@ -16,7 +16,9 @@ import type {
   RestoreTopicResponse,
   ReorderedTopic,
   ReorderTopicsResponse,
+  UpdateTopicAnnotationResponse,
 } from "@dipstick/shared";
+import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // Topic write routes — topic-customization-lock-and-add-custom-topic (#49/#50)
@@ -92,11 +94,25 @@ type AuthorizationResult =
   | { rejected: false; actorGlobalRole: string }
   | { rejected: true };
 
+// topic-annotation design.md Decision 1: the two 403 messages are
+// parameterized so TOPIC-007 (also facilitator-only) can reuse this exact
+// check with its own copy. TOPIC-003 passes its original strings unchanged.
+interface StandingFacilitatorMessages {
+  notAFacilitator: string;
+  isTeamMember: string;
+}
+
+const ADD_CUSTOM_TOPIC_AUTH_MESSAGES: StandingFacilitatorMessages = {
+  notAFacilitator: "Only a facilitator can add a custom topic.",
+  isTeamMember: "A facilitator cannot add a custom topic to a team they are a member of.",
+};
+
 async function checkStandingFacilitatorAuthorization(
   reply: FastifyReply,
   userId: string,
   teamId: string,
   startTime: number,
+  messages: StandingFacilitatorMessages,
 ): Promise<AuthorizationResult> {
   const grant = await evaluateStandingFacilitatorAccess(userId, teamId);
 
@@ -110,11 +126,7 @@ async function checkStandingFacilitatorAuthorization(
     await reply
       .code(403)
       .send(
-        buildErrorEnvelope(
-          "forbidden",
-          "Only a facilitator can add a custom topic.",
-          "NOT_A_FACILITATOR",
-        ),
+        buildErrorEnvelope("forbidden", messages.notAFacilitator, "NOT_A_FACILITATOR"),
       );
     return { rejected: true };
   }
@@ -124,11 +136,7 @@ async function checkStandingFacilitatorAuthorization(
     await reply
       .code(403)
       .send(
-        buildErrorEnvelope(
-          "forbidden",
-          "A facilitator cannot add a custom topic to a team they are a member of.",
-          "FACILITATOR_IS_TEAM_MEMBER",
-        ),
+        buildErrorEnvelope("forbidden", messages.isTeamMember, "FACILITATOR_IS_TEAM_MEMBER"),
       );
     return { rejected: true };
   }
@@ -598,6 +606,89 @@ async function readOpenSessionCreatedAt(
   return row ? new Date(row.created_at).toISOString() : null;
 }
 
+// ---------------------------------------------------------------------------
+// topic-annotation Task 3.3 — TOPIC-007 body validation and normalization
+//
+// design.md Decision 3, evaluated in this order:
+//   1. the body is a non-array object whose `annotation` is a string
+//      (non-object body, missing, null, or non-string -> 422; null is NOT an
+//      alias for clear, so a client bug that drops the field can never
+//      silently wipe a team's definition);
+//   2. normalize: "\r\n" -> "\n", then trim (interior whitespace kept);
+//   3. reject (never strip) disallowed characters: U+0000, unpaired UTF-16
+//      surrogates, C0 controls other than "\n"/"\t" (a lone "\r" included),
+//      U+007F, and the bidi embedding/override/isolate controls
+//      U+202A-U+202E / U+2066-U+2069 -- checked BEFORE length;
+//   4. length <= 500 UTF-16 code units (String.length, the same unit as a
+//      browser <textarea maxlength>).
+// An empty normalized value means "clear" (stored NULL). Unknown keys are
+// ignored. No message ever echoes the submitted value (Decision 7).
+// ---------------------------------------------------------------------------
+// MAX_ANNOTATION_LENGTH and normalizeAnnotation come from @dipstick/shared so
+// the Topic Management screen applies the identical rule (implementation
+// review S-2); the character-rejection rules below stay server-only.
+
+const ANNOTATION_TYPE_MESSAGE = "annotation must be a string.";
+const ANNOTATION_CHARACTERS_MESSAGE = "Team definition contains characters that can't be saved.";
+const ANNOTATION_LENGTH_MESSAGE = `Team definition must be ${MAX_ANNOTATION_LENGTH} characters or fewer.`;
+
+const DISALLOWED_ANNOTATION_CHARACTERS = /[\u0000-\u0008\u000B-\u001F\u007F\u202A-\u202E\u2066-\u2069]/;
+// A high surrogate not followed by a low one, or a low surrogate not
+// preceded by a high one. Equivalent to !String.prototype.isWellFormed()
+// (Node 20+), spelled out so it does not depend on the TS lib target.
+const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+type AnnotationValidationResult = { valid: true; annotation: string | null } | { valid: false; message: string };
+
+export function validateAnnotationBody(body: unknown): AnnotationValidationResult {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { valid: false, message: ANNOTATION_TYPE_MESSAGE };
+  }
+
+  const raw = (body as { annotation?: unknown }).annotation;
+  if (typeof raw !== "string") {
+    return { valid: false, message: ANNOTATION_TYPE_MESSAGE };
+  }
+
+  const normalized = normalizeAnnotation(raw);
+
+  if (DISALLOWED_ANNOTATION_CHARACTERS.test(normalized) || UNPAIRED_SURROGATE.test(normalized)) {
+    return { valid: false, message: ANNOTATION_CHARACTERS_MESSAGE };
+  }
+
+  if (normalized.length > MAX_ANNOTATION_LENGTH) {
+    return { valid: false, message: ANNOTATION_LENGTH_MESSAGE };
+  }
+
+  return { valid: true, annotation: normalized.length === 0 ? null : normalized };
+}
+
+const ANNOTATION_AUTH_MESSAGES: StandingFacilitatorMessages = {
+  notAFacilitator: "Only a facilitator can edit a team's topic definition.",
+  isTeamMember: "A facilitator cannot edit topic definitions for a team they are a member of.",
+};
+
+interface AnnotationRow {
+  team_annotation: string | null;
+  annotation_updated_at: Date | null;
+  annotation_updated_by: string | null;
+  display_name: string | null;
+}
+
+// Provenance is { userId, displayName } only when both are present -- the
+// same rule TOPIC-002 applies to archivedBy (design.md Decision 5/6).
+function toAnnotationResponse(topicId: string, row: AnnotationRow): UpdateTopicAnnotationResponse {
+  return {
+    topicId,
+    teamAnnotation: row.team_annotation,
+    annotationUpdatedAt: row.annotation_updated_at ? row.annotation_updated_at.toISOString() : null,
+    annotationUpdatedBy:
+      row.annotation_updated_by && row.display_name
+        ? { userId: row.annotation_updated_by, displayName: row.display_name }
+        : null,
+  };
+}
+
 const TOPIC_ORDER_STALE_MESSAGE =
   "The team's topic list has changed since it was loaded. Reload the topics and try again.";
 
@@ -620,6 +711,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       session.userId,
       teamId,
       startTime,
+      ADD_CUSTOM_TOPIC_AUTH_MESSAGES,
     );
     if (authResult.rejected) {
       return reply;
@@ -1288,6 +1380,227 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       await applyTimingFloor(startTime);
       const successResponse: ReorderTopicsResponse = { topics, openSessionCreatedAt };
       return reply.code(200).send(successResponse);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // PUT /api/v1/teams/:teamId/topics/:topicId/annotation  (TOPIC-007,
+  // Annotate Topic with Shared Team Definition)
+  //
+  // Check-ordering cascade (topic-annotation design.md Decision 2,
+  // specs/topic-annotation/spec.md "TOPIC-007 evaluates its checks in a
+  // fixed order"):
+  //   1. Identity/role authorization -- 403 NOT_A_FACILITATOR /
+  //      FACILITATOR_IS_TEAM_MEMBER. FACILITATOR-ONLY: application admins
+  //      are deliberately rejected (see the comment at the call below).
+  //   2. Team existence (reused unchanged) -- 404 TEAM_NOT_FOUND.
+  //   3. Customization lock (reused unchanged) -- 409
+  //      TOPIC_CUSTOMIZATION_LOCKED, audited via writeLockDenialAudit with
+  //      attempted_operation "topic.annotation_updated". Before body
+  //      validation, so a locked team gets 409 whatever the body.
+  //   4. Body -- 422 INVALID_ANNOTATION, field "annotation".
+  //   5/6. Topic existence on this team (404 TOPIC_NOT_FOUND; a non-UUID
+  //      topicId is answered here, never by a Postgres 22P02) then status
+  //      (422 TOPIC_ALREADY_ARCHIVED).
+  //   7. Row-locked transaction: no-op (200, no write, no audit) or UPDATE +
+  //      topic.annotation_updated audit row (200). Single-row write with no
+  //      position math, so no per-team advisory lock; last-writer-wins.
+  //
+  // Every handled exit applies applyTimingFloor(startTime). The thrown path
+  // is the inherited gap shared with TOPIC-003..006.
+  //
+  // NEVER log the request body (design.md Decision 7): the annotation is the
+  // team's free text and must stay out of the application log, which has a
+  // different retention and access profile from the database.
+  // -------------------------------------------------------------------------
+  app.put<{
+    Params: { teamId: string; topicId: string };
+    Body: unknown;
+  }>("/api/v1/teams/:teamId/topics/:topicId/annotation", async (request, reply) => {
+    // Set once, first, so every exit carries it -- including the auth
+    // helper's 403s and the 500 the global error handler writes on this
+    // same reply (design.md Decision 2).
+    reply.header("Cache-Control", "no-store");
+
+    const startTime = Date.now();
+    const session = request.session as unknown as SessionData;
+    const { teamId, topicId } = request.params;
+    const endpoint = "PUT /api/v1/teams/:teamId/topics/:topicId/annotation";
+
+    // Step 1 -- 403. Deliberately the facilitator-only check (TOPIC-003's),
+    // NOT checkStandingFacilitatorOrAdminAuthorization like TOPIC-004/005/006:
+    // the definition is the team's words, recorded by the facilitator who was
+    // in the room. Application admins have no session context and get 403
+    // (BRD FR-8.7, topic-annotation design.md Decision 1). Do not "fix" this
+    // for consistency with the siblings.
+    const authResult = await checkStandingFacilitatorAuthorization(
+      reply,
+      session.userId,
+      teamId,
+      startTime,
+      ANNOTATION_AUTH_MESSAGES,
+    );
+    if (authResult.rejected) {
+      return reply;
+    }
+
+    // Step 2 -- 404 TEAM_NOT_FOUND.
+    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    if (existsResult.rejected) {
+      return reply;
+    }
+
+    // Step 3 -- 409 TOPIC_CUSTOMIZATION_LOCKED.
+    const lockResult = await checkCustomizationLockGate(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.annotation_updated",
+      },
+      startTime,
+    );
+    if (lockResult.rejected) {
+      return reply;
+    }
+
+    // Step 4 -- 422 INVALID_ANNOTATION. `request.body` is passed as-is (not
+    // `?? {}`): an absent body is a non-object body.
+    const validation = validateAnnotationBody(request.body);
+    if (!validation.valid) {
+      await applyTimingFloor(startTime);
+      return reply
+        .code(422)
+        .send(buildErrorEnvelope("invalid_request", validation.message, "INVALID_ANNOTATION", "annotation"));
+    }
+    const annotation = validation.annotation;
+
+    // Steps 5/6 -- a non-UUID topicId cannot name a topic: answer 404 here
+    // rather than letting Postgres raise 22P02 (-> 500).
+    if (!UUID_PATTERN.test(topicId)) {
+      await applyTimingFloor(startTime);
+      return reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+    }
+    const topicCheck = await checkTopicExistsAndActive(reply, teamId, topicId, startTime);
+    if (topicCheck.rejected) {
+      return reply;
+    }
+
+    // Step 7 -- design.md Decision 5. The in-transaction read is the
+    // authoritative one; the pre-check above keeps the cascade identical to
+    // the siblings.
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      const currentResult = await client.query<AnnotationRow & { status: string }>(
+        `SELECT t.status, t.team_annotation, t.annotation_updated_at, t.annotation_updated_by, u.display_name
+           FROM topics t
+           LEFT JOIN users u ON u.id = t.annotation_updated_by
+          WHERE t.id = $1 AND t.team_id = $2
+          FOR UPDATE OF t`,
+        [topicId, teamId],
+      );
+      const current = currentResult.rows[0];
+
+      if (!current) {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+      }
+      if (current.status !== "active") {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply
+          .code(422)
+          .send(
+            buildErrorEnvelope("invalid_request", "This topic is already archived.", "TOPIC_ALREADY_ARCHIVED"),
+          );
+      }
+
+      // No-op (NULL is equal to ""): nothing written, nothing audited,
+      // existing provenance returned.
+      if ((current.team_annotation ?? null) === annotation) {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply.code(200).send(toAnnotationResponse(topicId, current));
+      }
+
+      // Scoped by team_id and status as well as id (security review R1), so
+      // a cross-team write never depends on the SELECT above staying paired
+      // with this UPDATE. updated_at is deliberately not touched:
+      // annotation_updated_at is the annotation's own clock.
+      const updateResult = await client.query<AnnotationRow>(
+        `WITH upd AS (
+           UPDATE topics
+              SET team_annotation = $3,
+                  annotation_updated_by = $4,
+                  annotation_updated_at = now()
+            WHERE id = $1 AND team_id = $2 AND status = 'active'
+            RETURNING team_annotation, annotation_updated_at, annotation_updated_by
+         )
+         SELECT upd.team_annotation, upd.annotation_updated_at, upd.annotation_updated_by, u.display_name
+           FROM upd
+           LEFT JOIN users u ON u.id = upd.annotation_updated_by`,
+        [topicId, teamId, annotation, session.userId],
+      );
+      const updated = updateResult.rows[0];
+
+      if (!updated) {
+        // Defensive: unreachable under the row lock taken above. Mirrors
+        // TOPIC-004's equivalent branch: no second lookup after ROLLBACK
+        // (design.md Decision 5; implementation review N-1 / security N3),
+        // so the response never classifies a state the write did not see.
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply
+          .code(422)
+          .send(
+            buildErrorEnvelope("invalid_request", "This topic is already archived.", "TOPIC_ALREADY_ARCHIVED"),
+          );
+      }
+
+      const action = annotation === null ? "cleared" : "set";
+      const length = annotation === null ? 0 : annotation.length;
+
+      // Success audit row, same transaction as the UPDATE. Never the text.
+      await client.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          authResult.actorGlobalRole,
+          request.ip,
+          "topic.annotation_updated",
+          teamId,
+          JSON.stringify({ topic_id: topicId, action, length }),
+        ],
+      );
+
+      await client.query("COMMIT");
+
+      // Structured-log counterpart, after COMMIT. Never the text.
+      emitAuditEvent(request.log, "topic.annotation_updated", {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        topicId,
+        action,
+        length,
+      });
+
+      await applyTimingFloor(startTime);
+      return reply.code(200).send(toAnnotationResponse(topicId, updated));
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;

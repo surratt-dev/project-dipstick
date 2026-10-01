@@ -15,6 +15,14 @@ export interface Topic {
   createdAt: Date;
   updatedAt: Date;
   archivedAt: Date | null;
+  // topic-annotation (design.md Decision 8). Optional so no existing fixture
+  // breaks. TOPIC-001 (GET /api/v1/teams/:teamId/topics) deliberately does
+  // NOT return these: it has no consumer, and its authorization currently
+  // admits engineering managers. No response may be typed as Topic[] to
+  // carry them without that decision being revisited (and EMs denied first).
+  teamAnnotation?: string | null;
+  annotationUpdatedBy?: ArchivedByProvenance | null;
+  annotationUpdatedAt?: Date | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,6 +44,10 @@ export interface GetAllTopicsResponse {
   // team's display name.
   teamName: string;
   isCustomizationLocked: boolean;
+  // topic-annotation design.md Decision 8: true for a standing facilitator,
+  // false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7).
+  // Presentation only -- TOPIC-007 enforces independently.
+  canEditAnnotations: boolean;
   active: Array<{
     topicId: string;
     name: string;
@@ -48,7 +60,11 @@ export interface GetAllTopicsResponse {
     // drafted TOPIC-002 contract; added here so the Topic Management
     // screen's active list can satisfy that AC (remove-topic Task 9.2).
     firstSessionDescription: string | null;
+    // topic-annotation: the team's definition ("Our team's definition") and
+    // provenance of its last change. Admins receive these read-only.
     teamAnnotation: string | null;
+    annotationUpdatedAt: string | null;
+    annotationUpdatedBy: ArchivedByProvenance | null;
     createdAt: string;
     updatedAt: string;
   }>;
@@ -69,6 +85,11 @@ export interface GetAllTopicsResponse {
     // archivedAt/archivedBy already carry for multiple archive events.
     restoredAt: string | null;
     restoredBy: ArchivedByProvenance | null;
+    // topic-annotation: carried on archived entries so the facilitator can
+    // see what returns on restore (displayed read-only).
+    teamAnnotation: string | null;
+    annotationUpdatedAt: string | null;
+    annotationUpdatedBy: ArchivedByProvenance | null;
   }>;
   defaultTopicsNotActive: Array<{
     topicId: string;
@@ -131,4 +152,41 @@ export interface ReorderTopicsResponse {
   // Creation time of the team's lobby/pre_session/active/wrap_up session, if
   // one exists. Always null for an application_admin (design.md Decision 7).
   openSessionCreatedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// TOPIC-007 — PUT /api/v1/teams/:teamId/topics/:topicId/annotation
+// (topic-annotation, design.md Decision 3/6). Facilitator-only (FR-8.7).
+// ---------------------------------------------------------------------------
+export interface UpdateTopicAnnotationRequest {
+  // Required string. An empty value after "\r\n" -> "\n" and trim clears the
+  // definition; null is rejected (422), never an alias for clear.
+  annotation: string;
+}
+
+export interface UpdateTopicAnnotationResponse {
+  topicId: string;
+  teamAnnotation: string | null;
+  annotationUpdatedAt: string | null;
+  // Non-null only when both the user id and display name are present.
+  annotationUpdatedBy: ArchivedByProvenance | null;
+}
+
+// ---------------------------------------------------------------------------
+// TOPIC-007 annotation rules shared by client and server (topic-annotation
+// design.md Decisions 3 and 10; implementation review S-2). The Topic
+// Management screen's dirty / unchanged / clear comparisons and its
+// character count must agree exactly with what TOPIC-007 stores, so both
+// sides import these rather than each keeping its own copy. The
+// character-rejection rules stay server-only (Decision 3).
+// ---------------------------------------------------------------------------
+
+// Maximum length of a normalized team definition, in UTF-16 code units
+// (String.length -- the same unit as a browser <textarea maxlength>).
+export const MAX_ANNOTATION_LENGTH = 500;
+
+// "\r\n" -> "\n", then trim (interior whitespace kept). An empty result
+// means "clear".
+export function normalizeAnnotation(value: string): string {
+  return value.replace(/\r\n/g, "\n").trim();
 }

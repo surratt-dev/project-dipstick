@@ -42,7 +42,10 @@ export type {
   ReorderTopicsRequest,
   ReorderedTopic,
   ReorderTopicsResponse,
+  UpdateTopicAnnotationRequest,
+  UpdateTopicAnnotationResponse,
 } from "./types/topic.js";
+export { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";
 export type {
   VoteDistributionBucket,
