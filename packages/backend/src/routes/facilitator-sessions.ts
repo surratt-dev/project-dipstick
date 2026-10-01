@@ -599,6 +599,11 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       // sentinel __default_topics__ team's is_default rows -- not a
       // reference (design.md D5). display_order is preserved. No "locked"
       // column or flag is written here or anywhere else in this step.
+      //
+      // topic-annotation design.md Decision 9: the column list stays
+      // EXPLICIT. team_annotation, annotation_updated_by, and
+      // annotation_updated_at are deliberately excluded, so a new team never
+      // inherits a definition (or its provenance) from the template team.
       await client.query(
         `INSERT INTO topics
            (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
@@ -1181,9 +1186,17 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
         topic_name: string;
         topic_prompt: string;
         vote_type: string;
+        topic_annotation: string | null;
         first_session_description: string | null;
       }>(
+        // topic-annotation design.md Decision 8: the team definition is read
+        // ONLY from the session snapshot (st.topic_annotation), never from
+        // the live topics row. This query JOINs topics for
+        // first_session_description, so the live column is one letter away:
+        // do NOT select it here, or an edit made after the snapshot would
+        // change what this session shows.
         `SELECT st.id, st.topic_id, st.topic_name, st.topic_prompt, st.vote_type,
+                st.topic_annotation,
                 t.first_session_description
          FROM session_topics st
          JOIN topics t ON t.id = st.topic_id
@@ -1214,6 +1227,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
         topic_name: string;
         topic_prompt: string;
         vote_type: string;
+        topic_annotation: string | null;
         first_session_description: string | null;
       };
       // id-space note (design.md): firstSessionTopicId is session_topics.id,
@@ -1258,6 +1272,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
         voteType: firstTopicRow.vote_type as BeginVotingResponse["currentTopic"]["voteType"],
         phase: "voting",
         firstSessionDescription: sessionRow.is_first_session ? firstTopicRow.first_session_description : null,
+        topicAnnotation: firstTopicRow.topic_annotation ?? null,
       };
     } catch (err) {
       await client.query("ROLLBACK");
@@ -1847,10 +1862,13 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
         topic_name: string;
         topic_prompt: string;
         vote_type: string;
+        topic_annotation: string | null;
       }>(
-        `SELECT id, topic_id, topic_name, topic_prompt, vote_type
-         FROM session_topics
-         WHERE session_id = $1 AND display_order = (
+        // topic-annotation design.md Decision 8: the team definition comes
+        // from the snapshot (st.topic_annotation) only, never topics.
+        `SELECT st.id, st.topic_id, st.topic_name, st.topic_prompt, st.vote_type, st.topic_annotation
+         FROM session_topics st
+         WHERE st.session_id = $1 AND st.display_order = (
            SELECT display_order + 1 FROM session_topics WHERE session_id = $1 AND topic_id = $2
          )`,
         [sessionId, topicId],
@@ -1864,6 +1882,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
           topic_name: string;
           topic_prompt: string;
           vote_type: string;
+          topic_annotation: string | null;
         };
         // id-space note: nextSessionTopicId is session_topics.id,
         // nextTopicId is topics.id — never the same variable against both.
@@ -1915,6 +1934,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
             topicPrompt: nextRow.topic_prompt,
             voteType: nextRow.vote_type as "finger" | "roman" | "modified_roman",
             phase: "voting",
+            topicAnnotation: nextRow.topic_annotation ?? null,
           },
         };
       } else {

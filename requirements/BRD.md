@@ -330,6 +330,10 @@ Trend outlier detection (flagging the team's aggregate score against a rolling h
 
 **FR-8.6** [HARD] The canonical default topic set must remain visible and restorable for any team at any time, regardless of how much the team has customized their topic list.
 
+**FR-8.7** [HARD] After a team's first session, the Facilitator shall be able to set, edit, or clear a team-specific definition for each active topic. Application Administrators shall not edit team definitions.
+
+*Rationale (added by `topic-annotation`, #53):* the definition is the team's own words, recorded by the facilitator who was in the room with them; Application Administrators have no session context. FR-8.2 ("facilitator or Application Administrator" may add, remove, or reorder topics) does not mention annotation, so FR-8.7 adds a rule for a new operation and does not contradict FR-8.2. Administrators may still read team definitions on the topic management screen.
+
 ### FR-9: Trend Dashboard and Reporting
 
 **FR-9.1** [HARD] The application shall provide a Trend Dashboard accessible to Participants, Facilitators assigned to the team, EMs, and Application Administrators. This view shall not be accessible to users with no relationship to the team.
@@ -769,6 +773,7 @@ It has not yet been confirmed that every privileged WebSocket event (reveal trig
 | FR-7.1a        | Pre-close deletion of wrap-up-created items permitted | Allow facilitator to correct data-entry errors before items enter the permanent record |
 | FR-7.4         | Stale item flagging                                | Surface neglected commitments before they are forgotten                  |
 | FR-8.3         | Topic removal preserves history                    | Protect longitudinal trend data after topic set changes                  |
+| FR-8.7         | Only the Facilitator edits team topic definitions; admins excluded | Keep the definition in the team's words, captured by someone who was in the room |
 | FR-9.5         | EM view shows aggregates, not individual votes     | Allow management visibility without exposing individual participant data |
 | FR-4.6.1       | Reveal event must reach all clients within 15 seconds | Enforce simultaneity SLA; surface latency failures before production |
 | FR-5.1         | Individual outlier threshold defined at ±1.5 from session average | Consistent, facilitator-independent outlier detection      |

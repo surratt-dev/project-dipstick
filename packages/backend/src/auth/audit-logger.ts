@@ -375,7 +375,15 @@ export type AuditEventName =
   // transaction as the two-phase renumber. The audit_log row's metadata is
   // { previous_order: uuid[], new_order: uuid[] } (lowercase IDs, no names);
   // the structured-log event carries topicCount only, not the ID arrays.
-  | "topic.reordered";
+  | "topic.reordered"
+  // topic.annotation_updated: topic-annotation, design.md Decision 7. Fired by
+  // PUT /api/v1/teams/:teamId/topics/:topicId/annotation (TOPIC-007) on every
+  // save that changes the stored team definition (no-op saves are silent), in
+  // the same database transaction as the topics UPDATE. metadata: { topic_id,
+  // action: "set" | "cleared", length } -- NEVER the annotation text, in
+  // either the audit_log row or the structured-log event, so neither log can
+  // become the version history the use case rules out.
+  | "topic.annotation_updated";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

@@ -1,4 +1,5 @@
-import { describe, it, expectTypeOf } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
+import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "../index.js";
 import type {
   User,
   UserRole,
@@ -149,6 +150,7 @@ describe("Session types", () => {
       displayOrder: 0,
       topicName: "Topic",
       topicPrompt: "Prompt",
+      topicAnnotation: null,
       voteType: "finger",
       status: "waiting",
       revealedAt: null,
@@ -304,5 +306,22 @@ describe("Auth types", () => {
       },
     };
     expectTypeOf(err).toMatchTypeOf<AuthError>();
+  });
+});
+
+// topic-annotation implementation review S-2: the one definition of the
+// TOPIC-007 normalization rule, imported by the backend handler and the
+// Topic Management screen alike.
+describe("Topic annotation rules (runtime)", () => {
+  it("MAX_ANNOTATION_LENGTH is 500", () => {
+    expect(MAX_ANNOTATION_LENGTH).toBe(500);
+  });
+
+  it("normalizeAnnotation converts CRLF to LF and trims, keeping interior whitespace", () => {
+    expect(normalizeAnnotation("  a\r\n\r\n b\t c  \r\n")).toBe("a\n\n b\t c");
+  });
+
+  it("normalizeAnnotation of whitespace only is empty (clear)", () => {
+    expect(normalizeAnnotation(" \r\n\t ")).toBe("");
   });
 });

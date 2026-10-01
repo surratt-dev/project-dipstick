@@ -483,6 +483,12 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       display_order: number;
       status: string;
     }>(
+      // topic-annotation design.md Decision 8: team_annotation and its
+      // provenance are DELIBERATELY not selected here. TOPIC-001 has no
+      // consumer of the value, in-session display reads only the session
+      // payload's snapshot, and this endpoint currently admits engineering
+      // managers. Adding the annotation requires denying engineering
+      // managers on this endpoint first.
       `SELECT id, name, prompt, vote_type, display_order, status
        FROM topics
        WHERE team_id = $1 AND status = 'active'
@@ -521,6 +527,25 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
   // facilitator-sessions.ts's session-creation copy reads from).
   // -------------------------------------------------------------------------
   const DEFAULT_TOPICS_TEAM_ID = "00000000-0000-0000-0000-000000000001";
+
+  // topic-annotation design.md Decision 8 — shared by the active and
+  // archived mappings. Provenance is non-null only when both the user id and
+  // display name are present (the archivedBy rule).
+  function annotationFields(row: {
+    team_annotation: string | null;
+    annotation_updated_at: Date | null;
+    annotation_updated_by: string | null;
+    annotation_updated_by_display_name: string | null;
+  }) {
+    return {
+      teamAnnotation: row.team_annotation,
+      annotationUpdatedAt: row.annotation_updated_at ? row.annotation_updated_at.toISOString() : null,
+      annotationUpdatedBy:
+        row.annotation_updated_by && row.annotation_updated_by_display_name
+          ? { userId: row.annotation_updated_by, displayName: row.annotation_updated_by_display_name }
+          : null,
+    };
+  }
 
   app.get<{
     Params: { teamId: string };
@@ -567,12 +592,21 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       first_session_description: string | null;
       created_at: Date;
       updated_at: Date;
+      team_annotation: string | null;
+      annotation_updated_at: Date | null;
+      annotation_updated_by: string | null;
+      annotation_updated_by_display_name: string | null;
     }>(
-      `SELECT id, name, prompt, vote_type, display_order, is_default,
-              first_session_description, created_at, updated_at
-       FROM topics
-       WHERE team_id = $1 AND status = 'active'
-       ORDER BY display_order ASC`,
+      // topic-annotation design.md Decision 8 — the team's definition and
+      // its provenance, via the same LEFT JOIN users pattern as archivedBy.
+      `SELECT t.id, t.name, t.prompt, t.vote_type, t.display_order, t.is_default,
+              t.first_session_description, t.created_at, t.updated_at,
+              t.team_annotation, t.annotation_updated_at, t.annotation_updated_by,
+              annotation_user.display_name AS annotation_updated_by_display_name
+       FROM topics t
+       LEFT JOIN users annotation_user ON annotation_user.id = t.annotation_updated_by
+       WHERE t.team_id = $1 AND t.status = 'active'
+       ORDER BY t.display_order ASC`,
       [teamId],
     );
 
@@ -592,13 +626,20 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       restored_at: Date | null;
       restored_by: string | null;
       restored_by_display_name: string | null;
+      team_annotation: string | null;
+      annotation_updated_at: Date | null;
+      annotation_updated_by: string | null;
+      annotation_updated_by_display_name: string | null;
     }>(
       `SELECT t.id, t.name, t.prompt, t.vote_type, t.is_default, t.archived_at,
               t.archived_by, archived_by_user.display_name AS archived_by_display_name,
-              t.restored_at, t.restored_by, restored_by_user.display_name AS restored_by_display_name
+              t.restored_at, t.restored_by, restored_by_user.display_name AS restored_by_display_name,
+              t.team_annotation, t.annotation_updated_at, t.annotation_updated_by,
+              annotation_user.display_name AS annotation_updated_by_display_name
        FROM topics t
        LEFT JOIN users archived_by_user ON archived_by_user.id = t.archived_by
        LEFT JOIN users restored_by_user ON restored_by_user.id = t.restored_by
+       LEFT JOIN users annotation_user ON annotation_user.id = t.annotation_updated_by
        WHERE t.team_id = $1 AND t.status = 'archived'
        ORDER BY t.archived_at DESC`,
       [teamId],
@@ -621,10 +662,16 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
 
     const isCustomizationLocked = !(await hasCompletedFirstSession(teamId));
 
+    // topic-annotation design.md Decision 8: presentation-only flag so the
+    // screen never offers an editor that TOPIC-007 would answer with 403.
+    // TOPIC-007 enforces independently; both derive from global_role.
+    const canEditAnnotations = decision.actorGlobalRole === "facilitator";
+
     const responseBody: GetAllTopicsResponse = {
       teamId,
       teamName,
       isCustomizationLocked,
+      canEditAnnotations,
       active: activeResult.rows.map((row) => ({
         topicId: row.id,
         name: row.name,
@@ -633,7 +680,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
         displayOrder: row.display_order,
         isDefault: row.is_default,
         firstSessionDescription: row.first_session_description,
-        teamAnnotation: null,
+        ...annotationFields(row),
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
       })),
@@ -653,6 +700,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
           row.restored_by && row.restored_by_display_name
             ? { userId: row.restored_by, displayName: row.restored_by_display_name }
             : null,
+        ...annotationFields(row),
       })),
       defaultTopicsNotActive: defaultTopicsResult.rows
         .filter((row) => row.team_topic_status !== "active")

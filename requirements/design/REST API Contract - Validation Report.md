@@ -197,7 +197,7 @@ Decision: `application_admin` (any team) and `engineering_manager` (own team, pa
 
 **OQ-7: Character limits for annotations.**
 
-- Topic annotations: 500 characters (consistent with other 500-character limits in the system).
+- Topic annotations: 500 characters (consistent with other 500-character limits in the system). **Partially resolved in the contract by `topic-annotation` (TOPIC-007 only):** the unit is 500 UTF-16 code units, counted after `\r\n` → `\n` normalization and trim. The contract's OQ-7 row stays open for the SESSION-011 part.
 - Session annotations: 60 characters (appropriate for a short label visible in session history list rows).
 
 Both are confirmed.

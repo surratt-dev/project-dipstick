@@ -322,8 +322,9 @@
 
 ## Preconditions
 - The Facilitator is authenticated.
-- The team has at least one completed session (topic customization is unlocked).
-- The topic to be annotated exists in the team's active topic configuration.
+- The team has at least one completed session (topic customization is unlocked). Before then, a save is rejected with `409 TOPIC_CUSTOMIZATION_LOCKED` and audited, the same as every other topic modification (see Use Case: Enforce Topic Customization Lock for First Session).
+- The Facilitator is a standing facilitator who is not an active member of the team. Application Administrators cannot annotate (`403`; BRD FR-8.7).
+- The topic to be annotated exists in the team's active topic configuration. Default and custom topics are both annotatable.
 
 ## Main Flow
 1. The Facilitator navigates to the topic management screen for the team.
@@ -333,12 +334,12 @@
 5. The Facilitator saves the annotation.
 6. The Application persists the annotation text against the topic in the team's configuration.
 7. The Application confirms the save.
-8. During future sessions, the Application displays the annotation alongside the topic prompt so all participants can see the team's agreed definition.
+8. In sessions created after the save, the Application displays the annotation alongside the topic prompt so all participants can see the team's agreed definition. (Each session snapshots the definition with its topics, so sessions that already exist keep the previous one. Session display is pending #175 and #56/#57.)
 
 ## Alternate Flows
-- **Facilitator saves an empty annotation:** The Application clears the existing annotation. The topic displays without a team annotation in future sessions. A confirmation may be appropriate before clearing (see Notes).
+- **Facilitator saves an empty annotation:** Before clearing an existing annotation, the Application shows an inline confirmation ("Remove this team's definition? This can't be undone.") and sends nothing until the Facilitator confirms. On confirmation the Application clears the annotation, and the topic displays without a team annotation in sessions created afterwards. Overwriting an annotation with different text does not ask for confirmation. Saving text that is unchanged after trimming sends nothing.
 - **Save fails due to a system error:** The Application displays an error. The previous annotation (or lack of one) is retained. The Facilitator can retry.
-- **Annotation is excessively long:** The Application enforces a reasonable character limit and displays a validation message if exceeded.
+- **Annotation is excessively long:** The limit is 500 characters (UTF-16 code units, after trimming). The editor's field enforces it and announces "500 character limit reached."; the server rejects a longer value with `422`.
 
 ## Postconditions
 - **Success:** The topic's annotation reflects the Facilitator's input. The annotation is displayed to all session participants (Engineers and Facilitators) during future sessions when the topic is active.
@@ -353,10 +354,10 @@
 - [ ] The annotation is displayed alongside the topic prompt during sessions (visible to all participants).
 - [ ] Topics with no annotation display no annotation field during sessions (the absence is handled gracefully).
 - [ ] Clearing an annotation (saving empty text) removes the annotation from session display.
-- [ ] Annotation editing is available only to the Facilitator.
+- [ ] Annotation editing is available only to the Facilitator (Application Administrators see annotations read-only; BRD FR-8.7).
 
 ## Out of Scope
-- Engineers editing or proposing annotations during or between sessions.
+- Engineers, Engineering Managers, or Application Administrators editing or proposing annotations during or between sessions. Only a standing Facilitator (not a member of the team) edits the team's definition (BRD FR-8.7).
 - Version history for annotations (overwriting the annotation does not create a revision trail).
 - Annotations on the application's default topic descriptions (only the team-specific annotation is editable).
 
@@ -366,8 +367,9 @@
 
 ## Notes
 - The annotation is the team's definition of what the topic means to them, distinct from the topic's description (which is set at creation and is more of a prompt explanation). Both may be displayed during a session, but they serve different purposes.
-- Whether a facilitator can annotate default topics (not just custom ones) should be confirmed — the feature description implies all topics can be annotated, default or custom.
-- The first session may be an appropriate moment to capture initial annotations, but the customization lock means annotations can only be added after the first session completes.
+- **Resolved (`topic-annotation`):** both default and custom topics can be annotated. Annotating a team's copy of a default topic never changes the template or any other team.
+- The first session may be an appropriate moment to capture initial annotations, but the customization lock means annotations can only be added after the first session completes (a save before then is a `409`). As a result, every team's first session runs the canonical baseline with no annotation.
+- The on-screen label is "Our team's definition". "Annotation" is the code/API name.
 
 ---
 
@@ -513,7 +515,7 @@
 1. The Facilitator advances the session to the next topic.
 2. The Application displays the topic prompt to all participants simultaneously.
 3. The Application displays the vote type (Finger, Roman, or Modified Roman) with appropriate UI controls for the Engineer to cast their vote.
-4. If a team annotation exists for the topic, the Application displays it alongside the prompt.
+4. If a team annotation exists for the topic, the Application displays it alongside the prompt. *(Pending #175 and #56/#57. The source is the session payload's `currentTopic.topicAnnotation`, the per-session snapshot, never TOPIC-001.)*
 5. If a description exists for the topic, the Application displays it (or makes it accessible) to provide additional context.
 6. The Engineer reads the prompt, annotation, and description to orient their response.
 7. The Engineer proceeds to cast their vote (this step is covered in Live Voting use cases).
@@ -521,7 +523,7 @@
 ## Alternate Flows
 - **Topic has no annotation:** The Application displays the prompt and description without an annotation section. No placeholder or empty field is shown.
 - **Topic has no description:** The Application displays the prompt and annotation (if any) without a description.
-- **Engineer joins the session after the topic has been displayed:** The Application shows the current topic's prompt, vote type, annotation, and description to the late joiner immediately upon joining.
+- **Engineer joins the session after the topic has been displayed:** The Application shows the current topic's prompt, vote type, annotation, and description to the late joiner immediately upon joining. *(Annotation part pending #175 and #56/#57. The reconnect snapshot must carry the session snapshot value, `session_topics.topic_annotation`.)*
 
 ## Postconditions
 - **Success:** The Engineer has seen the topic prompt, vote type, team annotation, and description. No data is changed by viewing.
@@ -532,9 +534,9 @@
 ## Acceptance Criteria
 - [ ] When the Facilitator advances to a topic, the topic prompt is displayed to all participants simultaneously.
 - [ ] The vote type controls shown to the Engineer match the configured vote type for the topic (Finger = 1–4 scale; Roman = up/down; Modified Roman = up/steady/down).
-- [ ] The team annotation, if present, is displayed alongside the prompt before the vote is cast.
+- [ ] The team annotation, if present, is displayed alongside the prompt before the vote is cast. *(Pending #175 and #56/#57; source: `currentTopic.topicAnnotation` from the session payload, the snapshot, not TOPIC-001.)*
 - [ ] The topic description, if present, is accessible to the Engineer during the voting phase.
-- [ ] Topics with no annotation show no annotation UI element.
+- [ ] Topics with no annotation show no annotation UI element. *(Pending #175 and #56/#57.)*
 - [ ] The topic display is read-only for Engineers — no editing controls are shown.
 
 ## Out of Scope

@@ -2887,3 +2887,110 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
     expect(eligibleQueryCall![0] as string).not.toContain("JOIN sessions");
   });
 });
+// ---------------------------------------------------------------------------
+// topic-annotation Tasks 6.2/6.3 — SESSION-005 / SESSION-012 carry
+// currentTopic.topicAnnotation from the session_topics snapshot only.
+// The real-Postgres negative test (live edit does not leak) is in
+// topic-annotation-integration.test.ts; this mocked SQL-text guard runs even
+// when that suite self-skips locally.
+// ---------------------------------------------------------------------------
+describe("topic-annotation — session payloads read the snapshot only (design.md Decision 8)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  async function beginVoting(topicAnnotation: string | null) {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          status: "pre_session", is_first_session: false,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] });
+    const client = makeMockClient([
+      { rows: [] },
+      {
+        rows: [{
+          id: "session-topic-1", topic_id: "topic-1", topic_name: "Pipeline", topic_prompt: "P",
+          vote_type: "finger", first_session_description: null, topic_annotation: topicAnnotation,
+        }],
+      },
+      { rows: [{ voting_started_at: new Date("2026-09-08T00:00:00Z") }] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    return { res, client };
+  }
+
+  async function advance(topicAnnotation: string | null) {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          status: "active", current_topic_id: "topic-1",
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] });
+    const client = makeMockClient([
+      { rows: [] },
+      {
+        rows: [{ id: "session-topic-1", topic_name: "Pipeline", completed_at: new Date("2026-09-08T00:00:00Z") }],
+        rowCount: 1,
+      },
+      {
+        rows: [{
+          id: "session-topic-2", topic_id: "topic-2", topic_name: "Deploys", topic_prompt: "P2",
+          vote_type: "finger", topic_annotation: topicAnnotation,
+        }],
+      },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/sessions/sess-1/topics/advance" });
+    return { res, client };
+  }
+
+  it("SESSION-005 returns the snapshotted annotation", async () => {
+    const { res } = await beginVoting("X");
+    expect(res.statusCode).toBe(200);
+    expect(res.json().currentTopic.topicAnnotation).toBe("X");
+  });
+
+  it("SESSION-005 returns null for a null snapshot", async () => {
+    const { res } = await beginVoting(null);
+    expect(res.json().currentTopic.topicAnnotation).toBeNull();
+  });
+
+  it("SESSION-012 returns the snapshotted annotation", async () => {
+    const { res } = await advance("X");
+    expect(res.statusCode).toBe(200);
+    expect(res.json().currentTopic.topicAnnotation).toBe("X");
+  });
+
+  it("SESSION-012 returns null for a null snapshot", async () => {
+    const { res } = await advance(null);
+    expect(res.json().currentTopic.topicAnnotation).toBeNull();
+  });
+
+  it("SQL-text guard: both topic SELECTs read st.topic_annotation and never t.team_annotation", async () => {
+    const { client: beginClient } = await beginVoting("X");
+    const { client: advanceClient } = await advance("X");
+
+    for (const client of [beginClient, advanceClient]) {
+      const topicSelect = client.query.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .find((sql: string) => /SELECT[\s\S]*FROM session_topics st/.test(sql));
+      expect(topicSelect).toBeDefined();
+      expect(topicSelect).toContain("st.topic_annotation");
+      expect(topicSelect).not.toMatch(/\bt\.team_annotation\b/);
+      expect(topicSelect).not.toMatch(/\bteam_annotation\b/);
+    }
+  });
+});

@@ -36,6 +36,8 @@ export interface SessionTopic {
   displayOrder: number;
   topicName: string;
   topicPrompt: string;
+  /** topic-annotation: snapshot of topics.team_annotation, written with the rest of the row (#175) */
+  topicAnnotation: string | null;
   voteType: VoteType;
   status: SessionTopicStatus;
   revealedAt: Date | null;
@@ -87,6 +89,8 @@ export interface BeginVotingResponse {
     voteType: VoteType;
     phase: "voting";
     firstSessionDescription: string | null;
+    /** topic-annotation: from the session_topics snapshot only, never live topics.team_annotation */
+    topicAnnotation: string | null;
   };
 }
 
@@ -154,6 +158,8 @@ export interface TopicAdvanceResponse {
     topicPrompt: string;
     voteType: VoteType;
     phase: "voting";
+    /** topic-annotation: from the session_topics snapshot only, never live topics.team_annotation */
+    topicAnnotation: string | null;
   };
   /** Present only when status === 'wrap_up' */
   wrapUpStartedAt?: string;
