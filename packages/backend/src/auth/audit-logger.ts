@@ -189,6 +189,17 @@ export type AuditEventName =
   // transitions — every sessions.status change already commits a real
   // state transition. The topic-to-topic advance case (sessions.status
   // does NOT change) uses session.topic_advanced instead.
+  //
+  // Room open (draft -> lobby via /advance), session-topics-snapshot-at-
+  // creation (#175) design.md Decision 3b: metadata is { session_id,
+  // prior_status, new_status, topic_count, topic_ids }, where topic_ids are
+  // the snapshotted topics.id values in snapshot display_order and
+  // topic_count is their number. Content boundary (normative in the
+  // session-creation spec): NEVER topic_name, topic_prompt, or
+  // topic_annotation -- the annotation is team free text. Sink split: the
+  // audit_log row carries topic_count and topic_ids; the emitAuditEvent log
+  // line carries topicCount ONLY (no id list, no topic text). No row is
+  // written on 409 NO_ACTIVE_TOPICS: it would roll back with the transaction.
   | "session.state_changed"
   // session.vote_submitted: NOT blocked by issue #26 — the vote lock-in
   // handler's INSERT INTO votes already commits today. metadata excludes
@@ -289,12 +300,32 @@ export type AuditEventName =
   // exists yet at this point. metadata: none beyond the standard
   // actor/actor_global_role/actor_ip fields.
   | "team.creation_denied_role"
+  // session.advance_denied_role: session-topics-snapshot-at-creation (#175)
+  // design.md Decision 3a. Fired by POST /api/v1/teams/:teamId/sessions/
+  // :sessionId/advance when the caller is the session's facilitator_id but
+  // their LIVE users.global_role is no longer 'facilitator' (including a
+  // missing user row, recorded as actor_global_role 'unknown'). Opening the
+  // room fixes the team's voting list and grants untimed Path 3 access, so a
+  // revoked facilitator's attempt is a security-relevant rejection. Written
+  // as a plain INSERT INTO audit_log immediately before the 403, following
+  // team.creation_denied_role. Columns: actor, actor global role, IP,
+  // team_id. metadata: { session_id }.
+  | "session.advance_denied_role"
   // team.created_with_session: inline-team-creation, design.md D3. Written
   // in the same transaction as the new team's INSERT INTO teams and its
   // first session's INSERT INTO sessions -- team.manager_established and
   // session.draft_created are the direct precedent (an access/existence
   // -establishing event audited in the same transaction as the rows it
-  // covers). metadata: { team_id, session_id }.
+  // covers). metadata: { team_id, session_id, topic_count, topic_ids }.
+  //
+  // topic_count / topic_ids: session-topics-snapshot-at-creation (#175)
+  // design.md Decision 3b. This creation is the session's room open, so the
+  // same transaction writes its session_topics snapshot; topic_ids are the
+  // snapshotted topics.id values in snapshot display_order. Same content
+  // boundary and sink split as session.state_changed's room-open row: never
+  // topic name, prompt, or annotation; topic_ids in the audit_log row only,
+  // topicCount (only) in the emitAuditEvent line. Not written on the
+  // empty-template 500 (the error log line with correlationId covers it).
   | "team.created_with_session"
   // session.participant_registered / session.participant_registration_rejected:
   // participant-readiness-view, design.md Decision D2 (security review

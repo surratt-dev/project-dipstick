@@ -49,6 +49,11 @@ jobs:
       OIDC_CLIENT_SECRET: dipstick-local-secret
       OIDC_REDIRECT_URI: http://localhost:3000/auth/callback
       NODE_ENV: development
+      # session-topics-snapshot-at-creation (#175) design.md "Verification
+      # approach": real-DB test files keep describe.skipIf(!dbUp) for ci.yml,
+      # and throw when Postgres is unreachable while REQUIRE_DB is set, so
+      # they can never silently skip in this lane.
+      REQUIRE_DB: "1"
 
     steps:
       - uses: actions/checkout@v4

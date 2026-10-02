@@ -47,7 +47,7 @@ function fakeQuery(sql: string): Promise<{ rows: unknown[] }> {
     return Promise.resolve({ rows: [{ count: "1" }] });
   }
   if (sql.includes("SELECT id FROM teams")) {
-    return Promise.resolve({ rows: [{ id: "team-1" }] });
+    return Promise.resolve({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] });
   }
   if (sql.includes("FROM teams")) {
     return Promise.resolve({ rows: [{ name: "Platform Squad" }] });
@@ -146,10 +146,10 @@ describe("canAddTopics agrees with TOPIC-003's authorization for every caller cl
       currentCaller = caller;
       const app = await buildApp();
 
-      const list = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+      const list = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
       const post = await app.inject({
         method: "POST",
-        url: "/api/v1/teams/team-1/topics",
+        url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
         payload: { name: `Parity topic ${index}`, prompt: "A valid prompt?", voteType: "finger" },
       });
 

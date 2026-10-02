@@ -225,4 +225,13 @@ export interface FacilitatorSessionStateResponse {
    * only on the draft branch.
    */
   joinToken: string;
+  /**
+   * The current number of active topics for the session's team
+   * (session-topics-snapshot-at-creation design.md Decision 6). Present ONLY
+   * when currentSessionState is "draft" and omitted for every other status.
+   * It is a hint for the "Open the room" confirmation copy and the
+   * zero-topic disabled state; the /advance guard stays authoritative.
+   * Clients must not treat an absent field as 0.
+   */
+  activeTopicCount?: number;
 }

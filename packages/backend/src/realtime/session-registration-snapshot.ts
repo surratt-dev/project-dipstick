@@ -37,19 +37,27 @@ export async function buildSessionRegistrationSnapshot(
   userId: string,
   sessionId: string,
 ): Promise<SessionRegistrationSnapshotPayload | null> {
+  // session-topics-snapshot-at-creation design.md Decision 8 (R5):
+  // sessions.current_topic_id is a topics.id -- that is how begin-voting
+  // (SESSION-005) and advance (SESSION-012) write it. The current
+  // session_topics row is therefore resolved by (session_id, topic_id), and
+  // its session_topics.id is what currentTopic.sessionTopicId carries: the
+  // same id the begin-voting and advance payloads return, which
+  // voteDraft.ts keys on. With UNIQUE (session_id, topic_id) and UNIQUE
+  // (session_topic_id, voter_id) this returns at most one row.
   const result = await db.query<{
     session_status: SessionStatus;
-    current_topic_id: string | null;
+    session_topic_id: string | null;
     topic_status: SessionTopicStatus | null;
     has_locked_in: boolean;
   }>(
     `SELECT s.status AS session_status,
-            s.current_topic_id,
+            st.id AS session_topic_id,
             st.status AS topic_status,
             (v.id IS NOT NULL) AS has_locked_in
      FROM sessions s
-     LEFT JOIN session_topics st ON st.id = s.current_topic_id
-     LEFT JOIN votes v ON v.session_topic_id = s.current_topic_id AND v.voter_id = $2
+     LEFT JOIN session_topics st ON st.session_id = s.id AND st.topic_id = s.current_topic_id
+     LEFT JOIN votes v ON v.session_topic_id = st.id AND v.voter_id = $2
      WHERE s.id = $1`,
     [sessionId, userId],
   );
@@ -67,9 +75,9 @@ export async function buildSessionRegistrationSnapshot(
     sessionId,
     sessionStatus: row.session_status,
     currentTopic:
-      row.current_topic_id === null
+      row.session_topic_id === null
         ? null
-        : { sessionTopicId: row.current_topic_id, status: row.topic_status! },
+        : { sessionTopicId: row.session_topic_id, status: row.topic_status! },
     hasLockedInVote: row.has_locked_in,
   };
 }

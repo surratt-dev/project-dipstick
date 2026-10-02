@@ -292,7 +292,7 @@ describe("reorder controls — rendering and moves", () => {
 
     expect(
       screen.getByText(
-        "Order changes apply to sessions created after you save. Sessions already created keep their order.",
+        "Order changes apply to sessions opened after you save. Sessions already open keep their order.",
       ),
     ).toBeInTheDocument();
   });
@@ -334,7 +334,7 @@ describe("reorder controls — save", () => {
 
     await waitFor(() =>
       expect(screen.getByRole("status").textContent).toBe(
-        "Order saved. The session created on Sep 30, 2026 keeps its original order.",
+        "Order saved. The session opened on Sep 30, 2026 keeps its original order.",
       ),
     );
     expect(screen.queryByText("Order saved.")).not.toBeInTheDocument();

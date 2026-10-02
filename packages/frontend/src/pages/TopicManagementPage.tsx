@@ -127,7 +127,9 @@ const moveButtonId = (topicId: string, action: MoveAction) => `move-${action}-${
 const activeRowHeadingId = (topicId: string) => `topic-heading-${topicId}`;
 const archivedRowHeadingId = (topicId: string) => `archived-topic-heading-${topicId}`;
 
-const ORDER_COPY = "Order changes apply to sessions created after you save. Sessions already created keep their order.";
+// session-topics-snapshot-at-creation (#175): a session's order is fixed at
+// room open, so the copy speaks of sessions being opened, not created.
+const ORDER_COPY = "Order changes apply to sessions opened after you save. Sessions already open keep their order.";
 const LOCKED_BY_DRAFT_REASON = "Save or discard your order changes first.";
 const STALE_MESSAGE = "The topic list was changed elsewhere since you opened this page.";
 const SAVE_FALLBACK_ERROR = "Unable to save the topic order.";
@@ -1007,7 +1009,7 @@ export function TopicManagementPage() {
       setSaveState("idle");
       setSaveConfirmation(
         body.openSessionCreatedAt
-          ? `Order saved. The session created on ${SAVED_DATE_FORMAT.format(
+          ? `Order saved. The session opened on ${SAVED_DATE_FORMAT.format(
               new Date(body.openSessionCreatedAt),
             )} keeps its original order.`
           : "Order saved.",

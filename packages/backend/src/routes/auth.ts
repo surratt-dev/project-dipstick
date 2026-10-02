@@ -22,6 +22,7 @@ import { writeFailOpenAuditRow } from "../auth/fail-open-audit-write.js";
 import { withAuditTransaction } from "../auth/audit-write-transaction.js";
 import { resolveJoinLandingPath } from "../auth/join-landing-path.js";
 import { resolveActorGlobalRole } from "../realtime/connection-reauthorization.js";
+import { UUID_PATTERN_SOURCE } from "./uuid.js";
 import type { AuthSession, DevLoginOption, DevLoginOptionsResponse } from "@dipstick/shared";
 
 const STATE_TTL_SECONDS = 600; // 10 minutes
@@ -69,7 +70,7 @@ function isSeededAccountId(value: string): value is (typeof SEEDED_ACCOUNT_IDS)[
 // `pathname + search`, so dropping a returnTo value just because it happens
 // to carry a query string would needlessly discard a valid destination.
 // ---------------------------------------------------------------------------
-const UUID_PATTERN = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+const UUID_PATTERN = UUID_PATTERN_SOURCE;
 
 const RETURN_TO_ALLOW_LIST: RegExp[] = [
   new RegExp(`^/session/${UUID_PATTERN}(?:\\?.*)?$`),

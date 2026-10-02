@@ -69,7 +69,7 @@ function mockAdminGrant() {
   });
 }
 
-function mockFacilitatorGrant(sessionId = "session-1", sessionStatus = "active") {
+function mockFacilitatorGrant(sessionId = "5e550000-0000-4000-8000-000000000001", sessionStatus = "active") {
   // user+membership: no membership row
   mockDbQuery.mockResolvedValueOnce({
     rows: [{ global_role: "facilitator", membership_role: null }],
@@ -103,7 +103,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
     mockNoGrant();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(403);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -116,7 +116,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     // Task 5.12: Application Admin gets 403 on session history
     expect(res.statusCode).toBe(403);
@@ -140,7 +140,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(200);
     // Task 5.7: Cache-Control: no-store on all content responses
@@ -152,7 +152,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -164,7 +164,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // connectionRecoveries query
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -176,7 +176,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
   // connectionRecoveries field, and its non-disclosure filter.
   // -------------------------------------------------------------------------
   it("includes SEC-26 connectionRecoveries for a facilitator, filtered explicitly to session.connection_recovered (task 5.2)", async () => {
-    mockFacilitatorGrant("session-1");
+    mockFacilitatorGrant("5e550000-0000-4000-8000-000000000001");
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // session-history query
     mockDbQuery.mockResolvedValueOnce({
       rows: [
@@ -186,7 +186,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
     });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload) as { connectionRecoveries: Array<{ userId: string; recoveredAt: string }> };
@@ -207,7 +207,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
   });
 
   it("never returns session.access_revoked_live or session.token_refresh_failed_live rows in connectionRecoveries", async () => {
-    mockFacilitatorGrant("session-1");
+    mockFacilitatorGrant("5e550000-0000-4000-8000-000000000001");
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // session-history query
     // The mocked db layer only ever returns what the (correctly-scoped) SQL
     // WHERE clause would select — simulating the DB actually enforcing the
@@ -219,7 +219,7 @@ describe("GET /api/v1/teams/:teamId/sessions", () => {
     });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
     const body = JSON.parse(res.payload) as { connectionRecoveries: Array<{ userId: string }> };
 
     expect(body.connectionRecoveries).toHaveLength(1);
@@ -239,7 +239,7 @@ describe("GET /api/v1/teams/:teamId/trends", () => {
     mockNoGrant();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/trends" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/trends" });
 
     expect(res.statusCode).toBe(403);
   });
@@ -249,7 +249,7 @@ describe("GET /api/v1/teams/:teamId/trends", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/trends" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/trends" });
 
     expect(res.statusCode).toBe(403);
 
@@ -264,7 +264,7 @@ describe("GET /api/v1/teams/:teamId/trends", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/trends" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/trends" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -283,7 +283,7 @@ describe("GET /api/v1/teams/:teamId/action-items", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit INSERT
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/action-items" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/action-items" });
 
     expect(res.statusCode).toBe(403);
   });
@@ -293,7 +293,7 @@ describe("GET /api/v1/teams/:teamId/action-items", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/action-items" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/action-items" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -320,7 +320,7 @@ describe("GET /api/v1/teams/:teamId/topics — isCustomizationLocked (Task 2.1-2
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] }); // hasCompletedFirstSession
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -334,7 +334,7 @@ describe("GET /api/v1/teams/:teamId/topics — isCustomizationLocked (Task 2.1-2
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] }); // hasCompletedFirstSession
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as { isCustomizationLocked: boolean };
@@ -347,7 +347,7 @@ describe("GET /api/v1/teams/:teamId/topics — isCustomizationLocked (Task 2.1-2
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] }); // hasCompletedFirstSession
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as { isCustomizationLocked: boolean };
@@ -360,7 +360,7 @@ describe("GET /api/v1/teams/:teamId/topics — isCustomizationLocked (Task 2.1-2
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "2" }] }); // hasCompletedFirstSession
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as { isCustomizationLocked: boolean };
@@ -375,7 +375,7 @@ describe("GET /api/v1/teams/:teamId/topics — isCustomizationLocked (Task 2.1-2
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics" });
 
     const body = res.json() as { topics: Array<Record<string, unknown>> };
     expect(body.topics[0]).toHaveProperty("vote_type");
@@ -397,7 +397,7 @@ describe("Authorization-before-lookup (Task 5.6)", () => {
     mockNoGrant();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/nonexistent-team/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/sessions" });
 
     expect(res.statusCode).toBe(403);
 
@@ -416,8 +416,8 @@ describe("Authorization-before-lookup (Task 5.6)", () => {
     mockNoGrant();
 
     const app = await buildApp();
-    const existingTeamRes = await app.inject({ method: "GET", url: "/api/v1/teams/existing-team/sessions" });
-    const nonexistentTeamRes = await app.inject({ method: "GET", url: "/api/v1/teams/nonexistent-team/sessions" });
+    const existingTeamRes = await app.inject({ method: "GET", url: "/api/v1/teams/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/sessions" });
+    const nonexistentTeamRes = await app.inject({ method: "GET", url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/sessions" });
 
     // Both must return 403 — not 404 for nonexistent team
     expect(existingTeamRes.statusCode).toBe(403);
@@ -440,7 +440,7 @@ describe("Cache-Control header (Task 5.7)", () => {
     mockNoGrant();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(403);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -451,7 +451,7 @@ describe("Cache-Control header (Task 5.7)", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // audit
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(403);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -462,7 +462,7 @@ describe("Cache-Control header (Task 5.7)", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // resource query
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/sessions" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions" });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
@@ -499,11 +499,11 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] }); // hasCompletedFirstSession
 
     const app = await buildApp("facilitator-with-no-history");
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as { teamId: string; teamName: string; isCustomizationLocked: boolean };
-    expect(body.teamId).toBe("team-1");
+    expect(body.teamId).toBe("11111111-1111-4111-8111-111111111111");
     expect(body.teamName).toBe("Platform Squad");
     expect(body.isCustomizationLocked).toBe(true);
   });
@@ -517,7 +517,7 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -530,7 +530,7 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     mockStandingAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
 
     expect(res.statusCode).toBe(403);
     // Only the auth query ran — no resource queries reached.
@@ -541,7 +541,7 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     mockStandingAuthQuery("facilitator", true);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
 
     expect(res.statusCode).toBe(403);
   });
@@ -568,7 +568,7 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] }); // hasCompletedFirstSession
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
@@ -582,7 +582,7 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
   it("applies the timing floor on the 403 branch", async () => {
     mockStandingAuthQuery("engineer", false);
     const app = await buildApp();
-    await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -594,7 +594,7 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "0" }] });
     const app = await buildApp();
-    await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });
@@ -633,7 +633,7 @@ describe("GET /api/v1/teams/:teamId/topics/all — team annotation (topic-annota
 
   async function getAll() {
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics/all" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
     expect(res.statusCode).toBe(200);
     return res.json() as GetAllTopicsResponse;
   }
@@ -821,7 +821,7 @@ describe("GET /api/v1/teams/:teamId/topics (TOPIC-001) — no annotation fields 
     mockDbQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/topics" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics" });
 
     expect(res.statusCode).toBe(200);
     const topicsSql = String(mockDbQuery.mock.calls.find((c) => String(c[0]).includes("FROM topics"))?.[0]);
@@ -834,5 +834,29 @@ describe("GET /api/v1/teams/:teamId/topics (TOPIC-001) — no annotation fields 
         expect(topic).not.toHaveProperty(key);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Implementation review M1/MF1 (session-topics-snapshot-at-creation): a
+// non-canonical teamId is 404 before the member-denial query, so a member
+// facilitator cannot read their own team's list through another spelling.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all — non-canonical teamId (implementation review M1)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    ["hyphenless", "11111111111141118111111111111111"],
+    ["braced", "{11111111-1111-4111-8111-111111111111}"],
+    ["malformed", "not-a-uuid"],
+  ])("a %s teamId is 404 TEAM_NOT_FOUND before any query, with no-store", async (_label, bad) => {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: `/api/v1/teams/${encodeURIComponent(bad)}/topics/all` });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND" });
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(mockDbQuery).not.toHaveBeenCalled();
+    expect(mockApplyTimingFloor).toHaveBeenCalled();
   });
 });

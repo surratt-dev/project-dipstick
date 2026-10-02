@@ -32,10 +32,13 @@ This spec does NOT cover the frontend restore action or its confirmation dialog 
 - **WHEN** a topic with existing `votes` and `session_topics` records from before it was archived is restored
 - **THEN** those `votes` and `session_topics` records are unchanged and remain accessible
 
-#### Scenario: A restored topic is eligible for the next session's topic snapshot (blocked on #175 for end-to-end verification)
-- **WHEN** a topic's `status` transitions to `active` via a successful restore
-- **THEN** the topic satisfies the same eligibility a team's other active topics already satisfy for inclusion in a future session's `session_topics` snapshot — no restore-specific flag, field, or exclusion distinguishes a freshly-restored topic from any other active topic
-- **AND** end-to-end demonstration of this scenario against a real, running session is currently blocked for *every* active topic, restored or otherwise, because no shipped endpoint populates `session_topics` at session creation (#175, still open, filed by `remove-topic`) — this is a pre-existing gap this change inherits, not one it introduces or is asked to close
+#### Scenario: A restored topic is included in the next room-open snapshot
+- **WHEN** a topic's `status` transitions to `active` via a successful restore, and the team's next session then reaches room open (see `session-topic-lifecycle`)
+- **THEN** that session's `session_topics` rows include the restored topic, with no restore-specific flag, field, or exclusion distinguishing it from any other active topic
+
+#### Scenario: A topic archived and restored during the draft lands at its appended position
+- **WHEN** a team's session is in `draft`, the facilitator archives a topic and then restores it, and then opens the room
+- **THEN** the restored topic is in the session's snapshot, positioned after every topic that was active when it was restored, because restore appended it to the end of the active order
 
 ### Requirement: Restore Topic evaluates checks in a fixed order — identity/role, team existence, lock, topic existence, then topic status
 
