@@ -77,10 +77,8 @@ export interface GetAllTopicsResponse {
   // false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7).
   // Presentation only -- TOPIC-007 enforces independently.
   canEditAnnotations: boolean;
-  // topic-add-form-and-empty-state design.md Decision 1: true for a standing
-  // facilitator TOPIC-002 admits, false for an application_admin. The false
-  // value for administrators is TEMPORARY, pending #176 (TOPIC-003 rejects
-  // admins today); it is not a product rule and must never be merged with
+  // True for every caller TOPIC-002 admits: a standing facilitator or an
+  // application_admin (BRD FR-8.2). Must never be merged with
   // canEditAnnotations, whose admin exclusion (FR-8.7) is permanent.
   // Presentation only -- TOPIC-003 enforces authorization and the lock
   // independently. Does not consider isCustomizationLocked.

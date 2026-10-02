@@ -1,18 +1,12 @@
-# add-custom-topic
+## RENAMED Requirements
 
-## Purpose
+- FROM: `### Requirement: A standing facilitator can add a custom topic to an unlocked team`
+- TO: `### Requirement: A standing facilitator or application administrator can add a custom topic to an unlocked team`
 
-Defines `POST /api/v1/teams/:teamId/topics`, which lets a standing, org-wide facilitator (one not an active member of the target team), or an application administrator (on any team, whether or not a member, per BRD FR-8.2), add a custom topic to a team once that team's topic customization lock (see the `topic-customization-lock` capability) is no longer active. This spec covers: the request/response contract; field validation and its 422 error shape; the fixed check-ordering cascade (identity/role, team existence, lock, then body validation) and its anti-enumeration timing-floor guarantee; concurrency-safe `displayOrder` assignment; and audit logging of successful creations.
+- FROM: `### Requirement: Add Custom Topic enforces the customization lock and standing-facilitator authorization`
+- TO: `### Requirement: Add Custom Topic enforces the customization lock and standing-facilitator-or-administrator authorization`
 
-This spec does NOT cover: the lock-check function itself, the `isCustomizationLocked` read-side flag, or the general 403/409 rejection contract shared across topic-write endpoints (see `topic-customization-lock`) — this spec states this endpoint's own use of that shared contract and adds only what is specific to it (body validation, `displayOrder` assignment, the success audit event).
-
-**Implementation note — files:** The endpoint is implemented in `packages/backend/src/routes/topics.ts`, registered in `packages/backend/src/app.ts`. Its identity/role check is `checkAddCustomTopicAuthorization` (in `topics.ts`, beside the archive/restore/reorder wrappers), which delegates to `checkStandingFacilitatorOrAdminAuthorization` (`packages/backend/src/auth/standing-facilitator-access-helper.ts`) — the same administrator-admitting decision TOPIC-002/004/005/006 use, built on the standing-facilitator query `POST /api/v1/teams/:teamId/sessions/draft` (`facilitator-sessions.ts`) also uses — and applies the timing floor before either `403`. It uses `hasCompletedFirstSession` (`packages/backend/src/auth/topic-lock-helper.ts`) for the lock gate.
-
-**Implementation note — error envelope `field` property:** Every rejection on this endpoint, including `422`, uses this codebase's standard error envelope (`{ error: { category, code, message, correlationId } }`). For `422` specifically, the envelope also carries `error.field`, naming the single failing field (e.g. `"name"`, `"prompt"`, `"voteType"`, `"firstSessionDescription"`). No prior endpoint in this codebase needed a field-identifying property on its error envelope, so `error.field` is introduced by this endpoint as an extension of the standard shape, not a deviation from it; other error categories on this endpoint (`403`, `404`, `409`) do not set it.
-
----
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: A standing facilitator or application administrator can add a custom topic to an unlocked team
 
@@ -50,40 +44,6 @@ This spec does NOT cover: the lock-check function itself, the `isCustomizationLo
 - **WHEN** a team has a session whose room is open (its `session_topics` snapshot already taken), and an `application_admin` successfully adds a custom topic to that team
 - **THEN** the open session's `session_topics` rows, their topics, and their order are unchanged
 - **AND** the new topic is part of the team's active topic configuration for the next room opened
-### Requirement: Add Custom Topic validates required fields and rejects invalid submissions with 422
-
-`POST /api/v1/teams/:teamId/topics` SHALL reject a request with `422 Unprocessable Entity` if `name` is missing, empty after trim, or exceeds 100 characters; if `prompt` is missing, empty after trim, or exceeds 500 characters; if `voteType` is missing or not one of `finger`, `roman`, `modified_roman`; or if a provided `firstSessionDescription` exceeds 500 characters. The validation error response SHALL identify the failing field via `error.field` in the standard error envelope (see this spec's Purpose note on `error.field`). No topic SHALL be created when validation fails. This check is evaluated last, after team existence, identity/role authorization, and the customization lock all pass (see "Add Custom Topic evaluates checks in a fixed order" below) — a request that fails an earlier check receives that check's rejection, never `422`, regardless of whether its body would also have failed validation.
-
-#### Scenario: Missing name is rejected
-- **WHEN** a request omits `name`
-- **THEN** the response is `422 Unprocessable Entity` with `error.field: "name"`
-- **AND** no topic is created
-
-#### Scenario: Missing prompt is rejected
-- **WHEN** a request omits `prompt`
-- **THEN** the response is `422 Unprocessable Entity` with `error.field: "prompt"`
-- **AND** no topic is created
-
-#### Scenario: Missing or invalid voteType is rejected
-- **WHEN** a request omits `voteType` or supplies a value other than `finger`, `roman`, or `modified_roman`
-- **THEN** the response is `422 Unprocessable Entity` with `error.field: "voteType"`
-- **AND** no topic is created
-
-#### Scenario: A name exceeding 100 characters is rejected
-- **WHEN** a request supplies a `name` longer than 100 characters
-- **THEN** the response is `422 Unprocessable Entity` with `error.field: "name"`
-
-#### Scenario: A prompt exceeding 500 characters is rejected
-- **WHEN** a request supplies a `prompt` longer than 500 characters
-- **THEN** the response is `422 Unprocessable Entity` with `error.field: "prompt"`
-
-#### Scenario: A firstSessionDescription exceeding 500 characters is rejected
-- **WHEN** a request supplies a `firstSessionDescription` longer than 500 characters
-- **THEN** the response is `422 Unprocessable Entity` with `error.field: "firstSessionDescription"`
-
-#### Scenario: Duplicate prompts are not rejected
-- **WHEN** a request submits a `prompt` identical to an existing topic's prompt for the same team
-- **THEN** the topic is created successfully as a distinct record; prompt uniqueness is not enforced
 
 ### Requirement: Add Custom Topic enforces the customization lock and standing-facilitator-or-administrator authorization
 
@@ -120,6 +80,7 @@ This endpoint's administrator arm SHALL NOT be shared with `PUT /api/v1/teams/:t
 #### Scenario: Add Custom Topic is available regardless of which facilitator has run sessions for the team
 - **WHEN** a standing facilitator who has never run any session for the target team submits a valid request against that team, and the team is unlocked
 - **THEN** the topic is created successfully; prior session history with this specific facilitator is not required
+
 ### Requirement: Add Custom Topic evaluates checks in a fixed order — identity/role, team existence, lock, then body validation
 
 `POST /api/v1/teams/:teamId/topics` SHALL evaluate the following checks in this order, rejecting on the first one that fails and evaluating no later check — nor reporting its outcome — once an earlier one has already failed: (1) identity/role authorization (`403 Forbidden`, `NOT_A_FACILITATOR` or `FACILITATOR_IS_TEAM_MEMBER`; an `application_admin` always passes this check); (2) team existence (`404 Not Found`); (3) the customization lock (`409 Conflict`, `TOPIC_CUSTOMIZATION_LOCKED`); (4) request body validation (`422 Unprocessable Entity`). This ordering is stated once, here, as the canonical sequence; the individual requirements above and below describe each check's own condition and reason code but defer to this requirement for their relative order. The order SHALL be the same for administrators and facilitators.
@@ -169,17 +130,6 @@ The shipped handler SHALL also apply a constant minimum response-time floor (`ap
 #### Scenario: Every early return reachable through the administrator-aware check applies the timing floor
 - **WHEN** an `application_admin` request ends in `404` (nonexistent team) or `409` (locked team), or a request ends in `403 NOT_A_FACILITATOR` (engineer or engineering manager) or `403 FACILITATOR_IS_TEAM_MEMBER` (member-facilitator)
 - **THEN** `applyTimingFloor` has been applied before the response is sent
-### Requirement: Concurrent Add Custom Topic requests against the same team never collide on displayOrder
-
-When two or more requests to add a custom topic to the same team are processed concurrently, the `displayOrder` computation and the topic insert SHALL be serialized per team, using a mechanism that defers the second request's `displayOrder` read until after the first request's insert has committed — not merely a row lock re-checked against a pre-existing snapshot — so that no two topics ever created for the same team are assigned the same `displayOrder`, and neither request SHALL fail with an unhandled server error as a result of the collision.
-
-**Implementation note:** Serialization is achieved via a per-team Postgres advisory transaction lock (`pg_advisory_xact_lock(hashtext(teamId))`), acquired before the `MAX(display_order)` read, inside the same transaction as the topic `INSERT`.
-
-#### Scenario: Two concurrent valid requests against the same unlocked team each receive a distinct displayOrder
-- **WHEN** two valid Add Custom Topic requests against the same unlocked team are submitted concurrently
-- **THEN** both topics are created successfully, each with `201 Created`
-- **AND** each is assigned a distinct `displayOrder`
-- **AND** neither request fails with an unhandled server error
 
 ### Requirement: A successful Add Custom Topic write is audited in the same transaction as the insert
 

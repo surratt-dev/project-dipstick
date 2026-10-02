@@ -62,7 +62,7 @@
 | FR-7.5 | Admins adjust staleness threshold globally or per team (PREF) | TREND-003b (global); per-team staleness override not implemented | **Partial** |
 | FR-7.6 | Participant or EM can view full action item history for their team | ACTION-004, ACTION-005 accessible to participants and EMs | Covered |
 | FR-8.1 | Default topic set ships and is maintainable by Application Admin | TEAM-001 (seeds defaults on team creation); TREND-003b admin-configurable settings | Covered |
-| FR-8.2 | Facilitator or Admin can add/remove/reorder topics after first session | TOPIC-003, TOPIC-004, TOPIC-006; customization lock enforced | Covered |
+| FR-8.2 | Facilitator or Admin can add/remove/reorder topics after first session | TOPIC-003, TOPIC-004, TOPIC-006; customization lock enforced | Covered (TOPIC-003 admin branch added by #176) |
 | FR-8.3 | Historical vote data retained when topic removed | TOPIC-004 (soft-delete only; votes unaffected) | Covered |
 | FR-8.4 | Removed topics labeled "Archived" in history views | TOPIC-002 (`archived` array), TREND-001 (`topicStatus: 'archived'`) | Covered |
 | FR-8.5 | Warn and confirm before removing topic with open action items (PREF) | TOPIC-004 (confirmation flow via `requiresConfirmation` response) | Covered |

@@ -3,19 +3,20 @@ import type { ActiveEmptyStateVariant } from "../pages/addCustomTopic.js";
 
 // ---------------------------------------------------------------------------
 // ActiveTopicsEmptyState — topic-add-form-and-empty-state, design.md
-// Decisions 7 and 10. A small, honest state for an empty active list, driven
-// only by activeEmptyStateVariant(locked, archivedCount, canAddTopics):
+// Decisions 7 and 10; topic-003-admin-authorization design.md D4. A small,
+// honest state for an empty active list. The message and the "Show archived"
+// action are driven by activeEmptyStateVariant(locked, archivedCount):
 //
-//   1 locked                         -> neutral copy (H1), no actions
-//   2 unlocked, archived, can add    -> Show archived topics (n) + Add custom topic
-//   3 unlocked, archived, can't add  -> Show archived topics (n)
-//   4 unlocked, none, can add        -> Add custom topic
-//   5 unlocked, none, can't add      -> "can't be added from this account yet", no actions
+//   locked                  -> neutral copy (H1), no actions
+//   unlocked_with_archived  -> Show archived topics (n)
+//   unlocked_none_archived  -> no archived action
 //
-// Rows 3 and 5 exist only because canAddTopics is temporarily false for
-// application administrators (#176). Remove them in the #176 fix.
+// The add action is gated by the required `addAllowed` prop, not by the
+// variant: "Add custom topic" renders only when addAllowed is true and the
+// variant is not locked. The page passes the same addAllowed it uses for the
+// heading trigger, so a missing or false canAddTopics fails closed here too.
 //
-// Row 1's copy names a human group, not an application role, support
+// The locked copy names a human group, not an application role, support
 // channel, or control (H1; recovery path tracked in #200).
 // No illustration: the state is rare and should be small.
 // ---------------------------------------------------------------------------
@@ -24,6 +25,9 @@ export const EMPTY_STATE_ADD_BUTTON_ID = "empty-state-add-topic";
 
 interface ActiveTopicsEmptyStateProps {
   variant: ActiveEmptyStateVariant;
+  // Whether the caller may add a topic here (the page's addAllowed). Required,
+  // so a forgotten call site is a type error rather than a visible button.
+  addAllowed: boolean;
   archivedCount: number;
   onShowArchived: () => void;
   onAddTopic: () => void;
@@ -34,19 +38,18 @@ interface ActiveTopicsEmptyStateProps {
 
 export function ActiveTopicsEmptyState({
   variant,
+  addAllowed,
   archivedCount,
   onShowArchived,
   onAddTopic,
   form,
 }: ActiveTopicsEmptyStateProps) {
   const message =
-    variant === 1
+    variant === "locked"
       ? "This team has no active topics, so its sessions can't run. Topics can't be assigned from this screen. Ask the people who run this application for your organization to restore this team's default topics."
-      : variant === 5
-        ? "This team has no active topics. Topics can't be added from this account yet."
-        : "This team has no active topics.";
-  const showArchivedAction = variant === 2 || variant === 3;
-  const addAction = variant === 2 || variant === 4;
+      : "This team has no active topics.";
+  const showArchivedAction = variant === "unlocked_with_archived";
+  const addAction = addAllowed && variant !== "locked";
 
   return (
     <div data-testid="active-topics-empty">

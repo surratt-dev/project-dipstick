@@ -609,7 +609,7 @@ Returns both active and archived topics for a team, including configuration deta
 
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` AND not an active member of the team, OR `application_admin` — the same standing, org-wide facilitator model `TOPIC-004` through `TOPIC-006` already share (`TOPIC-003` and `TOPIC-007` use the same non-member facilitator rule but exclude `application_admin` from writing; see their entries). **`TOPIC-007` (topic-annotation, BRD FR-8.7) is facilitator-only for writes; administrators read annotations here read-only.** **Corrected (`remove-topic` design.md Decision 9):** this endpoint's original draft required "a facilitator with an active session for the team," a session-scoped model that does not match its five sibling topic-write endpoints and was never independently reviewed as its own line item — a drafting error, not a considered decision this correction reverses. This endpoint does not require that the caller currently hold, or have ever held, an active session for the target team. (Participants and EMs access archived topic data via TREND-001, not this endpoint.)
+**Authorization:** `global_role = 'facilitator'` AND not an active member of the team, OR `application_admin` — the same standing, org-wide facilitator model `TOPIC-003` through `TOPIC-006` share (`TOPIC-007` uses the same non-member facilitator rule but excludes `application_admin` from writing; see its entry). **`TOPIC-007` (topic-annotation, BRD FR-8.7) is facilitator-only for writes; administrators read annotations here read-only.** **Corrected (`remove-topic` design.md Decision 9):** this endpoint's original draft required "a facilitator with an active session for the team," a session-scoped model that does not match its five sibling topic-write endpoints and was never independently reviewed as its own line item — a drafting error, not a considered decision this correction reverses. This endpoint does not require that the caller currently hold, or have ever held, an active session for the target team. (Participants and EMs access archived topic data via TREND-001, not this endpoint.)
 
 **Request**
 
@@ -628,7 +628,7 @@ interface GetAllTopicsResponse {
   teamName: string;  // Added (`remove-topic` design.md, Task 9.2/Decision 10) — the Topic Management screen's remove-confirmation dialog must name both the topic and the team; no other endpoint reachable by a standing, non-member facilitator returns a team's display name.
   isCustomizationLocked: boolean;
   canEditAnnotations: boolean;  // Added (`topic-annotation` design.md Decision 8). true for a standing facilitator, false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7). Presentation only; TOPIC-007 enforces independently.
-  canAddTopics: boolean;  // Added (`topic-add-form-and-empty-state` design.md Decision 1). true for a standing facilitator TOPIC-002 admits; false for an application_admin. The false value is TEMPORARY, pending #176 (TOPIC-003 currently rejects administrators, contrary to FR-8.2); the #176 fix makes it true for administrators in the same change. Not derived from canEditAnnotations, whose admin exclusion (FR-8.7) is permanent. Does not consider isCustomizationLocked. Presentation only; TOPIC-003 enforces authorization and the lock independently.
+  canAddTopics: boolean;  // Added (`topic-add-form-and-empty-state` design.md Decision 1). true for every caller TOPIC-002 admits: a standing facilitator or an application_admin (FR-8.2; admin branch added by #176). Not derived from canEditAnnotations, whose admin exclusion (FR-8.7) is permanent. Does not consider isCustomizationLocked. Presentation only; TOPIC-003 enforces authorization and the lock independently.
   active: Array<{
     topicId: string;
     name: string;
@@ -692,7 +692,7 @@ Creates a new custom topic for the team and appends it to the end of the display
 
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` AND the facilitator must not be a member of this team AND `isCustomizationLocked` must be `false` (i.e., the team has at least one completed session).
+**Authorization:** (`global_role = 'facilitator'` AND the facilitator must not be a member of this team) OR `global_role = 'application_admin'` (any team, regardless of membership, per BRD FR-8.2; added by `topic-003-admin-authorization`, #176), AND `isCustomizationLocked` must be `false` (i.e., the team has at least one completed session). The lock and the `403` → `404` → `409` → `422` check order apply to administrators exactly as to facilitators. Engineering Managers are excluded: FR-8.2 names only the facilitator and the Application Administrator.
 
 **Request**
 
@@ -732,7 +732,7 @@ interface AddCustomTopicResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Not a facilitator (`NOT_A_FACILITATOR`); facilitator is a team member (`FACILITATOR_IS_TEAM_MEMBER`) |
+| `403 Forbidden` | Not a facilitator and not an `application_admin` (`NOT_A_FACILITATOR`); facilitator is an active team member (`FACILITATOR_IS_TEAM_MEMBER`) |
 | `404 Not Found` | Team does not exist |
 | `409 Conflict` | Customization lock is active (`TOPIC_CUSTOMIZATION_LOCKED`) |
 | `422 Unprocessable Entity` | `VALIDATION_FAILED`, with `field` set to the first failing of `name`, `prompt`, `voteType`, `firstSessionDescription` (checked in that order): required fields missing, empty after trimming, or exceeding length limits. The Topic Management screen maps `field` to its own copy and does not display `message`. |
@@ -759,7 +759,7 @@ Transitions a topic from `active` to `archived` status, removing it from future 
 
 **Auth:** Protected.
 
-**Authorization:** `global_role = 'facilitator'` AND not a member of this team, OR `application_admin`, AND `isCustomizationLocked = false`. **Corrected (`remove-topic` design.md Decision 1):** the original draft omitted an `application_admin` branch, which would have violated FR-8.2 [HARD] — an admin could list a team's topics via `TOPIC-002` and see a "Remove" action render, then receive a confusing `403` on click. `TOPIC-003` (Add Custom Topic, shipped, #49/#50) is not affected by this correction and keeps its existing facilitator-only check; extending it is deliberately deferred as a separate, tracked follow-up.
+**Authorization:** `global_role = 'facilitator'` AND not a member of this team, OR `application_admin`, AND `isCustomizationLocked = false`. **Corrected (`remove-topic` design.md Decision 1):** the original draft omitted an `application_admin` branch, which would have violated FR-8.2 [HARD] — an admin could list a team's topics via `TOPIC-002` and see a "Remove" action render, then receive a confusing `403` on click. `TOPIC-003` (Add Custom Topic) was not affected by this correction at the time; it gained the same `application_admin` branch later, in `topic-003-admin-authorization` (#176).
 
 **Request**
 
@@ -964,7 +964,7 @@ Sets or clears the team-specific annotation on a topic: the team's definition of
 
 **Auth:** Protected. An unauthenticated request is rejected with `401` by the shared authentication layer before the cascade below runs.
 
-**Authorization:** **Facilitator-only.** `global_role = 'facilitator'` AND not an active member of the team. **`application_admin` is rejected with `403 NOT_A_FACILITATOR`** (BRD FR-8.7). This deliberately differs from TOPIC-004/005/006, which admit administrators under FR-8.2: the annotation is the team's words, recorded by the facilitator who was in the room, and administrators have no session context. The customization lock is enforced as `409`, not `403` (below).
+**Authorization:** **Facilitator-only.** `global_role = 'facilitator'` AND not an active member of the team. **`application_admin` is rejected with `403 NOT_A_FACILITATOR`** (BRD FR-8.7). This deliberately differs from TOPIC-003/004/005/006, which admit administrators under FR-8.2: the annotation is the team's words, recorded by the facilitator who was in the room, and administrators have no session context. The customization lock is enforced as `409`, not `403` (below).
 
 **Request**
 
@@ -3028,8 +3028,8 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TEAM-005 | No | Yes (non-member teams) | No | Yes | |
 | TEAM-006 | No | Yes | No | Yes | |
 | TOPIC-001 | Own team (read) | Teams with active session | No | Yes | |
-| TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins; `canAddTopics` false for admins (temporary, pending #176) |
-| TOPIC-003 | No | Yes (non-member teams, post-lock) | No | No | Facilitator-only (code: `checkStandingFacilitatorAuthorization`); customization lock enforced |
+| TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins |
+| TOPIC-003 | No | Yes (non-member teams, post-lock) | No | Yes | Facilitator (non-member) or admin (any team, per FR-8.2); code: `checkAddCustomTopicAuthorization`, delegating to `checkStandingFacilitatorOrAdminAuthorization`; customization lock enforced |
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced (FR-8.2) |
 | TOPIC-007 | No | Yes (non-member teams, post-lock) | No | **No** (`403 NOT_A_FACILITATOR`) | Facilitator-only (BRD FR-8.7); customization lock enforced (`409`) |
 | SESSION-001 | No | Yes (non-member teams) | No | Yes | Cross-team check re-enforced |

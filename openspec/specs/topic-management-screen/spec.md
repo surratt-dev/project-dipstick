@@ -506,7 +506,7 @@ On a team whose `isCustomizationLocked` is true, the screen SHALL show no defini
 
 ### Requirement: The add-custom-topic control appears only on an unlocked team for a caller who can add, with no disabled or teaser variant
 
-The screen SHALL render an "Add custom topic" control if and only if `isCustomizationLocked` is `false` **and** `canAddTopics` is `true` in the TOPIC-002 response. In every other case the screen SHALL render no add control at all: no disabled button, no placeholder, and no explanatory note. On a locked team the existing lock notice is the explanation. An application administrator (for whom `canAddTopics` is temporarily `false`, pending #176) SHALL see nothing in place of the control. This gating is a UX convenience; `POST /api/v1/teams/:teamId/topics` enforces authorization and the lock independently.
+The screen SHALL render an "Add custom topic" control if and only if `isCustomizationLocked` is `false` **and** `canAddTopics` is `true` in the TOPIC-002 response. In every other case the screen SHALL render no add control at all: no disabled button, no placeholder, and no explanatory note. On a locked team the existing lock notice is the explanation. `canAddTopics` is `true` for every caller TOPIC-002 admits, standing facilitators and application administrators alike, so on an unlocked team an application administrator sees the same add control a facilitator does. This gating is a UX convenience; `POST /api/v1/teams/:teamId/topics` enforces authorization and the lock independently.
 
 Engineers and engineering managers never reach this screen (TOPIC-002 rejects them before it renders), so the use case's "Engineers cannot add topics" criterion is met by the existing access-denied state and its existing scenario "An ineligible caller sees an access-denied state, not the topic list".
 
@@ -519,11 +519,14 @@ Engineers and engineering managers never reach this screen (TOPIC-002 rejects th
 - **THEN** no "Add custom topic" control is present in the page, enabled or disabled
 - **AND** the existing lock notice is shown
 
-#### Scenario: An administrator sees no add control and no explanation
-- **WHEN** an application administrator views an unlocked team and the response has `canAddTopics: false`
-- **THEN** no "Add custom topic" control is present, enabled or disabled
-- **AND** no message about adding topics is shown outside the empty state
+#### Scenario: An administrator on an unlocked team sees the add control
+- **WHEN** an application administrator views an unlocked team that has active topics and the response has `canAddTopics: true`
+- **THEN** the "Add custom topic" trigger is shown in the Active Topics heading row
 
+#### Scenario: An administrator on a locked team sees no add control
+- **WHEN** an application administrator views a team whose `isCustomizationLocked` is `true`
+- **THEN** no "Add custom topic" control is present in the page, enabled or disabled
+- **AND** the existing lock notice is shown
 ### Requirement: The add trigger sits in the Active Topics heading, which shows the active count, and the form opens inline
 
 The Active Topics heading SHALL read "Active Topics (n)", where n is the number of active topics, matching the existing "Archived Topics (n)". When the add control is rendered and the active list is not empty, the trigger SHALL sit in the Active Topics heading row, beside the heading rather than inside it, so it is visible without scrolling past the list and the heading's accessible name remains "Active Topics (n)". Activating it SHALL open the add form inline directly under the heading, with no modal and no route change, and SHALL move focus to the Name field. Only one add form SHALL exist at a time, and the trigger SHALL be hidden while the form is open. When the form is opened from the empty state's "Add custom topic" action, the form SHALL take the place of the empty state's actions, and the empty-state message SHALL remain shown above it. Closing the form by Cancel or Discard SHALL return focus to the control that opened it: the heading trigger, or the empty state's "Add custom topic" action, which is shown again when the form closes. An open add form and its values SHALL NOT survive a change of team in the route; the screen for the new team starts with no add form open.
@@ -567,7 +570,7 @@ The add form SHALL contain, in this order:
   - "Finger Voting": "Everyone shows 1 to 4 fingers, where 1 is poor and 4 is good. There's no middle option, so people have to lean one way."
   - "Roman Voting": "Thumbs up or thumbs down. Use it for yes-or-no questions."
   - "Modified Roman Voting": "Thumbs up, sideways, or down. Use it for whether something is getting better, staying the same, or getting worse."
-- **Description**, labelled exactly "Description (optional, shown on this screen only)", helper text exactly "Engineers won't see this during sessions. Use it as a note for whoever facilitates this team. A team definition is the place to explain what this topic means for your team.", `maxLength` 500.
+- **Description**, labelled exactly "Description (optional, shown on this screen only)", helper text exactly "Engineers won't see this during sessions. Use it as a note for whoever facilitates this team. A team definition is the place to explain what this topic means for this team.", `maxLength` 500.
 
 Name, Prompt, and Vote type SHALL be marked required and Description marked optional. Each field SHALL show a character counter once its length reaches 80% of its limit. The counter SHALL read "<n> / <limit>" (for example "80 / 100"), SHALL NOT be a live region, and SHALL be referenced by the field's `aria-describedby` while it is shown. The form SHALL NOT require that the name and prompt differ (the use case's "distinct from the name" means a separate field). No copy in the form or its outcomes SHALL state or imply that the topic, its description, or a team definition will appear in a session. The form creates new topics only; it SHALL NOT edit an existing topic.
 
@@ -579,7 +582,7 @@ Name, Prompt, and Vote type SHALL be marked required and Description marked opti
 #### Scenario: The description is labelled as screen-only
 - **WHEN** a facilitator opens the add form
 - **THEN** the description field is labelled "Description (optional, shown on this screen only)"
-- **AND** its helper text reads "Engineers won't see this during sessions. Use it as a note for whoever facilitates this team. A team definition is the place to explain what this topic means for your team."
+- **AND** its helper text reads "Engineers won't see this during sessions. Use it as a note for whoever facilitates this team. A team definition is the place to explain what this topic means for this team."
 
 #### Scenario: A counter appears at 80% of a limit
 - **WHEN** a facilitator has typed 80 characters into Name
@@ -591,7 +594,6 @@ Name, Prompt, and Vote type SHALL be marked required and Description marked opti
 #### Scenario: Identical name and prompt are allowed
 - **WHEN** a facilitator submits a valid form whose name and prompt are the same text and no duplicate exists
 - **THEN** the request is sent
-
 ### Requirement: Submitting validates required fields on the client before any request
 
 On Submit, if the name or prompt is blank after trimming, or no vote type is selected, the screen SHALL send no request, SHALL show an inline error on each failing field ("Enter a topic name.", "Enter a prompt.", "Choose a vote type."), SHALL move focus to the first failing field in form order, and SHALL keep every entered value. The request SHALL carry the trimmed name and prompt, and SHALL send `firstSessionDescription` as the trimmed description, or `null` when it is empty after trimming. If the server answers `422` with `error.field` equal to `name`, `prompt`, `voteType`, or `firstSessionDescription`, the screen SHALL show the screen's own message for that field and focus it: Name "Enter a topic name of up to 100 characters.", Prompt "Enter a prompt of up to 500 characters.", Vote type "Choose a vote type.", Description "Keep the description to 500 characters or fewer.". With no field or any other field it SHALL show exactly "The topic couldn't be added. Check each field and try again." at form level. The server's `422` `error.message` SHALL NOT be shown. Values SHALL be kept in every case.
@@ -895,19 +897,17 @@ Every active and archived row's title SHALL be a level-3 heading that can receiv
 
 ### Requirement: An empty active-topics list shows a small, honest state derived from the lock, the archive, and the add flag
 
-When the active list is empty, the screen SHALL show content determined only by `isCustomizationLocked`, the number of archived topics, and `canAddTopics`:
+When the active list is empty, the screen SHALL show one of exactly three variants, determined by `isCustomizationLocked` and the number of archived topics:
 
-| `isCustomizationLocked` | archived count | `canAddTopics` | Content |
-|---|---|---|---|
-| true | any | any | "This team has no active topics, so its sessions can't run. Topics can't be assigned from this screen. Ask the people who run this application for your organization to restore this team's default topics." and no actions |
-| false | > 0 | true | "This team has no active topics." with "Show archived topics (n)" and "Add custom topic" |
-| false | > 0 | false | "This team has no active topics." with "Show archived topics (n)" |
-| false | 0 | true | "This team has no active topics." with "Add custom topic" |
-| false | 0 | false | "This team has no active topics. Topics can't be added from this account yet." and no actions |
+| `isCustomizationLocked` | archived count | Content |
+|---|---|---|
+| true | any | "This team has no active topics, so its sessions can't run. Topics can't be assigned from this screen. Ask the people who run this application for your organization to restore this team's default topics." and no actions |
+| false | > 0 | "This team has no active topics." with "Show archived topics (n)" and "Add custom topic" |
+| false | 0 | "This team has no active topics." with "Add custom topic" |
+
+The "Add custom topic" action in the table above is conditional: like the heading trigger, it SHALL render only when `canAddTopics` is `true` and `isCustomizationLocked` is `false`, and the screen SHALL use one gate for both. The variant determines only the message and the "Show archived topics (n)" action; it SHALL NOT by itself cause the add action to render. Every caller TOPIC-002 admits receives `canAddTopics: true`, so no separate message variant exists for `canAddTopics: false` on an unlocked team. If the flag is nevertheless `false` or absent (for example, a frontend deployed ahead of its backend, or a backend rollback), the screen SHALL fail closed: it shows the unlocked variant's message and archive action, with no add action and no explanatory note.
 
 The copy SHALL NOT name an application role, a support channel, or a control that does not exist. "Show archived topics (n)" SHALL expand the Archived section and move focus to the Archived section's show/hide control, and SHALL NOT add restore actions of its own. "Add custom topic" SHALL open the same add form as the heading trigger; while the empty state is shown the heading trigger SHALL NOT be shown. After a successful restore or add, the active list SHALL replace the empty state without a full-screen reload. The state SHALL contain no illustration. The Active Topics heading SHALL read "Active Topics (0)" while the empty state is shown.
-
-Rows 3 and 5 exist only because `canAddTopics` is temporarily `false` for application administrators (#176). When #176 is fixed, those rows become unreachable for every caller TOPIC-002 admits, and they SHALL be removed from this table in the same change.
 
 #### Scenario: Locked team with no topics
 - **WHEN** a facilitator views a team with `isCustomizationLocked: true` and no active topics
@@ -920,16 +920,26 @@ Rows 3 and 5 exist only because `canAddTopics` is temporarily `false` for applic
 - **AND** the Active Topics heading reads "Active Topics (0)" and shows no add trigger
 
 #### Scenario: Unlocked team with archived topics, administrator
-- **WHEN** an application administrator views an unlocked team with no active topics, 3 archived topics, and `canAddTopics: false`
-- **THEN** the screen shows "This team has no active topics." with "Show archived topics (3)" and no "Add custom topic"
+- **WHEN** an application administrator views an unlocked team with no active topics, 3 archived topics, and `canAddTopics: true`
+- **THEN** the screen shows "This team has no active topics." with "Show archived topics (3)" and "Add custom topic"
 
 #### Scenario: Unlocked team with nothing archived, facilitator
 - **WHEN** a standing facilitator views an unlocked team with no active and no archived topics
 - **THEN** the screen shows "This team has no active topics." with "Add custom topic" only
 
 #### Scenario: Unlocked team with nothing archived, administrator
-- **WHEN** an application administrator views an unlocked team with no active and no archived topics
-- **THEN** the screen shows "This team has no active topics. Topics can't be added from this account yet." and no actions
+- **WHEN** an application administrator views an unlocked team with no active and no archived topics, and `canAddTopics: true`
+- **THEN** the screen shows "This team has no active topics." with "Add custom topic" only
+
+#### Scenario: A missing add flag fails closed in the empty state
+- **WHEN** the screen renders an unlocked team with no active topics and 2 archived topics, and the TOPIC-002 response has no `canAddTopics` field or has `canAddTopics: false`
+- **THEN** the screen shows "This team has no active topics." with "Show archived topics (2)"
+- **AND** no "Add custom topic" control is present anywhere on the page
+
+#### Scenario: Locked team with no topics, administrator
+- **WHEN** an application administrator views a team with `isCustomizationLocked: true` and no active topics
+- **THEN** the locked variant is shown, with no "Show archived topics" action and no "Add custom topic" action
+- **AND** the variant's message text is not asserted for administrators by this scenario; administrator-specific copy for the locked variant is owned by #200
 
 #### Scenario: Show archived topics expands and focuses the archive
 - **WHEN** a facilitator selects "Show archived topics (3)"
@@ -939,7 +949,6 @@ Rows 3 and 5 exist only because `canAddTopics` is temporarily `false` for applic
 - **WHEN** a facilitator restores an archived topic while the empty state is shown
 - **THEN** the restored topic appears in the active list and the empty state is no longer shown
 - **AND** the screen is not reloaded through the full-screen loading or error path
-
 ### Requirement: The screen does not read `defaultTopicsNotActive`
 
 The Topic Management screen SHALL NOT read or render `defaultTopicsNotActive` from the TOPIC-002 response, including in the empty state. Its name-based join produces wrong rows when a custom topic shares a default topic's name, and its `topicId` can refer to the template team. Re-adding is offered only through the team's own archived topics.

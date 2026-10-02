@@ -677,15 +677,16 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // screen never offers an editor that TOPIC-007 would answer with 403.
     // TOPIC-007 enforces independently; both derive from global_role.
     const canEditAnnotations = decision.actorGlobalRole === "facilitator";
-    // topic-add-form-and-empty-state design.md Decision 1: presentation-only
-    // flag for the screen's "Add custom topic" control. TOPIC-003 enforces
-    // independently. `false` for an application_admin is TEMPORARY, pending
-    // #176 (TOPIC-003 rejects admins today, contrary to FR-8.2); the #176 fix
-    // flips this expression in the same change. Today it computes the same
-    // value as canEditAnnotations, but it must NOT be merged with it: that
-    // flag's admin exclusion (FR-8.7) is permanent. The parity test in
-    // __tests__/topic-add-flag-parity.test.ts keeps it in step with TOPIC-003.
-    const canAddTopics = decision.actorGlobalRole === "facilitator";
+    // Presentation-only flag for the screen's "Add custom topic" control.
+    // TOPIC-003 enforces independently. True for every caller TOPIC-002
+    // admits: a standing facilitator or an application admin (FR-8.2). Both
+    // roles are named explicitly so the intent stays readable. Computed
+    // separately from canEditAnnotations, whose admin exclusion (FR-8.7) is
+    // permanent -- never merge the two. The parity test in
+    // __tests__/topic-add-flag-parity.test.ts keeps this expression in step
+    // with TOPIC-003's checkAddCustomTopicAuthorization.
+    const canAddTopics =
+      decision.actorGlobalRole === "facilitator" || decision.actorGlobalRole === "application_admin";
 
     const responseBody: GetAllTopicsResponse = {
       teamId,

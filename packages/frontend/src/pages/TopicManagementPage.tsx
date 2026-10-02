@@ -1542,7 +1542,8 @@ export function TopicManagementPage() {
           // topic shares a default's name, and its topicId can point at the
           // template team): see #197.
           <ActiveTopicsEmptyState
-            variant={activeEmptyStateVariant(data.isCustomizationLocked, data.archived.length, canAddTopics)}
+            variant={activeEmptyStateVariant(data.isCustomizationLocked, data.archived.length)}
+            addAllowed={addAllowed}
             archivedCount={data.archived.length}
             onShowArchived={() => expandArchivedAndFocus(ARCHIVED_TOGGLE_ID)}
             onAddTopic={() => openAddForm("emptyState")}

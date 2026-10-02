@@ -13,11 +13,11 @@ import { db } from "../db.js";
 //   - POST /api/v1/teams/:teamId/sessions/draft (facilitator-sessions.ts,
 //     session-creation-existing-team design.md Decision D1) -- the original
 //     home of this exact query.
-//   - POST /api/v1/teams/:teamId/topics (topics.ts, TOPIC-003) -- this
-//     change's write endpoint, reusing the query verbatim rather than
-//     writing a third independent copy of it (design.md Decision 9's
-//     citation of the drift risk Decision 1 already states for the lock
-//     check).
+//   - The topic-write endpoints in topics.ts (TOPIC-003..007), via
+//     checkStandingFacilitatorOrAdminAuthorization below or the
+//     facilitator-only checkStandingFacilitatorAuthorization (TOPIC-007),
+//     reusing the query verbatim rather than writing another independent
+//     copy of it.
 //
 // Returns null when no user row exists for userId (caller does not exist).
 // Otherwise returns the resolved global_role and whether the caller holds
@@ -62,14 +62,15 @@ export async function evaluateStandingFacilitatorAccess(
 // 1, BLOCKING).
 //
 // A second, decision-only policy wrapper around evaluateStandingFacilitatorAccess,
-// for endpoints that must also admit application_admin (FR-8.2 [HARD]) --
-// unlike checkStandingFacilitatorAuthorization (topics.ts, TOPIC-003), which
-// is facilitator-only and stays that way (TOPIC-003 is shipped, deployed
-// code; widening it is a separate, deliberately deferred change).
+// for endpoints that must also admit application_admin (FR-8.2 [HARD]):
+// TOPIC-002 (content.ts) and TOPIC-003/004/005/006 (topics.ts, each through
+// its own per-endpoint wrapper; TOPIC-003 joined in #176). Contrast
+// checkStandingFacilitatorAuthorization (topics.ts), which is
+// facilitator-only and is used by TOPIC-007 alone (FR-8.7).
 //
 // Deliberately placed here rather than in topics.ts or content.ts: it has
-// two callers in two different route files (topics.ts's TOPIC-004,
-// content.ts's TOPIC-002), and no route file in this codebase imports from
+// callers in two different route files (topics.ts and content.ts), and no
+// route file in this codebase imports from
 // another route file. Putting it in either would create an implicit
 // dependency between two features meant to be independently reviewable.
 //

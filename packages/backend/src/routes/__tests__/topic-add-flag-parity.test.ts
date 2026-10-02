@@ -6,13 +6,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //
 // Spec scenario "The flag agrees with the add endpoint's authorization for
 // every caller class": TOPIC-002's `canAddTopics` and TOPIC-003's 403 checks
-// are computed by two different helpers
-// (checkStandingFacilitatorOrAdminAuthorization vs.
-// checkStandingFacilitatorAuthorization) that agree today only by
-// coincidence. This table-driven test is the control that keeps them in
-// step: for each caller class it calls both routers against the same
-// unlocked team and asserts `canAddTopics === (POST status !== 403)` for
-// callers TOPIC-002 admits, and POST 403 for callers it rejects.
+// both decide through checkStandingFacilitatorOrAdminAuthorization, but
+// TOPIC-002 then derives the flag from an explicit role expression in
+// content.ts, while TOPIC-003 answers through its own wrapper
+// (checkAddCustomTopicAuthorization in topics.ts). This table-driven test is
+// the control that keeps content.ts's expression in step with that wrapper:
+// for each caller class it calls both routers against the same unlocked team
+// and asserts `canAddTopics === (POST status !== 403)` for callers TOPIC-002
+// admits, and POST 403 for callers it rejects.
 //
 // The relational check alone could pass vacuously (implementation review:
 // architect S2 / security SF-1): if the shared authorization query's text
@@ -20,10 +21,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // and every row would still agree. So each row also carries an explicit
 // `expected` outcome (GET status, canAddTopics, POST status), and the
 // baseline non-member facilitator row must reach GET 200 / true / POST 201.
-//
-// A #176 fix (letting application administrators add topics) MUST keep this
-// test green: flip both sides in the same change, then update the
-// `expected` field of the application_admin rows in CALLER_CLASSES below.
 //
 // The database is a SQL-routing fake rather than ordered mocks, so both
 // routes run their real authorization code against the same caller row.
@@ -114,19 +111,16 @@ async function buildApp() {
 type Expected = { get: 200; canAddTopics: boolean; post: 201 | 403 } | { get: 403; post: 403 };
 
 const ADMITTED_CAN_ADD: Expected = { get: 200, canAddTopics: true, post: 201 };
-// Pending #176: admins see the screen but cannot add. Flip to ADMITTED_CAN_ADD
-// in the same change that widens TOPIC-003.
-const ADMITTED_CANNOT_ADD: Expected = { get: 200, canAddTopics: false, post: 403 };
 const REJECTED: Expected = { get: 403, post: 403 };
 
 const CALLER_CLASSES: Array<{ label: string; caller: Caller | null; expected: Expected }> = [
   { label: "non-member standing facilitator", caller: { globalRole: "facilitator", isMember: false }, expected: ADMITTED_CAN_ADD },
   { label: "facilitator who is a member of the team", caller: { globalRole: "facilitator", isMember: true }, expected: REJECTED },
-  { label: "application_admin", caller: { globalRole: "application_admin", isMember: false }, expected: ADMITTED_CANNOT_ADD },
+  { label: "application_admin", caller: { globalRole: "application_admin", isMember: false }, expected: ADMITTED_CAN_ADD },
   {
     label: "application_admin who is a member of the team",
     caller: { globalRole: "application_admin", isMember: true },
-    expected: ADMITTED_CANNOT_ADD,
+    expected: ADMITTED_CAN_ADD,
   },
   { label: "engineer", caller: { globalRole: "engineer", isMember: true }, expected: REJECTED },
   { label: "engineering manager", caller: { globalRole: "engineering_manager", isMember: true }, expected: REJECTED },

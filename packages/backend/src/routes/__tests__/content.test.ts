@@ -726,7 +726,8 @@ describe("GET /api/v1/teams/:teamId/topics/all — team annotation (topic-annota
     expect((await getAll()).canAddTopics).toBe(true);
   });
 
-  it("canAddTopics is false for an application admin (temporary, #176), with the full lists still returned", async () => {
+  // topic-003-admin-authorization task 1.1 (BA M8): FR-8.2 admits admins.
+  it("canAddTopics is true for an application admin, canEditAnnotations stays false, and the full lists are returned", async () => {
     mockAllTopics("application_admin", [{ ...activeRow, team_annotation: null }], [
       {
         id: "topic-old",
@@ -744,7 +745,8 @@ describe("GET /api/v1/teams/:teamId/topics/all — team annotation (topic-annota
       },
     ]);
     const body = await getAll();
-    expect(body.canAddTopics).toBe(false);
+    expect(body.canAddTopics).toBe(true);
+    expect(body.canEditAnnotations).toBe(false);
     expect(body.active).toHaveLength(1);
     expect(body.archived).toHaveLength(1);
   });

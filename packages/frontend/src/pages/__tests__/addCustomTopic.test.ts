@@ -130,16 +130,15 @@ describe("fieldErrorForServerField", () => {
   });
 });
 
-describe("activeEmptyStateVariant (design.md Decision 7)", () => {
+describe("activeEmptyStateVariant (topic-003-admin-authorization design.md D4)", () => {
   it.each([
-    [true, 0, true, 1],
-    [true, 3, false, 1],
-    [false, 3, true, 2],
-    [false, 3, false, 3],
-    [false, 0, true, 4],
-    [false, 0, false, 5],
-  ] as const)("locked=%s archived=%s canAdd=%s -> row %s", (locked, archived, canAdd, row) => {
-    expect(activeEmptyStateVariant(locked, archived, canAdd)).toBe(row);
+    [true, 0, "locked"],
+    [true, 3, "locked"],
+    [false, 3, "unlocked_with_archived"],
+    [false, 1, "unlocked_with_archived"],
+    [false, 0, "unlocked_none_archived"],
+  ] as const)("locked=%s archived=%s -> %s", (locked, archived, variant) => {
+    expect(activeEmptyStateVariant(locked, archived)).toBe(variant);
   });
 });
 
