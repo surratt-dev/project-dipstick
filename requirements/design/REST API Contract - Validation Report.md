@@ -24,7 +24,7 @@
 | FR-2.4 | Only registered team members admitted via join link; non-members denied | SESSION-003 (403 for non-members and EMs) | Covered |
 | FR-2.5 | Lobby shows real-time participant list (facilitator only) | SESSION-002 (`readinessGrid`), WebSocket (`participant.joined`) | Covered |
 | FR-2.6 | Facilitator explicitly starts session | SESSION-004 (`POST /start`) | Covered |
-| FR-2.7 | Facilitator may set a session's topic order before the session is created, by reordering the team configuration | TOPIC-006 (`PUT /topics/order`) | Covered by TOPIC-006 via team configuration before session creation |
+| FR-2.7 | Facilitator may set a session's topic order before the session's room is opened, by reordering the team configuration | TOPIC-006 (`PUT /topics/order`) | Covered by TOPIC-006 via team configuration before room open (the snapshot is taken at room open, SESSION-001a, #175) |
 | FR-3.1 | Open/in-progress action items displayed before first topic | SESSION-004 response includes `actionItems`; VOTE-001 for reconnection | Covered |
 | FR-3.2 | Action item owner can update status during pre-session review | VOTE-002 (`PATCH /action-items/:id/status`) | Covered |
 | FR-3.3 | Status updates visible to all participants in real time | VOTE-002 Notes: WebSocket `actionitem.updated` broadcast | Covered |

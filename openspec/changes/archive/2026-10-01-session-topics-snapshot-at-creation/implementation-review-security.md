@@ -75,3 +75,43 @@ The same applies to `POST /teams`'s fall-through `throw` (after `:296`). All of 
 ## Disposition requested
 
 MF1 must be fixed, with the regression tests above, before this change merges. SF1 is either fixed (global error handler) or recorded as a dated, owned follow-up. SF2 is a two-line change and should land here. The nits are at the implementer's discretion.
+
+## Re-verification (2026-10-01, Tomás Ferreira)
+
+Checked against the working-tree diff. I made no code changes.
+
+**MF1: cleared.**
+- The NULL coercion is gone. `evaluateStandingFacilitatorAccess` (`auth/standing-facilitator-access-helper.ts`) and `checkTeamExists` (`routes/topics.ts`) now bind `teamId` as given. Neither rewrites its input.
+- There is one validator, `isCanonicalUuid` / `UUID_PATTERN_SOURCE` in `routes/uuid.ts`. That also resolves N3: the duplicate regexes are gone.
+- I traced every caller of `evaluateStandingFacilitatorAccess`, `checkStandingFacilitatorAuthorization`, `checkStandingFacilitatorOrAdminAuthorization` and `checkTeamExists`. All of them sit behind a canonical-id 404 that runs before any query:
+  - POST `/sessions/draft` (`facilitator-sessions.ts`)
+  - GET `/topics/all` (`content.ts`)
+  - POST `/topics`
+  - DELETE `/topics/:topicId`
+  - POST `/restore`
+  - PUT `/order`
+  - PUT `/annotation` (`rejectNonCanonicalTeamId`, which is the first statement in each handler)
+- No route that reaches these helpers accepts a non-canonical id.
+- Defence in depth: the bypass required the coercion. With the coercion reverted, a hyphenless, braced or regrouped id passed to the helper would be cast by Postgres to the same uuid, so the member check would still fire. The boundary check now makes the authorized string and the queried string identical.
+- A real-DB regression test covers all seven routes for the hyphenless, braced and regrouped spellings (`session-topic-snapshot-integration.test.ts`). It asserts that Postgres resolves each spelling, that the response is 403/404, that the body does not echo the team id, and that no session or topic row changes.
+
+**Uppercase.** `isCanonicalUuid` accepts uppercase canonical ids (`[0-9a-fA-F]`). This does not matter for authorization:
+- Every SQL use binds the id into a `uuid` comparison, and Postgres normalizes case there. Authorization and data queries therefore resolve the same team.
+- The one string-keyed construct, the advisory lock, is canonicalized with `hashtext($1::uuid::text)`. There is a test for the uppercase lock case.
+- `/advance` compares `sessionRow.team_id !== teamId` strictly in JS. An uppercase id fails closed (rejected), so it is not a bypass.
+- The only effect is cosmetic: POST `/draft` echoes the caller's uppercase `teamId` in its 201 body. Not a finding.
+
+**SF1: cleared for this change's routes.**
+- `/advance` rejects a non-canonical `sessionId` with 404 before it queries.
+- The snapshot and room-open catch blocks return `internal_error` with a fixed message and a `correlationId`. They log `err` server-side and never rethrow, so Fastify's default handler cannot echo `err.message`.
+- The POST `/teams` catch-all works the same way.
+- `NoActiveTopicsError` and the status-conflict 4xx messages contain only the session status, which is not database text.
+- The app-wide global error handler is still the recorded follow-up (release-notes follow-up 6). It is not a blocker here.
+
+**SF2: cleared.** The audit `team_id` (the INSERT and `emitAuditEvent`), the lock key and the room-open UPDATE now use `sessionRow.team_id`, not the URL parameter.
+
+**New leaks introduced by the fix:** none found.
+- The new 404 for a malformed id says "Team not found" or "Session not found". A malformed id names no team, so answering 404 before 403 reveals nothing about any team's existence.
+- None of the new 500 bodies include database text.
+
+**Verdict: CLEARED.** MF1, SF1 and SF2 no longer block merge.

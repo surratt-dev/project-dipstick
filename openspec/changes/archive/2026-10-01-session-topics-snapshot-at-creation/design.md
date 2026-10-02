@@ -83,10 +83,15 @@ The helper sorts the returned rows by `display_order` to build `topicIds`. It th
 
 Add `lockTeamTopics(client, teamId)` beside the helper. It runs `SELECT pg_advisory_xact_lock(hashtext($1::uuid::text))`. The `::uuid` cast canonicalises the key, because Postgres accepts an upper-case UUID in `WHERE id = $1`, but `hashtext('ABC…')` and `hashtext('abc…')` are different locks. All four existing call sites in `topics.ts` move to it in this change. That is not optional cleanup: if the new sites canonicalise and the old ones do not, a hand-crafted upper-case URL on a topic route would take a different lock from `/advance`, and the reorder-versus-open guarantee would silently fail. Each call site already validates the team (existence or session-row match) before locking, so the cast never raises a 22P02 on user input. `/advance` passes `sessionRow.team_id`, not the URL parameter.
 
+### 2b. Canonical path ids at the route boundary (implementation review M1/MF1, SF1)
+
+*Added after implementation review.* Postgres canonicalises non-canonical UUID spellings, so an authorization query and a later query could resolve the same string differently. One shared validator, `isCanonicalUuid` (`src/routes/uuid.ts`, also used by `auth.ts`'s returnTo allow-list), rejects a non-canonical `teamId` with `404 not_found` before any query on `POST /draft`, `GET /topics/all`, and the five topic write routes, and a non-canonical `sessionId` on `/advance`. Authorization helpers never rewrite their input. Normative in `session-topic-lifecycle`.
+
 ### 3. `/advance`: authorize, lock, guard, conditional update, snapshot, audit (D4–D7, D9, D12)
 
-**Before the transaction**, in this order, all unchanged except step (d):
+**Before the transaction**, in this order, all unchanged except steps (0) and (d):
 
+0. 404 if `sessionId` is not a canonical UUID, before any query (implementation review SF1; see Decision 2b).
 a. 404 if the session does not exist.
 b. 403 if `sessionRow.team_id !== teamId`.
 c. 403 if the caller is not `facilitator_id`.
@@ -99,7 +104,7 @@ The team lock is taken only after every authorization check has passed, so an un
 
 1. `BEGIN`
 2. `lockTeamTopics(client, sessionRow.team_id)`. The team lock is always taken first, which matches every structural topic write and avoids lock-order inversion with the session row (no path takes a `sessions` row lock and then the team lock).
-3. `UPDATE sessions SET status = 'lobby', room_opened_at = now() WHERE id = $1 AND team_id = $2 AND facilitator_id = $3 AND status = 'draft' RETURNING room_opened_at`. The `team_id` and `facilitator_id` predicates are defence in depth: the guarantee lives in the statement that commits, not only in the pre-transaction read. The code checks `rowCount === 1` explicitly, not truthiness.
+3. `UPDATE sessions SET status = 'lobby', room_opened_at = now() WHERE id = $1 AND team_id = $2 AND facilitator_id = $3 AND status = 'draft'` (as built, with no `RETURNING`; nothing reads the timestamp back). The `team_id` and `facilitator_id` predicates are defence in depth: the guarantee lives in the statement that commits, not only in the pre-transaction read. The code checks `rowCount === 1` explicitly, not truthiness.
    - **0 rows:** re-read `SELECT status FROM sessions WHERE id = $1` (cheap, the lock is held), `ROLLBACK`, and return the existing 422 body with the existing message, `Session cannot be advanced from status '${status}'.` Both 422 paths therefore return the same message. This is the double-click case (D6).
 4. `snapshotSessionTopics(client, sessionId)`
    - **`NoActiveTopicsError`:** `ROLLBACK` and return `409 buildErrorEnvelope("precondition_failed", "This team has no active topics. Add or restore a topic on Topic Management before opening the room.", "NO_ACTIVE_TOPICS")`. No audit row: this is not a security event, and it is reachable only by the draft's own, live facilitator.
@@ -125,7 +130,7 @@ This is pre-existing, but it is about five lines on a handler this change alread
 
 - **Content.** The audit metadata for room open (`session.state_changed`, `team.created_with_session`) carries `topic_count` and `topic_ids` (`topics.id` values in snapshot `display_order`) and nothing else from the snapshot. It **never** carries `topic_name`, `topic_prompt`, or `topic_annotation`. The annotation is team free text and is kept out of the application log on purpose (topic-annotation design Decision 7). This rule is normative in the spec, not only a code comment.
 - **Sinks.** The `audit_log` row (the durable record) gets `topic_count` and `topic_ids`. The `emitAuditEvent` structured-log line gets `topicCount` only, so the log line and the row agree on the count without carrying the id list into the log. Both are tested.
-- **Docs.** The metadata contracts for both operations in `auth/audit-logger.ts` (L187–192, L292–298) are updated, along with the new `session.advance_denied_role` and the conditional `session.topics_backfilled` (Migration Plan step 3).
+- **Docs.** The metadata contracts for both operations in `auth/audit-logger.ts` (L187–192, L292–298) are updated, along with the new `session.advance_denied_role`. The conditional `session.topics_backfilled` (Migration Plan step 3) is registered only if the backfill script is built (as built: not registered, pending the 10.3a gate answer).
 - **Failure paths.** No audit row is written on `409 NO_ACTIVE_TOPICS` or on the `POST /teams` empty-template `500`, because it would roll back with the transaction. The 500 is covered by the error log line, which carries the `correlationId`.
 
 ### 4. `POST /teams`: snapshot after the session insert (D1, D4)
@@ -155,7 +160,7 @@ Inside the existing transaction, after the topic copy and `INSERT INTO sessions 
 
 In `DraftSessionHost.tsx`:
 
-- **A silent refetch.** The existing `loadFacilitatorState()` sets `loadState` to `loading` (replacing the page with "Loading session…" and resetting the copy-link banner) and, on failure, to a full-page error. It cannot be used for these refetches. Add `refetchFacilitatorState(): Promise<FacilitatorSessionStateResponse | null>`, which never touches `loadState` on failure and, on success, replaces `loadState.data` in place (which mounts `LiveReadinessView` when the status is no longer `draft`). Session expiry still goes through `detectSessionExpiry` and then `setReauthRequired`. The confirm, post-422, and post-409 refetches all use it. Add `{ phase: "checking" }` to `AdvanceState` for the pending button.
+- **A silent refetch.** The existing `loadFacilitatorState()` sets `loadState` to `loading` (replacing the page with "Loading session…" and resetting the copy-link banner) and, on failure, to a full-page error. It cannot be used for these refetches. Add `refetchFacilitatorState(): Promise<RefetchResult>` (as built: `{ kind: "ok", data } | { kind: "failed" } | { kind: "expired" }`), which never touches `loadState` on failure and, on success, replaces `loadState.data` in place (which mounts `LiveReadinessView` when the status is no longer `draft`). Session expiry still goes through `detectSessionExpiry` and then `setReauthRequired`. The confirm, post-422, and post-409 refetches all use it. Add `{ phase: "checking" }` to `AdvanceState` for the pending button.
 - **Opening the confirm** calls the silent refetch. The button shows the `checking` state while it is in flight and ignores further clicks, and the confirm renders only after it returns, so N is never stale. Outcomes: `draft` with N ≥ 1 shows the confirm with N ("1 topic" in the singular); N = 0 shows the disabled state instead; a non-draft status goes to the live-readiness view with no error; a failed refetch shows the inline retryable error and no confirm. Styling stays calm, with no warning icon.
 - **`activeTopicCount === 0`:** "Open the room" is disabled, and the copy plus a link to `/team/:teamId/topics` appears next to it. Because the state is defence in depth (Decision 3), this is a plain line of text and a link, nothing more.
 - **On a `422` from `/advance`:** refetch, and if the status is not `draft`, transition to the live-readiness view with no error. Otherwise (still `draft`, or the refetch failed) show the existing inline retry.
@@ -259,10 +264,11 @@ None that block implementation. The operator backfill answer (Migration Plan ste
 To be filed (task 10.6); not filed by this design.
 
 1. **Expired-draft refusal or auto-abandon at `/advance` (D10). Label: security.** The issue must state the access consequence, not only the history framing: `team-content-access-helper.ts` gives draft-path (Path 3) access only within 24h, but `lobby` and later statuses get it with no time limit, so advancing an expired draft **re-establishes** a facilitator's team-content access after it lapsed. It is pre-existing (`/advance` already transitions today). It must be filed with a named owner and a target date; it is not filed without one.
-2. **Live-role enforcement on the other session-phase endpoints** (start, begin-voting, topics-advance, reveal). Decision 3a covers `/advance` only. Label: security.
+2. **Live-role enforcement on the other session-phase endpoints** (start, begin-voting, topics-advance, reveal, complete). Decision 3a covers `/advance` only. Label: security.
 3. "Won't apply to today's session" hints on archive, add, restore, and annotate.
 4. Actionable copy for begin-voting's backstop `409` (Priya, O4).
 5. **Shared error-envelope type in `@dipstick/shared`** if the frontend starts branching on `error.code` in more than a handful of places.
+6. **Global Fastify error handler that hides 5xx messages** (added during implementation; referenced as "follow-up 6" in Decision 2 and the Security notes). Label: security. Once it lands, the local fixed-500 catches in `/advance` and `POST /teams` and `SnapshotFailedSignal` can go.
 
 ## Design feedback disposition
 

@@ -138,3 +138,17 @@ Once a session's room has opened, no topic write (reorder, archive, add, restore
 #### Scenario: A pre-change session with no rows is still rejected cleanly
 - **WHEN** a `pre_session` session has zero `session_topics` rows and its facilitator calls `SESSION-005`
 - **THEN** the response is the existing `409` "This session has no topics configured and cannot begin voting", and no state changes
+
+### Requirement: Routes that authorize on, lock on, or snapshot a team's topics accept only canonical ids
+
+Postgres accepts non-canonical spellings of a UUID (no hyphens, braces, other groupings) and canonicalises them, so a route that authorizes on one spelling and queries with another can get two different answers for the same team. The following routes SHALL therefore reject a path id that is not in canonical 8-4-4-4-12 hexadecimal form (either letter case) with `404` and `error.category: "not_found"`, before any database query, including the authorization query: `teamId` on `POST /api/v1/teams/:teamId/sessions/draft`, on `GET /api/v1/teams/:teamId/topics/all`, and on the five topic write routes (add, archive, restore, reorder, annotate); and `sessionId` on `POST /api/v1/teams/:teamId/sessions/:sessionId/advance`. Authorization helpers SHALL NOT rewrite or coerce the id they are given; the route boundary is the only place the shape is checked, using one shared definition. Because a malformed id names no team or session, answering `404` ahead of `403` reveals nothing about whether any team exists. Non-canonical `topicId` values on archive and restore, and ids on routes this change does not touch, are out of scope.
+
+#### Scenario: A non-canonical spelling of the caller's own team id is refused
+- **WHEN** a standing facilitator of a team calls `POST /draft`, `GET /topics/all`, or any of the five topic write routes using a hyphenless, braced, or regrouped spelling of that team's id
+- **THEN** the response is `404` with `error.category: "not_found"`
+- **AND** no session, topic, or audit row is written
+
+#### Scenario: A malformed session id on advance is a 404, not a 500
+- **WHEN** a facilitator calls `/advance` with a `sessionId` that is not a canonical UUID
+- **THEN** the response is `404` with `error.category: "not_found"`, issued before any query
+- **AND** the response contains no database error text

@@ -915,8 +915,10 @@ interface ReorderTopicsResponse {
     displayOrder: number;   // 1-based and dense (1..N) after a save that changes the order;
                             // on a no-op, the stored values, which may have gaps
   }>;
-  openSessionCreatedAt: string | null;  // Creation time of the team's lobby/pre_session/active/wrap_up
-                                        // session (not draft); always null for application_admin.
+  openSessionCreatedAt: string | null;  // Room-open time (sessions.room_opened_at, #175) of the team's
+                                        // lobby/pre_session/active/wrap_up session (not draft), falling back
+                                        // to created_at for a session opened before migration 20. The name is
+                                        // kept for compatibility. Always null for application_admin.
 }
 ```
 
@@ -946,7 +948,7 @@ All errors use the standard envelope `{ error: { category, code, message, correl
 - All `display_order` values are updated in a single PostgreSQL transaction, under the same per-team advisory lock as `TOPIC-003`/`TOPIC-004`/`TOPIC-005`. The write is two-phase (active rows move to negated targets, then flip to `1..N`) so swaps never collide on the active-order unique index.
 - Concurrent reorders of the same set are last-writer-wins; no version token.
 - A changed order writes an `audit_log` row `topic.reordered` with `metadata: { previous_order: uuid[], new_order: uuid[] }` (IDs only) in the same transaction. A no-op writes nothing.
-- Reorder writes only `topics`. It never writes `session_topics`; sessions already created keep their order.
+- Reorder writes only `topics`. It never writes `session_topics`; sessions whose room has already opened keep their order. A session still in `draft` picks up the saved order when its room opens (#175).
 
 ---
 

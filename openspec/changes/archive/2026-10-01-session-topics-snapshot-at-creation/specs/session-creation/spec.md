@@ -155,7 +155,7 @@ The application SHALL provide `POST /api/v1/teams`, callable only by a caller wh
 
 ### Requirement: Opening the room snapshots the session's topic list in the same transaction
 
-`POST /api/v1/teams/:teamId/sessions/:sessionId/advance` SHALL complete every authorization check (session existence, team match, caller is the session's facilitator, caller's live facilitator role) before it takes the team's advisory lock, so an unauthorized caller can never hold that lock. It SHALL then, in one transaction: take the team's advisory lock, keyed on the session row's `team_id` in canonical UUID text form (`pg_advisory_xact_lock(hashtext(team_id::uuid::text))`, the same key every structural topic write uses); transition the session with `UPDATE sessions SET status = 'lobby', room_opened_at = now() WHERE id = $1 AND team_id = $2 AND facilitator_id = $3 AND status = 'draft'`; and, only if that statement updated exactly one row, insert the session's `session_topics` snapshot (see `session-topic-lifecycle`) and write the `session.state_changed` audit row. If the snapshot fails or would insert zero rows, the transaction SHALL roll back: `sessions.status` remains `draft`, `room_opened_at` remains `NULL`, and no `session.state_changed` audit row and no `session_state_change` event are produced. The `session_state_change` event SHALL be published only after the transaction commits. The response shape is unchanged.
+`POST /api/v1/teams/:teamId/sessions/:sessionId/advance` SHALL complete every authorization check (session existence, team match, caller is the session's facilitator, caller's live facilitator role) before it takes the team's advisory lock, so an unauthorized caller can never hold that lock. It SHALL then, in one transaction: take the team's advisory lock, keyed on the session row's `team_id` in canonical UUID text form (`pg_advisory_xact_lock(hashtext(team_id::uuid::text))`, the same key every structural topic write uses); transition the session with `UPDATE sessions SET status = 'lobby', room_opened_at = now() WHERE id = $1 AND team_id = $2 AND facilitator_id = $3 AND status = 'draft'`; and, only if that statement updated exactly one row, insert the session's `session_topics` snapshot (see `session-topic-lifecycle`) and write the `session.state_changed` audit row. If the snapshot fails or would insert zero rows, the transaction SHALL roll back: `sessions.status` remains `draft`, `room_opened_at` remains `NULL`, and no `session.state_changed` audit row and no `session_state_change` event are produced. A zero-row snapshot is answered as the `409 NO_ACTIVE_TOPICS` below. Any other failure inside the transaction (the snapshot insert, the lock, the conditional update, the audit insert, or the commit) SHALL roll back and produce a `500` with `error.category: "internal_error"`, a fixed message, and a `correlationId`; the underlying error SHALL be logged server-side with the same `correlationId` and SHALL NOT be echoed in the response. (This app registers no global error handler today, so the handler returns this fixed body itself.) The wording of those fixed messages is not normative. The `session_state_change` event SHALL be published only after the transaction commits. The success response shape is unchanged.
 
 #### Scenario: A successful open writes status, timestamp, snapshot, and audit together
 - **WHEN** the facilitator advances a `draft` session for a team with 7 active topics
@@ -165,6 +165,13 @@ The application SHALL provide `POST /api/v1/teams`, callable only by a caller wh
 - **WHEN** the snapshot insert fails during `/advance`
 - **THEN** the session remains `draft` with `room_opened_at` NULL and zero `session_topics` rows
 - **AND** no `session.state_changed` audit row and no `session_state_change` event are produced
+- **AND** the response is `500` with `error.category: "internal_error"`, a fixed message, and a `correlationId`, and contains no database error text
+
+#### Scenario: Any other room-open transaction failure returns a fixed 500
+- **WHEN** a statement other than the snapshot fails inside the `/advance` transaction (for example the audit insert)
+- **THEN** the transaction rolls back and the session remains `draft` with `room_opened_at` NULL
+- **AND** the response is `500` with `error.category: "internal_error"`, a fixed message, and a `correlationId`
+- **AND** the database error is logged with that `correlationId` and is not echoed in the response
 
 ### Requirement: Opening the room is refused when the team has no active topics
 

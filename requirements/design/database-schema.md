@@ -336,7 +336,7 @@ Multiple `*_at` timestamp columns reflect the session's stage history. This is p
 
 ### `session_topics`
 
-A snapshot of the topics included in a session, in the order they were presented. This is a copy of the team's topic configuration at session creation time, not a live reference. If a topic is archived after a session, the session history still accurately reflects what was covered.
+A snapshot of the topics included in a session, in the order they were presented. This is a copy of the team's topic configuration at room open (the moment the session first enters `lobby`; corrected by #175, which also added `sessions.room_opened_at` in migration 20), not a live reference. If a topic is archived after a session, the session history still accurately reflects what was covered.
 
 ```sql
 CREATE TABLE session_topics (

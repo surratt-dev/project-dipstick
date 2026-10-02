@@ -80,7 +80,7 @@ This section does not gate release. Code ships when sections 1–8, 10.1, 10.2, 
 - [x] 9.5 `requirements/design/redis-session-model.md`: `current_topic_id` is a `topics.id`.
 - [x] 9.6 `requirements/design/REST API Contract.md`: change the `SESSION-001` note and the annotation snapshot note (~L1024) to "room open". Document `NO_ACTIVE_TOPICS` (`precondition_failed`) and the live-role `403` on `/advance`, `activeTopicCount` on the draft facilitator state, and `internal_error` for the `POST /teams` empty-template `500`.
 - [x] 9.7 `openspec/changes/topic-skip-and-creation-time-confirmation/README.md`: "at creation" becomes "at room open". The "last look" signal belongs to the "Open the room" confirm, which now shows the count.
-- [ ] 9.8 [AT ARCHIVE] Update the Purpose text of `session-topic-lifecycle` (drop "the snapshot write itself is pending #175", and add "The session topic snapshot is not configurable.") and of `topic-annotation` (drop "pending" from the snapshot cross-reference).
+- [x] 9.8 [AT ARCHIVE] Update the Purpose text of `session-topic-lifecycle` (drop "the snapshot write itself is pending #175", and add "The session topic snapshot is not configurable.") and of `topic-annotation` (drop "pending" from the snapshot cross-reference).
 
 ## 10. Release and verification
 
