@@ -8,7 +8,7 @@ This spec does NOT cover: the specific fields or business rules of any individua
 
 **Implementation note — shared functions:** The lock-check function is `hasCompletedFirstSession(teamId)` in `packages/backend/src/auth/topic-lock-helper.ts`. It is called by both `GET /api/v1/teams/:teamId/topics` (`packages/backend/src/routes/content.ts`) and `POST /api/v1/teams/:teamId/topics` (`packages/backend/src/routes/topics.ts`). No other code path independently queries `sessions.status = 'complete'` to answer this question.
 
-**Implementation note — `canAddTopics`:** Computed in the TOPIC-002 handler in `packages/backend/src/routes/content.ts` as `decision.actorGlobalRole === "facilitator"`, deliberately separate from `canEditAnnotations` (whose administrator exclusion is permanent). The response type `GetAllTopicsResponse.canAddTopics` and the shared `AddCustomTopicRequest`/`AddCustomTopicResponse` types are in `packages/shared/src/types/topic.ts`; TOPIC-003's validator in `packages/backend/src/routes/topics.ts` is typed against `AddCustomTopicRequest`, and its vote-type list is derived from an object declared `satisfies Record<VoteType, true>`. Flag/endpoint agreement is enforced by `packages/backend/src/routes/__tests__/topic-add-flag-parity.test.ts`, which registers both routes and runs their real authorization helpers against a SQL-routing `db.query` fake (not live Postgres); each caller-class row carries an explicit `expected` outcome (GET status, `canAddTopics`, POST status), and the `application_admin` rows' `expected` field is what the #176 fix must change.
+**Implementation note — `canAddTopics`:** Computed in the TOPIC-002 handler in `packages/backend/src/routes/content.ts` as `decision.actorGlobalRole === "facilitator" || decision.actorGlobalRole === "application_admin"` (true for every caller TOPIC-002 admits, per BRD FR-8.2), deliberately separate from `canEditAnnotations` (whose administrator exclusion is permanent). The response type `GetAllTopicsResponse.canAddTopics` and the shared `AddCustomTopicRequest`/`AddCustomTopicResponse` types are in `packages/shared/src/types/topic.ts`; TOPIC-003's validator in `packages/backend/src/routes/topics.ts` is typed against `AddCustomTopicRequest`, and its vote-type list is derived from an object declared `satisfies Record<VoteType, true>`. Flag/endpoint agreement is enforced by `packages/backend/src/routes/__tests__/topic-add-flag-parity.test.ts`, which registers both routes and runs their real authorization helpers against a SQL-routing `db.query` fake (not live Postgres); each caller-class row carries an explicit `expected` outcome (GET status, `canAddTopics`, POST status). Both endpoints now decide through `checkStandingFacilitatorOrAdminAuthorization`, so the test guards `content.ts`'s explicit role expression against TOPIC-003's `checkAddCustomTopicAuthorization`.
 
 **Implementation note — timing floor:** `applyTimingFloor` (`packages/backend/src/content/timing-oracle.ts`) is applied at every early-return in a topic-write endpoint's check cascade, not only at the 409 lock rejection, so that response latency does not become a side channel distinguishing "never going to be authorized" from "authorized but blocked by the lock."
 
@@ -104,7 +104,7 @@ Every topic-write request rejected with `409 Conflict` under the customization l
 
 ### Requirement: The all-topics endpoint uses the standing, org-wide facilitator authorization model, matching every other topic-write endpoint it serves
 
-`GET /api/v1/teams/:teamId/topics/all` SHALL authorize requests using the same standing, org-wide facilitator model as `POST /api/v1/teams/:teamId/topics`, `DELETE /api/v1/teams/:teamId/topics/:topicId`, and every other topic-write endpoint this capability gates: `global_role = 'facilitator'` AND the caller is not an active member of the target team, OR `global_role = 'application_admin'`. (The non-member facilitator rule is shared by every topic-write endpoint; the `application_admin` arm is shared with `DELETE`, restore, and reorder (TOPIC-004/005/006) only. `POST /api/v1/teams/:teamId/topics` (TOPIC-003) and `PUT /api/v1/teams/:teamId/topics/:topicId/annotation` (TOPIC-007, BRD FR-8.7) reject administrators with `403`; this read endpoint still admits them, and returns `canEditAnnotations: false` and, while #176 is open, `canAddTopics: false`.) This endpoint SHALL NOT require that the caller currently hold, or have ever held, an active session for the target team. No completed-session relationship, and no prior facilitation history with the specific team, is required.
+`GET /api/v1/teams/:teamId/topics/all` SHALL authorize requests using the same standing, org-wide facilitator model as `POST /api/v1/teams/:teamId/topics`, `DELETE /api/v1/teams/:teamId/topics/:topicId`, and every other topic-write endpoint this capability gates: `global_role = 'facilitator'` AND the caller is not an active member of the target team, OR `global_role = 'application_admin'`. (The non-member facilitator rule is shared by every topic-write endpoint; the `application_admin` arm is shared with add, `DELETE`, restore, and reorder (TOPIC-003/004/005/006) only. `PUT /api/v1/teams/:teamId/topics/:topicId/annotation` (TOPIC-007, BRD FR-8.7) rejects administrators with `403`; this read endpoint still admits them, and returns `canEditAnnotations: false` and `canAddTopics: true`.) This endpoint SHALL NOT require that the caller currently hold, or have ever held, an active session for the target team. No completed-session relationship, and no prior facilitation history with the specific team, is required.
 
 This endpoint SHALL apply the same constant minimum response-time floor (`applyTimingFloor`) at every early-return from this authorization check (`403 Forbidden`, on either rejection reason) as every other endpoint this capability's timing-floor requirement already covers, so that response latency does not distinguish "never going to be authorized" from "authorized" for a caller probing this endpoint.
 
@@ -127,7 +127,6 @@ This endpoint SHALL apply the same constant minimum response-time floor (`applyT
 #### Scenario: A 403 rejection is not detectably faster than a 200 success
 - **WHEN** a caller who fails this endpoint's authorization check submits a request, and a separately-measured authorized caller's request against the same endpoint is also submitted
 - **THEN** the `403` response's timing is not detectably faster than the `200` response's timing, because both apply the same minimum response-time floor
-
 ### Requirement: The all-topics endpoint's response carries the team's display name, each active topic's description, and each archived topic's provenance — extensions beyond the originally-drafted contract
 
 `GET /api/v1/teams/:teamId/topics/all`'s response SHALL include, in addition to the topic lists themselves:
@@ -188,9 +187,7 @@ None of the first three fields were present in this endpoint's originally-drafte
 
 ### Requirement: The all-topics endpoint tells the screen whether the caller can add a custom topic
 
-`GET /api/v1/teams/:teamId/topics/all`'s response SHALL include a top-level `canAddTopics: boolean`. It SHALL be `true` for every caller with `global_role = 'facilitator'` that TOPIC-002 admits (TOPIC-002 already rejects facilitators who are active members of the team, so the flag computes no membership of its own) and `false` when the caller is an `application_admin`.
-
-The `false` value for an `application_admin` is **temporary**: it mirrors TOPIC-003's current rejection of administrators, which is FR-8.2 defect **#176**. When #176 is fixed, this flag SHALL become `true` for an `application_admin` in the same change. It SHALL NOT be read as a product rule that administrators may not add topics, and it SHALL NOT be derived from or replaced by `canEditAnnotations`, whose administrator exclusion (FR-8.7) is permanent and deliberate.
+`GET /api/v1/teams/:teamId/topics/all`'s response SHALL include a top-level `canAddTopics: boolean`. `canAddTopics` SHALL be `true` for every caller TOPIC-002 admits, that is, every non-member `facilitator` and every `application_admin`. (TOPIC-002 already rejects facilitators who are active members of the team, so the flag computes no membership of its own.) It SHALL NOT be derived from `canEditAnnotations`, whose administrator exclusion (FR-8.7) is permanent.
 
 The flag reflects authorization only and SHALL NOT be the server's enforcement: `POST /api/v1/teams/:teamId/topics` enforces its own authorization and the customization lock independently. The flag does not consider `isCustomizationLocked`; the screen combines the two.
 
@@ -198,9 +195,9 @@ The flag reflects authorization only and SHALL NOT be the server's enforcement: 
 - **WHEN** a standing facilitator who is not a member of the team requests the team's full topic list
 - **THEN** the response includes `canAddTopics: true`
 
-#### Scenario: An administrator cannot add topics while #176 is open
+#### Scenario: An administrator can add topics but cannot edit annotations
 - **WHEN** an `application_admin` requests a team's full topic list
-- **THEN** the response includes `canAddTopics: false`
+- **THEN** the response includes `canAddTopics: true` and `canEditAnnotations: false`
 - **AND** the response still includes the full `active` and `archived` lists
 
 #### Scenario: The flag agrees with the add endpoint's authorization for every caller class

@@ -261,7 +261,7 @@ export function AddCustomTopicForm({
       />
       <div id="add-topic-description-help" style={HELP_STYLE}>
         Engineers won&apos;t see this during sessions. Use it as a note for whoever facilitates this team. A team
-        definition is the place to explain what this topic means for your team.
+        definition is the place to explain what this topic means for this team.
       </div>
       {descriptionCounter && (
         <Counter

@@ -792,6 +792,238 @@ describe("POST /api/v1/teams/:teamId/topics — error envelope shape (design.md 
 });
 
 // =============================================================================
+// topic-003-admin-authorization (#176) — application admins on TOPIC-003
+// (BRD FR-8.2 [HARD]). tasks.md 2.1–2.6.
+// =============================================================================
+const TEAM_URL = "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics";
+const MISSING_TEAM_URL = "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics";
+const NEW_NOT_A_FACILITATOR_COPY = "Only a facilitator or an application admin can add a custom topic.";
+const MEMBER_COPY = "A facilitator cannot add a custom topic to a team they are a member of.";
+
+function successAuditCalls(client: ReturnType<typeof makeMockClient>) {
+  return client.query.mock.calls.filter((call) => (call[0] as string).includes("INSERT INTO audit_log"));
+}
+
+function anySuccessAuditViaDb() {
+  return mockDbQuery.mock.calls.some(
+    (call) => (call[0] as string).includes("INSERT INTO audit_log") && (call[1] as unknown[]).includes("topic.custom_added"),
+  );
+}
+
+describe("POST /api/v1/teams/:teamId/topics — application admin success (tasks 2.1, 2.2)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    ["non-member", false],
+    ["active member of the team", true],
+  ])("an application_admin (%s) on an unlocked team gets 201, appended last, with exactly one admin audit row in the insert's transaction", async (_label, isMember) => {
+    mockAuthQuery("application_admin", isMember);
+    mockTeamExists(true);
+    mockLockCount(1);
+    const client = mockSuccessfulInsertTransaction({ topicId: "topic-admin-1", nextDisplayOrder: 5 });
+
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: VALID_BODY });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body).toMatchObject({ topicId: "topic-admin-1", displayOrder: 5, isDefault: false });
+    // The MAX(display_order) read runs on active topics only: appended at the end.
+    const maxSql = client.query.mock.calls.map((c) => c[0] as string).find((sql) => sql.includes("MAX(display_order)"));
+    expect(maxSql).toContain("status = 'active'");
+
+    // Topic fields only: no session fields leak into the admin's 201 (security review §5).
+    expect(Object.keys(body).sort()).toEqual(
+      ["createdAt", "displayOrder", "isDefault", "name", "prompt", "topicId", "voteType"].sort(),
+    );
+    expect(body).not.toHaveProperty("openSessionCreatedAt");
+
+    // F1's interim compensating control: exactly one topic.custom_added row,
+    // attributed to application_admin, on the transaction client between
+    // INSERT topics and COMMIT. Do not weaken.
+    const audits = successAuditCalls(client);
+    expect(audits).toHaveLength(1);
+    const params = audits[0]![1] as unknown[];
+    expect(params[0]).toBe("admin-1");
+    expect(params[1]).toBe("application_admin");
+    expect(params[3]).toBe("topic.custom_added");
+    expect(JSON.parse(params[5] as string)).toEqual({ topic_id: "topic-admin-1" });
+    const sqls = client.query.mock.calls.map((c) => c[0] as string);
+    const insertIdx = sqls.findIndex((s) => s.includes("INSERT INTO topics"));
+    const auditIdx = sqls.findIndex((s) => s.includes("INSERT INTO audit_log"));
+    const commitIdx = sqls.indexOf("COMMIT");
+    expect(insertIdx).toBeLessThan(auditIdx);
+    expect(auditIdx).toBeLessThan(commitIdx);
+    expect(anySuccessAuditViaDb()).toBe(false);
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "topic.custom_added",
+      expect.objectContaining({ actorGlobalRole: "application_admin", topicId: "topic-admin-1" }),
+    );
+  });
+});
+
+describe("POST /api/v1/teams/:teamId/topics — application admin and the lock (task 2.3)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("an application_admin on a locked team gets 409 TOPIC_CUSTOMIZATION_LOCKED, a denial row attributed to application_admin, and no success row", async () => {
+    mockAuthQuery("application_admin", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: VALID_BODY });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
+
+    const auditCalls = mockDbQuery.mock.calls.filter((call) => (call[0] as string).includes("INSERT INTO audit_log"));
+    expect(auditCalls).toHaveLength(1);
+    const params = auditCalls[0]![1] as unknown[];
+    expect(params[1]).toBe("application_admin");
+    expect(params[3]).toBe("topic.write_denied_locked");
+    expect(JSON.parse(params[5] as string)).toMatchObject({ attempted_operation: "topic.custom_added" });
+    expect(mockDbConnect).not.toHaveBeenCalled();
+    expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(expect.anything(), "topic.custom_added", expect.anything());
+  });
+});
+
+describe("POST /api/v1/teams/:teamId/topics — application admin check order (task 2.4)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("nonexistent team + invalid body -> 404 (not 422), no error.field, no success row", async () => {
+    mockAuthQuery("application_admin", false);
+    mockTeamExists(false);
+
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "POST", url: MISSING_TEAM_URL, payload: { prompt: "" } });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
+    expect(res.json().error.field).toBeUndefined();
+    expect(mockDbConnect).not.toHaveBeenCalled();
+    expect(anySuccessAuditViaDb()).toBe(false);
+  });
+
+  it("locked team + invalid body -> 409 (not 422), no error.field", async () => {
+    mockAuthQuery("application_admin", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: { name: "" } });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.field).toBeUndefined();
+  });
+
+  it("unlocked team + missing voteType -> 422 with error.field voteType, no success row", async () => {
+    mockAuthQuery("application_admin", false);
+    mockTeamExists(true);
+    mockLockCount(1);
+
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: { name: "Team Health", prompt: "A prompt" } });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.field).toBe("voteType");
+    expect(mockDbConnect).not.toHaveBeenCalled();
+    expect(anySuccessAuditViaDb()).toBe(false);
+  });
+});
+
+describe("POST /api/v1/teams/:teamId/topics — timing floor on the admin paths and the new wrapper's 403 branches (task 2.5)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("admin -> 404 applies the floor once", async () => {
+    mockAuthQuery("application_admin", false);
+    mockTeamExists(false);
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "POST", url: MISSING_TEAM_URL, payload: VALID_BODY });
+    expect(res.statusCode).toBe(404);
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it("admin -> 409 applies the floor once", async () => {
+    mockAuthQuery("application_admin", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: VALID_BODY });
+    expect(res.statusCode).toBe(409);
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["engineer", () => mockAuthQuery("engineer", true), "NOT_A_FACILITATOR"],
+    ["engineering_manager", () => mockAuthQuery("engineering_manager", true), "NOT_A_FACILITATOR"],
+    ["no users row", () => mockAuthQueryNoUser(), "NOT_A_FACILITATOR"],
+    ["member facilitator", () => mockAuthQuery("facilitator", true), "FACILITATOR_IS_TEAM_MEMBER"],
+  ])("%s -> 403 %s applies the floor once", async (_label, setup, code) => {
+    setup();
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: VALID_BODY });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe(code);
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/v1/teams/:teamId/topics — callers still rejected, and the 403 copy (task 2.6)", () => {
+  // resetAllMocks (not clear): some cases queue team/lock responses that a
+  // correct 403 never consumes, and those must not leak into the next case.
+  beforeEach(() => vi.resetAllMocks());
+
+  const rejected: Array<[string, () => void]> = [
+    ["engineer", () => mockAuthQuery("engineer", true)],
+    ["engineering_manager", () => mockAuthQuery("engineering_manager", true)],
+    ["no users row", () => mockAuthQueryNoUser()],
+  ];
+
+  it.each(rejected)("%s against a locked team -> 403 NOT_A_FACILITATOR with the new copy (not 409; lock state not revealed)", async (_label, setup) => {
+    setup();
+    // Even if the lock and existence checks were reached they would say
+    // "locked"; the 403 must come first and touch nothing else.
+    mockTeamExists(true);
+    mockLockCount(0);
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: VALID_BODY });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+    expect(res.json().error.message).toBe(NEW_NOT_A_FACILITATOR_COPY);
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(rejected)("%s against a nonexistent team with an invalid body -> 403 (not 404 or 422), no error.field", async (_label, setup) => {
+    setup();
+    mockTeamExists(false);
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: MISSING_TEAM_URL, payload: { voteType: "nope" } });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+    expect(res.json().error.message).toBe(NEW_NOT_A_FACILITATOR_COPY);
+    expect(res.json().error.field).toBeUndefined();
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("a member facilitator -> 403 FACILITATOR_IS_TEAM_MEMBER with unchanged copy", async () => {
+    mockAuthQuery("facilitator", true);
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: TEAM_URL, payload: VALID_BODY });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
+    expect(res.json().error.message).toBe(MEMBER_COPY);
+  });
+});
+
+// =============================================================================
 // DELETE /api/v1/teams/:teamId/topics/:topicId  (TOPIC-004, remove-topic)
 // =============================================================================
 

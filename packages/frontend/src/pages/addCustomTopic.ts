@@ -140,21 +140,20 @@ export function fieldErrorForServerField(
   return { field: null, message: SERVER_UNKNOWN_FIELD_MESSAGE };
 }
 
-export type ActiveEmptyStateVariant = 1 | 2 | 3 | 4 | 5;
+export type ActiveEmptyStateVariant = "locked" | "unlocked_with_archived" | "unlocked_none_archived";
 
 /**
- * The empty active-topics state is a pure function of three flags (design.md
- * Decision 7). Rows 3 and 5 exist only because canAddTopics is temporarily
- * false for application administrators (#176); remove them with that fix.
+ * The empty active-topics state's message and structure are a pure function
+ * of the lock and the archived count (topic-003-admin-authorization design.md
+ * D4). The variant does not encode add permission: whether "Add custom topic"
+ * renders is decided by ActiveTopicsEmptyState's `addAllowed` prop.
  */
 export function activeEmptyStateVariant(
   isCustomizationLocked: boolean,
   archivedCount: number,
-  canAddTopics: boolean,
 ): ActiveEmptyStateVariant {
-  if (isCustomizationLocked) return 1;
-  if (archivedCount > 0) return canAddTopics ? 2 : 3;
-  return canAddTopics ? 4 : 5;
+  if (isCustomizationLocked) return "locked";
+  return archivedCount > 0 ? "unlocked_with_archived" : "unlocked_none_archived";
 }
 
 /** A counter is shown once a field's length reaches 80% of its limit. */

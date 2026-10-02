@@ -37,8 +37,10 @@ import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 // Check-ordering cascade for POST /api/v1/teams/:teamId/topics
 // (design.md Decision 9, tasks.md Section 3):
 //
-//   1. Identity/role authorization (Task 3.1) -- 403 NOT_A_FACILITATOR /
-//      FACILITATOR_IS_TEAM_MEMBER. Reveals nothing about any specific team.
+//   1. Identity/role authorization (checkAddCustomTopicAuthorization) -- 403
+//      NOT_A_FACILITATOR / FACILITATOR_IS_TEAM_MEMBER. Admits a non-member
+//      facilitator or an application admin (FR-8.2, #176). Reveals nothing
+//      about any specific team.
 //   2. Team existence (Task 3.2) -- 404. Runs only after step 1 passes.
 //   3. Customization lock (Task 3.3) -- 409 TOPIC_CUSTOMIZATION_LOCKED.
 //      Runs only after step 2 passes.
@@ -56,36 +58,32 @@ import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 const LOCK_MESSAGE = "Topics cannot be customized until this team's first session is completed.";
 
 // ---------------------------------------------------------------------------
-// Task 3.1 — standing-facilitator authorization check
+// Standing-facilitator-only authorization check (TOPIC-007, FR-8.7 only)
 //
-// design.md Decision 3 (Philosophy 1): global_role = 'facilitator' AND the
-// caller is not an active member of the target team. Evaluated and returned
-// before any team-existence or lock check. Does not require the target team
-// to exist: the role sub-check touches no team data, and the membership
-// sub-check against a nonexistent teamId is vacuously "not a member" and
-// passes through to Task 3.2 (design.md Decision 9's ordering rationale).
+// global_role = 'facilitator' AND the caller is not an active member of the
+// target team. Evaluated and returned before any team-existence or lock
+// check. Does not require the target team to exist: the role sub-check
+// touches no team data, and the membership sub-check against a nonexistent
+// teamId is vacuously "not a member" and passes through to the 404 check.
 //
-// design.md Decision 9's engineer-review (M2) addendum: reuses
-// facilitator-sessions.ts's POST /draft authorization query verbatim, via
-// the extracted evaluateStandingFacilitatorAccess helper -- not a third
-// independent copy of it.
+// Its only caller is TOPIC-007 (team definition / annotation), which FR-8.7
+// keeps facilitator-only. TOPIC-003..006 admit application admins through
+// checkStandingFacilitatorOrAdminAuthorization instead (see the per-endpoint
+// wrappers below). Reuses facilitator-sessions.ts's POST /draft
+// authorization query via the extracted evaluateStandingFacilitatorAccess
+// helper -- not an independent copy of it.
 // ---------------------------------------------------------------------------
 type AuthorizationResult =
   | { rejected: false; actorGlobalRole: string }
   | { rejected: true };
 
 // topic-annotation design.md Decision 1: the two 403 messages are
-// parameterized so TOPIC-007 (also facilitator-only) can reuse this exact
-// check with its own copy. TOPIC-003 passes its original strings unchanged.
+// parameterized so the caller supplies its own copy. TOPIC-007 is the only
+// caller (TOPIC-003 moved to checkAddCustomTopicAuthorization in #176).
 interface StandingFacilitatorMessages {
   notAFacilitator: string;
   isTeamMember: string;
 }
-
-const ADD_CUSTOM_TOPIC_AUTH_MESSAGES: StandingFacilitatorMessages = {
-  notAFacilitator: "Only a facilitator can add a custom topic.",
-  isTeamMember: "A facilitator cannot add a custom topic to a team they are a member of.",
-};
 
 async function checkStandingFacilitatorAuthorization(
   reply: FastifyReply,
@@ -97,10 +95,9 @@ async function checkStandingFacilitatorAuthorization(
   const grant = await evaluateStandingFacilitatorAccess(userId, teamId);
 
   // No user row for the caller at all -- treated the same as "not a
-  // facilitator" for this endpoint's cascade (no separate 401 branch is
-  // specified anywhere in this change's design/spec deltas; the
-  // authenticated session middleware already guarantees a user row exists
-  // for any normal request that reaches this handler).
+  // facilitator" for the caller's cascade (no separate 401 branch is
+  // specified; the authenticated session middleware already guarantees a
+  // user row exists for any normal request that reaches a handler).
   if (grant === null || grant.globalRole !== "facilitator") {
     await applyTimingFloor(startTime);
     await reply
@@ -346,12 +343,45 @@ function validateAddCustomTopicBody(body: AddCustomTopicRequestBody): Validation
 }
 
 // ---------------------------------------------------------------------------
+// TOPIC-003 identity/role check (topic-003-admin-authorization, #176)
+//
+// design.md D1: BRD FR-8.2 [HARD] admits an application admin to add a
+// custom topic on any team, regardless of membership. Calls the shared,
+// decision-only checkStandingFacilitatorOrAdminAuthorization -- the same arm
+// TOPIC-004/005/006 use -- not the facilitator-only
+// checkStandingFacilitatorAuthorization (TOPIC-007), which would drop the
+// admin branch. Writes its own copy (design.md D2) and applies the timing
+// floor itself, on both reason branches. Reason codes are unchanged.
+// ---------------------------------------------------------------------------
+async function checkAddCustomTopicAuthorization(
+  reply: FastifyReply,
+  userId: string,
+  teamId: string,
+  startTime: number,
+): Promise<AuthorizationResult> {
+  const decision = await checkStandingFacilitatorOrAdminAuthorization(userId, teamId);
+
+  if (!decision.authorized) {
+    const message =
+      decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
+        ? "A facilitator cannot add a custom topic to a team they are a member of."
+        : "Only a facilitator or an application admin can add a custom topic.";
+
+    await applyTimingFloor(startTime);
+    await reply.code(403).send(buildErrorEnvelope("forbidden", message, decision.reason));
+    return { rejected: true };
+  }
+
+  return { rejected: false, actorGlobalRole: decision.actorGlobalRole };
+}
+
+// ---------------------------------------------------------------------------
 // Task 3.1 — TOPIC-004 identity/role check
 //
 // design.md Decision 1 (engineer-review correction, Finding 1, BLOCKING):
 // calls the shared, decision-only checkStandingFacilitatorOrAdminAuthorization
 // (auth/standing-facilitator-access-helper.ts) rather than reusing
-// checkStandingFacilitatorAuthorization (TOPIC-003, above) verbatim -- that
+// checkStandingFacilitatorAuthorization (TOPIC-007, above) verbatim -- that
 // check has no application_admin branch and would violate FR-8.2 [HARD] for
 // this endpoint. Because the shared function is decision-only (no reply, no
 // applyTimingFloor), this wrapper writes its own TOPIC-004-appropriate
@@ -490,7 +520,7 @@ async function checkTopicExistsAndArchived(
 //
 // design.md Decision 2 step 1: calls the shared, decision-only
 // checkStandingFacilitatorOrAdminAuthorization, mirroring
-// checkRestoreTopicAuthorization. Must not be copied from TOPIC-003's
+// checkRestoreTopicAuthorization. Must not be copied from TOPIC-007's
 // facilitator-only checkStandingFacilitatorAuthorization, which would
 // silently drop the application_admin branch. Writes its own message and
 // applies the timing floor itself, on both reason branches.
@@ -721,13 +751,13 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Task 3.1 / Task 3.6 — 403, checked first.
-    const authResult = await checkStandingFacilitatorAuthorization(
+    // 403, checked first. Facilitator (non-member) or application admin
+    // (any team, FR-8.2; #176).
+    const authResult = await checkAddCustomTopicAuthorization(
       reply,
       session.userId,
       teamId,
       startTime,
-      ADD_CUSTOM_TOPIC_AUTH_MESSAGES,
     );
     if (authResult.rejected) {
       return reply;
@@ -1469,8 +1499,8 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Step 1 -- 403. Deliberately the facilitator-only check (TOPIC-003's),
-    // NOT checkStandingFacilitatorOrAdminAuthorization like TOPIC-004/005/006:
+    // Step 1 -- 403. Deliberately the facilitator-only check,
+    // NOT checkStandingFacilitatorOrAdminAuthorization like TOPIC-003/004/005/006:
     // the definition is the team's words, recorded by the facilitator who was
     // in the room. Application admins have no session context and get 403
     // (BRD FR-8.7, topic-annotation design.md Decision 1). Do not "fix" this

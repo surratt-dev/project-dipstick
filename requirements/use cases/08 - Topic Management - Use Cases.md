@@ -116,18 +116,20 @@
 # Use Case: Add Custom Topic
 
 ## Summary
-**Actor:** Facilitator
+**Actor:** Facilitator (or Application Administrator, per FR-8.2)
 
 **Trigger:** The Facilitator decides the default topic set is missing a topic relevant to the team's context and wants to add it.
 
 **Goal:** As a Facilitator, I want to add a custom topic with a prompt, vote type, and description so that the team's sessions cover areas specific to their context.
 
+An Application Administrator follows the same flow with the same validation and lock rules.
+
 ---
 
 ## Preconditions
-- The Facilitator is authenticated.
+- The Facilitator is authenticated, or the actor is an Application Administrator (any team, regardless of membership).
 - The team has at least one completed session (topic customization is unlocked).
-- The Facilitator is eligible to facilitate any team they are not an active member of — the standing, org-wide facilitator model. (Corrected per `topic-customization-lock-and-add-custom-topic` design.md Decision 3: no prior facilitation relationship with this specific team is required. This aligns with Use Case: View Active Topic Configuration's "any team they are eligible to facilitate" phrasing rather than implying an existing facilitation relationship with the specific team.)
+- The Facilitator is eligible to facilitate any team they are not an active member of — the standing, org-wide facilitator model. (Corrected per `topic-customization-lock-and-add-custom-topic` design.md Decision 3: no prior facilitation relationship with this specific team is required. This aligns with Use Case: View Active Topic Configuration's "any team they are eligible to facilitate" phrasing rather than implying an existing facilitation relationship with the specific team.) Or the actor is an Application Administrator (any team, regardless of membership).
 
 ## Main Flow
 1. The Facilitator navigates to the topic management screen for the team.
@@ -160,7 +162,7 @@
 - [ ] A newly added topic is appended to the end of the topic order by default.
 - [ ] The new topic is marked as a custom topic (distinguishable from default topics in the UI).
 - [ ] Topic customization controls are only available after the team's first session is complete.
-- [ ] The add topic action is available only to the Facilitator, not to Engineers.
+- [ ] The add topic action is available to a standing Facilitator (non-member) and an Application Administrator, not to Engineers, Engineering Managers, or a member-Facilitator.
 
 ## Out of Scope
 - Adding topics that are available across all teams (global topic library is not part of this feature).
@@ -174,6 +176,7 @@
 ## Notes
 - Whether the application should warn when a prompt closely resembles an existing topic is an open question. A simple duplicate-prompt warning could prevent accidental near-duplicates. (Resolved for the Topic Management screen by `topic-add-form-and-empty-state`: an exact match — trimmed, case-insensitive — of the name or prompt against the team's active and archived topics shows a non-blocking warning before the request; no fuzzy matching. The server still does not enforce uniqueness.)
 - The description field is distinct from the team annotation (see Use Case: Annotate Topic with Shared Team Definition). The description is set at creation; the annotation is a living team-owned definition that can be updated over time.
+- Engineering Managers are excluded from topic writes; FR-8.2 names only the facilitator and the Application Administrator.
 
 ---
 

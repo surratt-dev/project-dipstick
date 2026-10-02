@@ -203,7 +203,7 @@ describe("the add form's fields", () => {
     expect(within(form).getByText("The question you'll read aloud for people to vote on.")).toBeInTheDocument();
     expect(
       within(form).getByText(
-        "Engineers won't see this during sessions. Use it as a note for whoever facilitates this team. A team definition is the place to explain what this topic means for your team.",
+        "Engineers won't see this during sessions. Use it as a note for whoever facilitates this team. A team definition is the place to explain what this topic means for this team.",
       ),
     ).toBeInTheDocument();
     expect(within(form).getByLabelText("Finger Voting")).toBe(field.vote("finger"));
