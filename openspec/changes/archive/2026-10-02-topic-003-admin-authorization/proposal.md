@@ -43,11 +43,11 @@ No **BREAKING** changes. Access only widens, for one role that is already truste
 
 Ready-to-file drafts for F1–F4 are in `follow-up-issues.md`. F1 and F2 must be filed, and their numbers recorded in `tasks.md` 6.4, before this change merges.
 
-- **F1:** should a member-admin be barred like a member-facilitator? This would apply across TOPIC-003/004/005/006 together. For #176, member-admins are admitted per FR-8.2 (see design). Needs an owner and a decision date. Issue: #____
-- **F2:** facilitator awareness of admin-authored topics ("added by / added on" on the management row). Targeted at the milestone after this one. Issue: #____
-- **F3:** a "takes effect from the next room" notice for edits made while a room is open (all roles, all write endpoints).
-- **F4:** a comment on #200 noting that the locked empty-state copy must also read correctly for an admin viewer, and that a locked team with zero active topics can't be repaired by anyone today, which conflicts with FR-8.6 [HARD].
-- **F5–F7** (added from design review, not merge-gating): per-provider control over who may assert `application_admin` via the OIDC role claim (F5); role-revocation latency across providers (F6); detection on bursts of admin topic writes (F7). Drafts in `follow-up-issues.md`.
+- **F1:** should a member-admin be barred like a member-facilitator? This would apply across TOPIC-003/004/005/006 together. For #176, member-admins are admitted per FR-8.2 (see design). Needs an owner and a decision date. Issue: #208
+- **F2:** facilitator awareness of admin-authored topics ("added by / added on" on the management row). Targeted at the milestone after this one. Issue: #201 (pre-existing; admin context added as a comment)
+- **F3:** a "takes effect from the next room" notice for edits made while a room is open (all roles, all write endpoints). Issue: #209
+- **F4:** a comment on #200 noting that the locked empty-state copy must also read correctly for an admin viewer, and that a locked team with zero active topics can't be repaired by anyone today, which conflicts with FR-8.6 [HARD]. Posted as a comment on #200.
+- **F5–F7** (added from design review, not merge-gating): per-provider control over who may assert `application_admin` via the OIDC role claim (F5); role-revocation latency across providers (F6); detection on bursts of admin topic writes (F7). Issues: #210 (F5), #211 (F6), #212 (F7).
 - Not absorbed: merging or un-parameterizing `checkStandingFacilitatorAuthorization`; #184, #198/#199, #200; audit or rate-limit changes; any change to TOPIC-007.
 
 ## Review response

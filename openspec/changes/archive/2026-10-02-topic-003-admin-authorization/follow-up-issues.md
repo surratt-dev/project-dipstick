@@ -1,6 +1,6 @@
 # Follow-up issue drafts for #176 (topic-003-admin-authorization)
 
-These are ready to file by a human. Nothing here has been filed. F5–F7 were added in response to the design reviews and are not merge-gating. **F1 and F2 must be filed before #176 merges** (exec review condition 1). After filing, record the numbers in `tasks.md` 6.4 and in the proposal's Follow-ups section.
+These are ready to file by a human. Filed 2026-10-02: F1 #208, F2 → existing #201 (comment), F3 #209, F4 → comment on #200, F5 #210, F6 #211, F7 #212. F5–F7 were added in response to the design reviews and are not merge-gating. **F1 and F2 must be filed before #176 merges** (exec review condition 1). After filing, record the numbers in `tasks.md` 6.4 and in the proposal's Follow-ups section.
 
 ---
 
@@ -156,12 +156,12 @@ Copy into the PR description. Fill the blanks; do not merge with any merge-gate 
 
 ### Follow-ups and merge gates
 
-- **[MERGE GATE] F1** (member-admin across TOPIC-003/004/005/006): #____
-- **[MERGE GATE] F2** (added-by display, milestone after this one): #____
-- F3 (next-room notice): #____ (not merge-gating)
+- **[MERGE GATE] F1** (member-admin across TOPIC-003/004/005/006): #208
+- **[MERGE GATE] F2** (added-by display, milestone after this one): #201 (pre-existing)
+- F3 (next-room notice): #209 (not merge-gating)
 - F4: comment on #200 (FR-8.6 admin viewer) (not merge-gating)
-- F5, F6 (identity/session backlog): #____, #____ (not merge-gating)
-- F7 (ops/monitoring detection rule): #____ (not merge-gating)
+- F5, F6 (identity/session backlog): #210, #211 (not merge-gating)
+- F7 (ops/monitoring detection rule): #212 (not merge-gating)
 
 ### IdP role-assignment administrators (`application_admin`) — [MERGE GATE]
 
