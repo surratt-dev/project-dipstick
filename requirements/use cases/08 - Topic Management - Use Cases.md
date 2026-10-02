@@ -26,7 +26,7 @@
 6. The Application confirms the assignment and the session setup flow continues.
 
 ## Alternate Flows
-- **Default topic set is unavailable due to a data or configuration error:** The Application logs the error and surfaces a failure state to the session creation flow. The team is created but the session cannot proceed until the topic configuration is resolved.
+- **Default topic set is unavailable due to a data or configuration error:** The Application logs the error and surfaces a failure state to the session creation flow. Because the new team's first session opens its room at creation, and room open requires at least one active topic, the whole request is rolled back: no team or session is created until the topic configuration is resolved (#175).
 
 ## Postconditions
 - **Success:** The new team has a complete topic configuration containing all default topics in their canonical order. The configuration is locked pending the team's first session completion. No custom topics exist yet.
@@ -148,7 +148,7 @@
 - **Save fails due to a system error:** The Application displays an error. No topic is created. The Facilitator can retry.
 
 ## Postconditions
-- **Success:** A new custom topic exists in the team's topic configuration, appended at the end of the current order, with the specified name, prompt, vote type, and description. It will appear in the next session run for this team. (Note per `topic-add-form-and-empty-state`: "It will appear in the next session run" is pending #175; the Topic Management screen does not promise in-session display.)
+- **Success:** A new custom topic exists in the team's topic configuration, appended at the end of the current order, with the specified name, prompt, vote type, and description. It will appear in the next session run for this team, that is, in the next session whose room is opened after it was added. (Delivered by #175, which snapshots the active topics at room open. Note per `topic-add-form-and-empty-state`: the Topic Management screen does not promise in-session display.)
 - **Failure:** No topic is created. The team's topic configuration is unchanged.
 
 ---
@@ -241,7 +241,7 @@
 
 ## Notes
 - **Resolved (`remove-topic` design.md Decision 3):** the application enforces a minimum topic count. Archiving a team's last remaining active topic is rejected with a hard `409` block (`TOPIC_LAST_ACTIVE`), serialized against concurrent requests per team — this is no longer an open question.
-- **Resolved (`remove-topic` design.md Context, `specs/remove-topic/spec.md`'s "An in-progress session is unaffected by a concurrent archive" scenario):** removal does not affect in-progress sessions. A session's topic sequence is snapshotted into `session_topics` at session creation, independent of `topics.status` — archiving a topic while a session that already includes it is in progress leaves that session's topic sequence unchanged, and the archived topic still appears normally for the remainder of that session. This is no longer an open edge case needing a decision.
+- **Resolved (`remove-topic` design.md Context, `specs/remove-topic/spec.md`'s "An in-progress session is unaffected by a concurrent archive" scenario):** removal does not affect in-progress sessions. A session's topic sequence is snapshotted into `session_topics` at room open (#175), independent of `topics.status` — archiving a topic while a session that already includes it is in progress leaves that session's topic sequence unchanged, and the archived topic still appears normally for the remainder of that session. This is no longer an open edge case needing a decision.
 
 ---
 
@@ -289,13 +289,13 @@
 - [ ] The Facilitator can change the position of any active topic relative to any other.
 - [ ] The new order is visually reflected immediately when the Facilitator moves a topic.
 - [ ] The new order is not applied until the Facilitator explicitly saves it.
-- [ ] After saving, the new order is used in all subsequent sessions. (Blocked end to end today on #175 — no shipped endpoint currently populates `session_topics` at session creation, for any topic; this is a pre-existing gap this use case inherits, not one specific to reorder.)
+- [x] After saving, the new order is used in all subsequent sessions. (Delivered by #175: every session snapshots the team's active topics into `session_topics` at room open, so a session whose room is opened after the save uses the new order, including a draft that was created before the save.)
 - [ ] Reordering is not available when only one topic exists.
 - [ ] Reorder controls are only available to the Facilitator, not to Engineers. (The screen's access rule is inherited from the existing `topic-management-screen` access-denied requirement.)
 
 ## Out of Scope
 - Automatically reordering topics based on any criteria (reordering is always manual).
-- Reordering topics within an in-progress session (topic order is fixed at session creation).
+- Reordering topics within an in-progress session (topic order is fixed at room open).
 
 ## Dependencies
 - Use Case: Enforce Topic Customization Lock for First Session — customization must be unlocked.
@@ -334,10 +334,10 @@
 5. The Facilitator saves the annotation.
 6. The Application persists the annotation text against the topic in the team's configuration.
 7. The Application confirms the save.
-8. In sessions created after the save, the Application displays the annotation alongside the topic prompt so all participants can see the team's agreed definition. (Each session snapshots the definition with its topics, so sessions that already exist keep the previous one. Session display is pending #175 and #56/#57.)
+8. In sessions whose room is opened after the save, the Application displays the annotation alongside the topic prompt so all participants can see the team's agreed definition. (Each session snapshots the definition with its topics at room open (#175), so sessions whose room is already open keep the previous one. Session display is pending #56/#57.)
 
 ## Alternate Flows
-- **Facilitator saves an empty annotation:** Before clearing an existing annotation, the Application shows an inline confirmation ("Remove this team's definition? This can't be undone.") and sends nothing until the Facilitator confirms. On confirmation the Application clears the annotation, and the topic displays without a team annotation in sessions created afterwards. Overwriting an annotation with different text does not ask for confirmation. Saving text that is unchanged after trimming sends nothing.
+- **Facilitator saves an empty annotation:** Before clearing an existing annotation, the Application shows an inline confirmation ("Remove this team's definition? This can't be undone.") and sends nothing until the Facilitator confirms. On confirmation the Application clears the annotation, and the topic displays without a team annotation in sessions whose room is opened afterwards. Overwriting an annotation with different text does not ask for confirmation. Saving text that is unchanged after trimming sends nothing.
 - **Save fails due to a system error:** The Application displays an error. The previous annotation (or lack of one) is retained. The Facilitator can retry.
 - **Annotation is excessively long:** The limit is 500 characters (UTF-16 code units, after trimming). The editor's field enforces it and announces "500 character limit reached."; the server rejects a longer value with `422`.
 
@@ -417,7 +417,7 @@
 - [ ] The topic management screen provides access to the list of previously removed topics.
 - [ ] Each removed topic can be individually reinstated by the Facilitator.
 - [ ] A confirmation step is shown before reinstating, describing the history preservation behavior.
-- [ ] After reinstatement, the topic appears in the active topic list and is included in the next session. (Blocked today on #175 — no shipped endpoint currently populates `session_topics` at session creation, for any topic, restored or otherwise; this is a pre-existing gap this use case inherits, not one specific to restore.)
+- [x] After reinstatement, the topic appears in the active topic list and is included in the next session. (Delivered by #175: the next session whose room is opened snapshots every active topic, restored or otherwise, with no restore-specific handling.)
 - [ ] Historical vote data for the topic from before its removal is preserved and accessible in trend views.
 - [ ] The archived-topics view shows who restored a topic and when, mirroring the existing archive-provenance display (`re-add-removed-topic` design.md Decision 4).
 - [ ] The re-added topic can be reordered within the active list after reinstatement.
@@ -515,7 +515,7 @@
 1. The Facilitator advances the session to the next topic.
 2. The Application displays the topic prompt to all participants simultaneously.
 3. The Application displays the vote type (Finger, Roman, or Modified Roman) with appropriate UI controls for the Engineer to cast their vote.
-4. If a team annotation exists for the topic, the Application displays it alongside the prompt. *(Pending #175 and #56/#57. The source is the session payload's `currentTopic.topicAnnotation`, the per-session snapshot, never TOPIC-001.)*
+4. If a team annotation exists for the topic, the Application displays it alongside the prompt. *(Pending #56/#57; the per-session snapshot it reads is written at room open by #175. The source is the session payload's `currentTopic.topicAnnotation`, the per-session snapshot, never TOPIC-001.)*
 5. If a description exists for the topic, the Application displays it (or makes it accessible) to provide additional context.
 6. The Engineer reads the prompt, annotation, and description to orient their response.
 7. The Engineer proceeds to cast their vote (this step is covered in Live Voting use cases).
@@ -523,7 +523,7 @@
 ## Alternate Flows
 - **Topic has no annotation:** The Application displays the prompt and description without an annotation section. No placeholder or empty field is shown.
 - **Topic has no description:** The Application displays the prompt and annotation (if any) without a description.
-- **Engineer joins the session after the topic has been displayed:** The Application shows the current topic's prompt, vote type, annotation, and description to the late joiner immediately upon joining. *(Annotation part pending #175 and #56/#57. The reconnect snapshot must carry the session snapshot value, `session_topics.topic_annotation`.)*
+- **Engineer joins the session after the topic has been displayed:** The Application shows the current topic's prompt, vote type, annotation, and description to the late joiner immediately upon joining. *(Annotation part pending #56/#57. #175 writes `session_topics.topic_annotation` at room open; the reconnect snapshot does not yet carry it and must carry that session snapshot value.)*
 
 ## Postconditions
 - **Success:** The Engineer has seen the topic prompt, vote type, team annotation, and description. No data is changed by viewing.
@@ -534,9 +534,9 @@
 ## Acceptance Criteria
 - [ ] When the Facilitator advances to a topic, the topic prompt is displayed to all participants simultaneously.
 - [ ] The vote type controls shown to the Engineer match the configured vote type for the topic (Finger = 1–4 scale; Roman = up/down; Modified Roman = up/steady/down).
-- [ ] The team annotation, if present, is displayed alongside the prompt before the vote is cast. *(Pending #175 and #56/#57; source: `currentTopic.topicAnnotation` from the session payload, the snapshot, not TOPIC-001.)*
+- [ ] The team annotation, if present, is displayed alongside the prompt before the vote is cast. *(Pending #56/#57; the snapshot is written at room open by #175. Source: `currentTopic.topicAnnotation` from the session payload, the snapshot, not TOPIC-001.)*
 - [ ] The topic description, if present, is accessible to the Engineer during the voting phase.
-- [ ] Topics with no annotation show no annotation UI element. *(Pending #175 and #56/#57.)*
+- [ ] Topics with no annotation show no annotation UI element. *(Pending #56/#57.)*
 - [ ] The topic display is read-only for Engineers — no editing controls are shown.
 
 ## Out of Scope

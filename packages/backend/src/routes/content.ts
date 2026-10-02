@@ -22,6 +22,9 @@ import type {
   ConnectionRecoveryEntry,
   GetAllTopicsResponse,
 } from "@dipstick/shared";
+import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
+import { buildErrorEnvelope } from "./error-envelope.js";
+import { isCanonicalUuid } from "./uuid.js";
 
 // ---------------------------------------------------------------------------
 // Team content routes — enforce-access-control-on-team-content
@@ -526,8 +529,6 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
   // team's is_default rows — the same provisioning source
   // facilitator-sessions.ts's session-creation copy reads from).
   // -------------------------------------------------------------------------
-  const DEFAULT_TOPICS_TEAM_ID = "00000000-0000-0000-0000-000000000001";
-
   // topic-annotation design.md Decision 8 — shared by the active and
   // archived mappings. Provenance is non-null only when both the user id and
   // display name are present (the archivedBy rule).
@@ -553,6 +554,16 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
+
+    // Route boundary (session-topics-snapshot-at-creation implementation
+    // review M1/MF1): a non-canonical teamId (no hyphens, braces, ...) is
+    // 404 before any query, so the member-denial check below and every read
+    // after it see the same string. A malformed id names no team, so this
+    // reveals nothing about any team's existence.
+    if (!isCanonicalUuid(teamId)) {
+      await applyTimingFloor(startTime);
+      return noStore(reply).code(404).send(buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND"));
+    }
 
     // Task 7.1/7.2 — decision-only shared authorization, same function
     // TOPIC-004 (topics.ts) uses. This handler writes its own reply and

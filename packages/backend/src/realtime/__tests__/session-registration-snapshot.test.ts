@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // buildSessionRegistrationSnapshot — vote-compose-recovery (issue #31),
-// design.md Decision D3c, tasks.md task 7.3.
+// design.md Decision D3c, tasks.md task 7.3. Fixtures use the query's
+// session_topic_id alias (session-topics-snapshot-at-creation R5 fix); the
+// real-Postgres counterpart is registration-snapshot-integration.test.ts.
 // ---------------------------------------------------------------------------
 
 const mockDbQuery = vi.fn();
@@ -23,7 +25,7 @@ describe("buildSessionRegistrationSnapshot (design.md Decision D3c, task 7.3)", 
 
   it("(i) session in lobby/pre_session with no current topic returns currentTopic: null", async () => {
     mockDbQuery.mockResolvedValue({
-      rows: [{ session_status: "lobby", current_topic_id: null, topic_status: null, has_locked_in: false }],
+      rows: [{ session_status: "lobby", session_topic_id: null, topic_status: null, has_locked_in: false }],
     });
 
     const result = await buildSessionRegistrationSnapshot("user-1", "session-1");
@@ -41,7 +43,7 @@ describe("buildSessionRegistrationSnapshot (design.md Decision D3c, task 7.3)", 
       rows: [
         {
           session_status: "active",
-          current_topic_id: "topic-A",
+          session_topic_id: "st-A",
           topic_status: "voting",
           has_locked_in: false,
         },
@@ -53,7 +55,7 @@ describe("buildSessionRegistrationSnapshot (design.md Decision D3c, task 7.3)", 
     expect(result).toEqual({
       sessionId: "session-1",
       sessionStatus: "active",
-      currentTopic: { sessionTopicId: "topic-A", status: "voting" },
+      currentTopic: { sessionTopicId: "st-A", status: "voting" },
       hasLockedInVote: false,
     });
   });
@@ -63,7 +65,7 @@ describe("buildSessionRegistrationSnapshot (design.md Decision D3c, task 7.3)", 
       rows: [
         {
           session_status: "active",
-          current_topic_id: "topic-A",
+          session_topic_id: "st-A",
           topic_status: "voting",
           has_locked_in: true,
         },
@@ -73,6 +75,20 @@ describe("buildSessionRegistrationSnapshot (design.md Decision D3c, task 7.3)", 
     const result = await buildSessionRegistrationSnapshot("user-1", "session-1");
 
     expect(result?.hasLockedInVote).toBe(true);
+    expect(result?.currentTopic).toEqual({ sessionTopicId: "st-A", status: "voting" });
+  });
+
+  it("(iii-b) resolves the current row in the topics.id id-space and returns its session_topics.id (session-topics-snapshot-at-creation design.md Decision 8)", async () => {
+    mockDbQuery.mockResolvedValue({
+      rows: [{ session_status: "active", session_topic_id: "st-A", topic_status: "voting", has_locked_in: true }],
+    });
+
+    await buildSessionRegistrationSnapshot("user-1", "session-1");
+
+    const [sql] = mockDbQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("st.session_id = s.id AND st.topic_id = s.current_topic_id");
+    expect(sql).toContain("v.session_topic_id = st.id");
+    expect(sql).toContain("st.id AS session_topic_id");
   });
 
   it("(iv) is scoped to voter_id = userId — another user's vote row for the same topic does not affect this user's hasLockedInVote (self-disclosure only, design.md D3d)", async () => {
@@ -85,7 +101,7 @@ describe("buildSessionRegistrationSnapshot (design.md Decision D3c, task 7.3)", 
       rows: [
         {
           session_status: "active",
-          current_topic_id: "topic-A",
+          session_topic_id: "st-A",
           topic_status: "voting",
           has_locked_in: false,
         },
@@ -101,7 +117,7 @@ describe("buildSessionRegistrationSnapshot (design.md Decision D3c, task 7.3)", 
 
   it("(v) session in wrap_up returns currentTopic: null", async () => {
     mockDbQuery.mockResolvedValue({
-      rows: [{ session_status: "wrap_up", current_topic_id: null, topic_status: null, has_locked_in: false }],
+      rows: [{ session_status: "wrap_up", session_topic_id: null, topic_status: null, has_locked_in: false }],
     });
 
     const result = await buildSessionRegistrationSnapshot("user-1", "session-1");

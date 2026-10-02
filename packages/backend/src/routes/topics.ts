@@ -10,6 +10,9 @@ import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
 import { getOpenActionItemsForTopic } from "../auth/open-action-items-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import type { SessionData } from "../auth/session-store.js";
+import { buildErrorEnvelope } from "./error-envelope.js";
+import { isCanonicalUuid } from "./uuid.js";
+import { lockTeamTopics } from "../sessions/session-topic-snapshot.js";
 import type {
   ArchiveTopicResponse,
   ArchiveTopicConfirmationRequired,
@@ -51,32 +54,6 @@ import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 // ---------------------------------------------------------------------------
 
 const LOCK_MESSAGE = "Topics cannot be customized until this team's first session is completed.";
-
-type ErrorCategory = "forbidden" | "not_found" | "precondition_failed" | "invalid_request";
-
-// design.md Decision 4 (corrected per engineer review M1): the codebase's
-// standard error envelope -- { error: { category, code, message,
-// correlationId } } -- the same shape teams.ts's GLOBAL_ROLE_PRECONDITION_NOT_MET
-// (409) and TEAM006_BURST_LIMIT_EXCEEDED (429) already use. Never a bare
-// top-level { code, message } body.
-function buildErrorEnvelope(
-  category: ErrorCategory,
-  message: string,
-  code?: string,
-  field?: string,
-): {
-  error: { category: ErrorCategory; code?: string; field?: string; message: string; correlationId: string };
-} {
-  return {
-    error: {
-      category,
-      ...(code ? { code } : {}),
-      ...(field ? { field } : {}),
-      message,
-      correlationId: crypto.randomUUID(),
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Task 3.1 — standing-facilitator authorization check
@@ -145,6 +122,28 @@ async function checkStandingFacilitatorAuthorization(
   }
 
   return { rejected: false, actorGlobalRole: grant.globalRole };
+}
+
+// ---------------------------------------------------------------------------
+// Route-boundary teamId check (session-topics-snapshot-at-creation
+// implementation review M1/MF1). Runs first in every handler, before the
+// authorization query: a non-canonical spelling (no hyphens, braces, ...)
+// is answered 404 here, so the authorization helper and every later query
+// see the same, canonical string, and a malformed id never raises 22P02.
+// A malformed id names no team, so answering 404 ahead of the 403 reveals
+// nothing about any team's existence.
+// ---------------------------------------------------------------------------
+async function rejectNonCanonicalTeamId(
+  reply: FastifyReply,
+  teamId: string,
+  startTime: number,
+): Promise<{ rejected: boolean }> {
+  if (isCanonicalUuid(teamId)) {
+    return { rejected: false };
+  }
+  await applyTimingFloor(startTime);
+  await reply.code(404).send(buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND"));
+  return { rejected: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -536,8 +535,6 @@ async function checkReorderTopicsAuthorization(
 // ---------------------------------------------------------------------------
 const MAX_REORDER_TOPICS = 200;
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 type ReorderValidationResult = { valid: true; orderedTopicIds: string[] } | { valid: false; message: string };
 
 function validateReorderTopicsBody(body: unknown): ReorderValidationResult {
@@ -557,7 +554,7 @@ function validateReorderTopicsBody(body: unknown): ReorderValidationResult {
     };
   }
 
-  if (!raw.every((entry) => typeof entry === "string" && UUID_PATTERN.test(entry))) {
+  if (!raw.every((entry) => typeof entry === "string" && isCanonicalUuid(entry))) {
     return { valid: false, message: "Every entry in orderedTopicIds must be a topic ID (UUID)." };
   }
 
@@ -590,9 +587,15 @@ export class ReorderRowCountMismatchError extends Error {
 // 'facilitator'. For application_admin the query is NOT issued at all
 // (admins are denied session content; this must not become an unaudited
 // way to learn a team's session state). 'draft' is deliberately excluded:
-// the topic snapshot belongs at lobby entry (#175). ORDER BY ... LIMIT 1 so
-// a drift in migration 10's one-open-session invariant degrades to "the
+// the topic snapshot is taken at room open (#175), so a draft's list is not
+// yet fixed and the reorder being saved will reach it. ORDER BY ... LIMIT 1
+// so a drift in migration 10's one-open-session invariant degrades to "the
 // newest one" rather than a 500.
+//
+// session-topics-snapshot-at-creation design.md Decision 5: the value is the
+// ROOM-OPEN time (room_opened_at), falling back to created_at for a session
+// that opened before migration 20 added the column. The field keeps its
+// openSessionCreatedAt name for compatibility.
 // ---------------------------------------------------------------------------
 async function readOpenSessionCreatedAt(
   client: PoolClient,
@@ -603,15 +606,15 @@ async function readOpenSessionCreatedAt(
     return null;
   }
 
-  const result = await client.query<{ created_at: Date }>(
-    `SELECT created_at FROM sessions
+  const result = await client.query<{ opened_at: Date }>(
+    `SELECT COALESCE(room_opened_at, created_at) AS opened_at FROM sessions
       WHERE team_id = $1 AND status IN ('lobby', 'pre_session', 'active', 'wrap_up')
-      ORDER BY created_at DESC
+      ORDER BY COALESCE(room_opened_at, created_at) DESC
       LIMIT 1`,
     [teamId],
   );
   const row = result.rows[0];
-  return row ? new Date(row.created_at).toISOString() : null;
+  return row ? new Date(row.opened_at).toISOString() : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +716,11 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const { teamId } = request.params;
     const endpoint = "POST /api/v1/teams/:teamId/topics";
 
+    // Route boundary: a non-canonical teamId is 404 before any query (M1).
+    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+      return reply;
+    }
+
     // Task 3.1 / Task 3.6 — 403, checked first.
     const authResult = await checkStandingFacilitatorAuthorization(
       reply,
@@ -777,7 +785,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     try {
       await client.query("BEGIN");
 
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1::text))", [teamId]);
+      await lockTeamTopics(client, teamId);
 
       const maxResult = await client.query<{ next_display_order: number }>(
         `SELECT COALESCE(MAX(display_order), -1) + 1 AS next_display_order
@@ -875,6 +883,11 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId, topicId } = request.params;
     const endpoint = "DELETE /api/v1/teams/:teamId/topics/:topicId";
+
+    // Route boundary: a non-canonical teamId is 404 before any query (M1).
+    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+      return reply;
+    }
     const confirmed = request.query.confirm === "true";
 
     // Task 3.1 / Task 3.6 — 403, checked first.
@@ -922,7 +935,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const client = await db.connect();
     try {
       await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1::text))", [teamId]);
+      await lockTeamTopics(client, teamId);
 
       const activeCountResult = await client.query<{ active_count: string }>(
         `SELECT COUNT(*) AS active_count FROM topics WHERE team_id = $1 AND status = 'active'`,
@@ -1081,6 +1094,11 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const { teamId, topicId } = request.params;
     const endpoint = "POST /api/v1/teams/:teamId/topics/:topicId/restore";
 
+    // Route boundary: a non-canonical teamId is 404 before any query (M1).
+    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+      return reply;
+    }
+
     // Step 1 -- 403, checked first.
     const authResult = await checkRestoreTopicAuthorization(reply, session.userId, teamId, startTime);
     if (authResult.rejected) {
@@ -1124,7 +1142,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const client = await db.connect();
     try {
       await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1::text))", [teamId]);
+      await lockTeamTopics(client, teamId);
 
       const maxResult = await client.query<{ new_position: number }>(
         `SELECT COALESCE(MAX(display_order), 0) + 1 AS new_position
@@ -1243,6 +1261,11 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const { teamId } = request.params;
     const endpoint = "PUT /api/v1/teams/:teamId/topics/order";
 
+    // Route boundary: a non-canonical teamId is 404 before any query (M1).
+    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+      return reply;
+    }
+
     // Step 1 -- 403, checked first.
     const authResult = await checkReorderTopicsAuthorization(reply, session.userId, teamId, startTime);
     if (authResult.rejected) {
@@ -1285,7 +1308,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const client = await db.connect();
     try {
       await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1::text))", [teamId]);
+      await lockTeamTopics(client, teamId);
 
       // Step 5 -- set equality, computed in memory against this team-scoped
       // read. Submitted IDs are never looked up individually (security
@@ -1441,6 +1464,11 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     const { teamId, topicId } = request.params;
     const endpoint = "PUT /api/v1/teams/:teamId/topics/:topicId/annotation";
 
+    // Route boundary: a non-canonical teamId is 404 before any query (M1).
+    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+      return reply;
+    }
+
     // Step 1 -- 403. Deliberately the facilitator-only check (TOPIC-003's),
     // NOT checkStandingFacilitatorOrAdminAuthorization like TOPIC-004/005/006:
     // the definition is the team's words, recorded by the facilitator who was
@@ -1494,7 +1522,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
 
     // Steps 5/6 -- a non-UUID topicId cannot name a topic: answer 404 here
     // rather than letting Postgres raise 22P02 (-> 500).
-    if (!UUID_PATTERN.test(topicId)) {
+    if (!isCanonicalUuid(topicId)) {
       await applyTimingFloor(startTime);
       return reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
     }

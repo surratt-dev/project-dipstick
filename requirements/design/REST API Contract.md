@@ -1021,7 +1021,7 @@ Every non-2xx uses the standard envelope `{ error: { category, code, message, co
 - **No-op:** if the normalized value equals the stored value (an empty value equals `NULL`), the response is `200` with the current state and **existing** provenance. Nothing is written and nothing is audited.
 - **Write:** a changed value updates `team_annotation`, `annotation_updated_by` (the caller), and `annotation_updated_at = now()` (a clear records the clearer), in a row-locked transaction scoped by `team_id` and `status = 'active'`. `updated_at` is not touched. Concurrent writes are last-writer-wins, with no precondition token.
 - **Audit:** a changed value writes `topic.annotation_updated` with `metadata: { topic_id, action: "set" | "cleared", length }` in the same transaction. **The text is never written to the audit log or the structured application log.**
-- **Snapshot:** sessions never read this value live. When `session_topics` rows are written (#175), `session_topics.topic_annotation` is copied from `team_annotation` in the same write as the rest of the row. SESSION-005/012 return `currentTopic.topicAnnotation` from that snapshot, so an edit affects only sessions whose topics are snapshotted after it.
+- **Snapshot:** sessions never read this value live. When `session_topics` rows are written at room open (#175; see SESSION-001a), `session_topics.topic_annotation` is copied from `team_annotation` in the same write as the rest of the row. SESSION-005/012 return `currentTopic.topicAnnotation` from that snapshot, so an edit affects only sessions whose room is opened after it.
 - Annotations survive archive and restore. Default and custom topics are both annotatable. New-team seeding never copies an annotation from the template team.
 ---
 
@@ -1090,10 +1090,46 @@ interface CreateSessionResponse {
 
 **Notes**
 - This operation must be atomic in PostgreSQL (single transaction): INSERT `sessions`, bulk INSERT `session_topics` (one per active team topic, snapshotting `topic_name`, `topic_prompt`, `vote_type` at this moment in time), compute `is_first_session` and `session_number` within the same transaction.
+- **Corrected by `session-topics-snapshot-at-creation` (#175, 2026-10-01): the topic snapshot is taken at room open, not at session creation.** As implemented, an existing team's session is created in `draft` (`POST /api/v1/teams/:teamId/sessions/draft`) with no `session_topics` rows; the snapshot is written when the room opens (SESSION-001a below), so draft-window topic edits reach the session. A new team's first session (`POST /api/v1/teams`) is created directly in `lobby`, so its creation is its room open and the snapshot is written in that request's transaction. "Room open" is the moment a session's status first becomes `lobby`; `sessions.room_opened_at` records it.
+- **Path id shape (#175 implementation review).** `POST /api/v1/teams/:teamId/sessions/draft`, `GET /api/v1/teams/:teamId/topics/all`, and the topic write routes (TOPIC-003/004/005/006/007) accept only the canonical 8-4-4-4-12 UUID form of `teamId`. Any other spelling (no hyphens, braces, other groupings), and any malformed value, answers `404` ("Team not found.") before any query, including the authorization query. Postgres would resolve some of those spellings to a real team, so this keeps the authorized id and the queried id the same string.
 - PostgreSQL writes happen before Redis initialization, per the persistence layer mapping (Section 1, "Session Created"). If Redis initialization fails after PostgreSQL commits, the session is still valid; Redis state is re-initialized on the facilitator's first WebSocket connection.
 - `join_token` is a cryptographically secure, URL-safe random string with at least 128 bits of entropy.
 - `session_number` is computed as `COUNT(*) + 1` from `sessions WHERE team_id = :teamId AND status = 'complete'`.
 - `is_first_session` is `true` if `session_number = 1`.
+
+---
+
+### SESSION-001a — Open the Room (draft → lobby)
+
+*Added by `session-topics-snapshot-at-creation` (#175, 2026-10-01).*
+
+**Method and URL**
+```
+POST /api/v1/teams/:teamId/sessions/:sessionId/advance
+```
+
+**Description**
+Opens the room for a `draft` session: transitions it to `lobby`, sets `room_opened_at`, and snapshots the team's active topics into `session_topics` (renumbered 1..N, with names, prompts, vote types, and annotations), in one transaction under the team's topic advisory lock.
+
+**Authorization:** checked in this order, all before the lock is taken: session exists (`404`); session belongs to `teamId` (`403`); caller is the session's `facilitator_id` (`403`); caller's live `users.global_role` is `facilitator` (`403`, `category: "forbidden"`, audited as `session.advance_denied_role`). Then the status check (`422`).
+
+**Response:** `200 { sessionId, teamId, status: "lobby" }` (unchanged).
+
+| Status | When |
+|---|---|
+| `403 Forbidden` | Not the session's team; not the session's facilitator; or the caller's live global role is no longer `facilitator` (including no user row). The role denial writes a `session.advance_denied_role` audit row. |
+| `404 Not Found` | No such session, including a `sessionId` that is not a canonical (8-4-4-4-12) UUID, which is rejected before any query |
+| `409 Conflict` | The team has no active topics when the advance runs (`NO_ACTIVE_TOPICS`, `category: "precondition_failed"`, message "This team has no active topics. Add or restore a topic on Topic Management before opening the room."). The session stays `draft`; nothing is audited. Evaluated after every authorization check and the status check, so a non-creator gets `403` and a non-draft session gets `422`, never this `409`. |
+| `422 Unprocessable Entity` | The session is not in `draft` (`Session cannot be advanced from status '<status>'.`). A concurrent second advance that loses the race gets the same `422`, with the status re-read inside the transaction. |
+| `500` | Any other failure inside the room-open transaction (snapshot, lock, conditional update, audit write, commit): `category: "internal_error"` with a fixed message and the `correlationId`; the database error is logged, never returned. The message wording is not part of the contract. |
+
+**Notes**
+- The `session.state_changed` audit row for `draft → lobby` carries `topic_count` and `topic_ids` (in snapshot order) and never topic names, prompts, or annotations; the structured audit log event carries `topicCount` only.
+- `session_state_change` is published only after commit.
+
+**Draft facilitator state.** `GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state` includes `activeTopicCount: number` (the team's current active topic count, a JSON number) when the session is in `draft`, and omits the field for every other status. Clients must not treat an absent field as `0`. It feeds the "Open the room" confirmation ("… locks in this session's {N} topics …") and the zero-topic disabled state; the `409` above stays authoritative.
+
+**New team (`POST /api/v1/teams`).** The new team's first session is created in `lobby` with `room_opened_at` set, and its snapshot is written in the same transaction, after the default-topic copy. If the default topic template is empty, the whole transaction rolls back and the response is `500` with `category: "internal_error"`, the message "Team creation is unavailable because the default topic set is not configured. Contact an administrator.", and a `correlationId`; the template team id appears only in the error log line. The `team.created_with_session` audit row carries `topic_count` and `topic_ids` under the same content boundary.
 
 ---
 

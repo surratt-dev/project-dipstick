@@ -77,7 +77,7 @@ Placeholder notation used in this document:
 | Field | Type | Values | Description |
 |-------|------|--------|-------------|
 | `status` | string | `lobby`, `pre_session`, `active`, `wrap_up`, `complete`, `abandoned` | Current session phase. Mirrors the PostgreSQL `sessions.status` but is the authoritative live value during an active session. PostgreSQL is updated at each phase transition. |
-| `current_topic_id` | string | UUID or empty string | The `session_topics.id` of the currently active topic. Empty string during lobby, pre_session, wrap_up, complete, and abandoned phases. |
+| `current_topic_id` | string | UUID or empty string | The `topics.id` of the currently active topic (the same id-space as `sessions.current_topic_id`, which begin-voting and advance write as a `topics.id`). The current `session_topics` row is resolved by `(session_id, topic_id)`. Empty string during lobby, pre_session, wrap_up, complete, and abandoned phases. |
 | `facilitator_id` | string | UUID | User ID of the session facilitator. Used to validate facilitator reconnection. |
 | `team_id` | string | UUID | Team ID. Cached here to avoid PostgreSQL lookups during WebSocket event processing. |
 | `created_at` | string | ISO 8601 timestamp | Session creation time. |

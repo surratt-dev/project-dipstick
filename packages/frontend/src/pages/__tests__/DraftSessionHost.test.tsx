@@ -43,6 +43,7 @@ const draftState: FacilitatorSessionStateResponse = {
   currentSessionState: "draft",
   bannerState: null,
   joinToken: "tok12345",
+  activeTopicCount: 3,
 };
 
 describe("DraftSessionHost", () => {
@@ -68,30 +69,36 @@ describe("DraftSessionHost", () => {
 
   // task 7.9
   it("7.9: 'Open the room' requires confirmation before the advance request fires", async () => {
-    const fetchMock = mockFetchSequence({ jsonBody: draftState });
+    const fetchMock = mockFetchSequence({ jsonBody: draftState }, { jsonBody: draftState });
 
     renderHost();
     await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
 
     await userEvent.click(screen.getByTestId("open-the-room"));
-    expect(screen.getByTestId("open-the-room-confirm")).toBeInTheDocument();
-    // Only the initial facilitator-state GET has fired — no advance POST yet.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("open-the-room-confirm")).toBeInTheDocument();
+    // Only the initial facilitator-state GET and the confirm's refetch of
+    // it have fired — no advance POST yet.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every((c) => String(c[0]).endsWith("/facilitator-state"))).toBe(true);
 
     await userEvent.click(screen.getByTestId("open-the-room-confirm-cancel"));
     expect(screen.queryByTestId("open-the-room-confirm")).not.toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   // task 7.10
   it("7.10: 'Open the room' success transitions the view in place to the live readiness view, with no navigation", async () => {
-    mockFetchSequence({ jsonBody: draftState }, { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "lobby" } });
+    mockFetchSequence(
+      { jsonBody: draftState },
+      { jsonBody: draftState }, // confirm refetch
+      { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "lobby" } },
+    );
 
     renderHost();
     await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
 
     await userEvent.click(screen.getByTestId("open-the-room"));
-    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+    await userEvent.click(await screen.findByTestId("open-the-room-confirm-yes"));
 
     await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
     expect(screen.queryByTestId("draft-control-view")).not.toBeInTheDocument();
@@ -101,6 +108,7 @@ describe("DraftSessionHost", () => {
   it("7.11: 'Open the room' failure leaves the draft session intact and the action retryable", async () => {
     mockFetchSequence(
       { jsonBody: draftState },
+      { jsonBody: draftState }, // confirm refetch
       { ok: false, status: 500, jsonBody: { error: { message: "Could not open the room." } } },
     );
 
@@ -108,7 +116,7 @@ describe("DraftSessionHost", () => {
     await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
 
     await userEvent.click(screen.getByTestId("open-the-room"));
-    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+    await userEvent.click(await screen.findByTestId("open-the-room-confirm-yes"));
 
     await waitFor(() => expect(screen.getByTestId("advance-error")).toBeInTheDocument());
     expect(screen.getByTestId("draft-control-view")).toBeInTheDocument();
@@ -433,6 +441,7 @@ describe("join-link-display-copy", () => {
     setClipboard(() => Promise.resolve());
     mockFetchSequence(
       { jsonBody: draftState },
+      { jsonBody: draftState }, // confirm refetch
       { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "lobby" } },
     );
 
@@ -443,7 +452,7 @@ describe("join-link-display-copy", () => {
     await waitFor(() => expect(screen.getByTestId("draft-join-link-copied-banner")).toBeInTheDocument());
 
     await userEvent.click(screen.getByTestId("open-the-room"));
-    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+    await userEvent.click(await screen.findByTestId("open-the-room-confirm-yes"));
 
     await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
     expect(screen.getByTestId("live-join-link-copied-banner")).toBeInTheDocument();
@@ -485,13 +494,17 @@ describe("http-session-expiry-reauth-parity: DraftSessionHost reauth parity", ()
 
   // task 4.4
   it("4.4: a session expiring between clicking 'Yes, open the room' and the advance response renders the treatment, not 'Could not open the room.'", async () => {
-    mockFetchSequence({ jsonBody: draftState }, { ok: false, status: 401, jsonBody: SESSION_EXPIRED_BODY });
+    mockFetchSequence(
+      { jsonBody: draftState },
+      { jsonBody: draftState }, // confirm refetch
+      { ok: false, status: 401, jsonBody: SESSION_EXPIRED_BODY },
+    );
 
     renderHost();
     await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
 
     await userEvent.click(screen.getByTestId("open-the-room"));
-    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+    await userEvent.click(await screen.findByTestId("open-the-room-confirm-yes"));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
     expect(screen.queryByTestId("advance-error")).not.toBeInTheDocument();
@@ -499,12 +512,12 @@ describe("http-session-expiry-reauth-parity: DraftSessionHost reauth parity", ()
 
   // task 4.5
   it("4.5: the confirm-step phase does not survive a fresh mount (a reauth round trip lands on the bare draft view)", async () => {
-    mockFetchSequence({ jsonBody: draftState });
+    mockFetchSequence({ jsonBody: draftState }, { jsonBody: draftState });
     const { unmount } = renderHost();
     await waitFor(() => expect(screen.getByTestId("open-the-room")).toBeInTheDocument());
 
     await userEvent.click(screen.getByTestId("open-the-room"));
-    expect(screen.getByTestId("open-the-room-confirm")).toBeInTheDocument();
+    expect(await screen.findByTestId("open-the-room-confirm")).toBeInTheDocument();
 
     // Session expires while sitting on the confirm step, no further fetch
     // fires. The user reauthenticates and returns via `returnTo` — modeled
@@ -559,6 +572,7 @@ describe("participant-readiness-view: LiveReadinessView's WebSocket mount gate a
   it("4.3: the socket opens exactly once the session transitions out of draft (Open the room)", async () => {
     mockFetchSequence(
       { jsonBody: draftState },
+      { jsonBody: draftState }, // confirm refetch
       { status: 200, jsonBody: { sessionId: "sess-1", teamId: "team-1", status: "lobby" } },
       { jsonBody: { participants: [] } },
     );
@@ -568,7 +582,7 @@ describe("participant-readiness-view: LiveReadinessView's WebSocket mount gate a
     expect(sockets).toHaveLength(0);
 
     await userEvent.click(screen.getByTestId("open-the-room"));
-    await userEvent.click(screen.getByTestId("open-the-room-confirm-yes"));
+    await userEvent.click(await screen.findByTestId("open-the-room-confirm-yes"));
 
     await waitFor(() => expect(screen.getByTestId("live-readiness-view")).toBeInTheDocument());
     expect(sockets).toHaveLength(1);

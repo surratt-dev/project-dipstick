@@ -14,14 +14,16 @@
 
 ## Second gap this change should also close
 
-`session-lifecycle-transitions`'s "Topic-Skip Decision" caveat names a related, narrower gap worth bundling with the skip design rather than treating as a separate ask: a facilitator who creates a session ahead of the actual meeting (e.g., to distribute the join link early) gets no signal — at creation time or afterward — that the topic list is about to be locked in for that session (`SESSION-001` snapshots the topic list into `session_topics` at creation, not at `SESSION-004`/session start). If they notice a topic is stale after creation but before the session starts, editing the team's topic list silently does nothing for that already-created session, and nothing currently surfaces that failure to them.
+`session-lifecycle-transitions`'s "Topic-Skip Decision" caveat names a related, narrower gap worth bundling with the skip design rather than treating as a separate ask: a facilitator who creates a session ahead of the actual meeting (e.g., to distribute the join link early) gets no signal — at room open or afterward — that the topic list is about to be locked in for that session (the topic list is snapshotted into `session_topics` at room open, when the session first becomes `lobby`, not at `SESSION-004`/session start). If they notice a topic is stale after the room is open but before the session starts, editing the team's topic list silently does nothing for that session, and nothing currently surfaces that failure to them.
 
-Candidate mechanism (not designed here): a creation-time signal — surfacing the about-to-be-snapshotted topic list back to the facilitator for a last look before `SESSION-001` confirms — would close this gap without reopening the authorization-surface problem a real mid-session skip path creates.
+*Update (`session-topics-snapshot-at-creation`, #175):* the snapshot moment is now room open, not draft creation, so edits made while a session is still in `draft` do reach it. The "Open the room" confirmation now states the lock-in and the topic count ("… locks in this session's {N} topics in their current order. Topic changes after this apply to your next session. …"); that confirm is where any "last look" signal belongs. A last look at the list itself (not just the count) is still not built.
+
+Candidate mechanism (not designed here): a room-open signal — surfacing the about-to-be-snapshotted topic list back to the facilitator for a last look in the "Open the room" confirmation — would close this gap without reopening the authorization-surface problem a real mid-session skip path creates.
 
 Both gaps stem from the same underlying tension: topic-list edits and session timing don't currently give facilitators a clean signal of when "too late" actually is. Track both under this one follow-on rather than as two unrelated asks.
 
 ## Scope to design when this change is picked up
 
 - Facilitator-initiated topic-skip: authorization (who can trigger it), audit trail, and interaction with `display_order` and the existing reveal-before-advance precondition.
-- A creation-time topic-list confirmation signal, closing the gap named above.
+- A room-open topic-list confirmation signal (in the "Open the room" confirm), closing the gap named above.
 - Confirm demand for the skip path is real beyond the single scenario named in `session-lifecycle-transitions`'s review before committing full design effort to it.

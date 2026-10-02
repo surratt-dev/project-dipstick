@@ -151,7 +151,7 @@ describe("websocket-routes.ts session_registration_snapshot wiring (design.md De
     const fixturePayload = {
       sessionId: "session-happy",
       sessionStatus: "active",
-      currentTopic: { sessionTopicId: "topic-A", status: "voting" },
+      currentTopic: { sessionTopicId: "st-A", status: "voting" },
       hasLockedInVote: false,
     };
     mockBuildSessionRegistrationSnapshot.mockResolvedValue(fixturePayload);
@@ -263,13 +263,13 @@ describe("websocket-routes.ts session_registration_snapshot wiring (design.md De
       .mockResolvedValueOnce({
         sessionId: "session-second-reg",
         sessionStatus: "active",
-        currentTopic: { sessionTopicId: "topic-A", status: "voting" },
+        currentTopic: { sessionTopicId: "st-A", status: "voting" },
         hasLockedInVote: false,
       })
       .mockResolvedValueOnce({
         sessionId: "session-second-reg",
         sessionStatus: "active",
-        currentTopic: { sessionTopicId: "topic-A", status: "voting" },
+        currentTopic: { sessionTopicId: "st-A", status: "voting" },
         hasLockedInVote: true,
       });
 

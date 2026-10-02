@@ -63,7 +63,7 @@ function mockAuthQueryNoUser() {
 
 /** Query #2: team-existence check. */
 function mockTeamExists(exists: boolean) {
-  mockDbQuery.mockResolvedValueOnce({ rows: exists ? [{ id: "team-1" }] : [] });
+  mockDbQuery.mockResolvedValueOnce({ rows: exists ? [{ id: "11111111-1111-4111-8111-111111111111" }] : [] });
 }
 
 /** Query #3: hasCompletedFirstSession's COUNT(*). */
@@ -136,7 +136,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -148,7 +148,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     mockAuthQuery("facilitator", true);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
@@ -160,7 +160,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     mockTeamExists(false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/nonexistent-team/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
@@ -175,7 +175,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
@@ -187,7 +187,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { voteType: "not-a-real-type" },
     });
 
@@ -204,7 +204,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { name: "" }, // also invalid, should not matter
     });
 
@@ -218,7 +218,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/nonexistent-team/topics",
+      url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics",
       payload: { prompt: "" },
     });
 
@@ -230,7 +230,7 @@ describe("POST /api/v1/teams/:teamId/topics — check ordering (design.md Decisi
     mockAuthQueryNoUser();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -253,7 +253,7 @@ describe("POST /api/v1/teams/:teamId/topics — deactivated teams (design.md Dec
     mockSuccessfulInsertTransaction();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/deactivated-team/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/dddddddd-dddd-4ddd-8ddd-dddddddddddd/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(201);
   });
@@ -272,7 +272,7 @@ describe("POST /api/v1/teams/:teamId/topics — lock-denial audit logging (desig
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(409);
 
@@ -281,12 +281,12 @@ describe("POST /api/v1/teams/:teamId/topics — lock-denial audit logging (desig
     );
     expect(auditCall).toBeDefined();
     expect(auditCall![1]).toContain("topic.write_denied_locked");
-    expect(auditCall![1]).toContain("team-1");
+    expect(auditCall![1]).toContain("11111111-1111-4111-8111-111111111111");
 
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "topic.write_denied_locked",
-      expect.objectContaining({ teamId: "team-1" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111" }),
     );
   });
 });
@@ -303,7 +303,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { prompt: "A prompt", voteType: "finger" },
     });
 
@@ -317,7 +317,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { name: "   ", prompt: "A prompt", voteType: "finger" },
     });
 
@@ -331,7 +331,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { name: "x".repeat(101), prompt: "A prompt", voteType: "finger" },
     });
 
@@ -345,7 +345,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { name: "Team Health", voteType: "finger" },
     });
 
@@ -359,7 +359,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { name: "Team Health", prompt: "x".repeat(501), voteType: "finger" },
     });
 
@@ -373,7 +373,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { name: "Team Health", prompt: "A prompt" },
     });
 
@@ -387,7 +387,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { name: "Team Health", prompt: "A prompt", voteType: "not-real" },
     });
 
@@ -401,7 +401,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { ...VALID_BODY, firstSessionDescription: "x".repeat(501) },
     });
 
@@ -418,7 +418,7 @@ describe("POST /api/v1/teams/:teamId/topics — body validation (Task 5.3)", () 
       const app = await buildApp();
       const res = await app.inject({
         method: "POST",
-        url: "/api/v1/teams/team-1/topics",
+        url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
         payload: { ...VALID_BODY, voteType },
       });
 
@@ -438,7 +438,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     mockSuccessfulInsertTransaction({ topicId: "topic-abc", nextDisplayOrder: 3 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(201);
     const body = res.json();
@@ -460,7 +460,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
       payload: { ...VALID_BODY, firstSessionDescription: "Read this before your first vote." },
     });
 
@@ -476,7 +476,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     const client = mockSuccessfulInsertTransaction();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(201);
     const insertCall = client.query.mock.calls.find((call) =>
@@ -490,7 +490,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     mockSuccessfulInsertTransaction({ nextDisplayOrder: 7 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.json().displayOrder).toBe(7);
   });
@@ -500,7 +500,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     mockSuccessfulInsertTransaction();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     // No uniqueness pre-check query is issued between the lock gate and the
     // transaction: mockPassAllGates supplies exactly 3 db.query calls, and
@@ -514,7 +514,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     const client = mockSuccessfulInsertTransaction();
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     const calls = client.query.mock.calls.map((call) => call[0] as string);
     const lockIndex = calls.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
@@ -529,7 +529,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     const client = mockSuccessfulInsertTransaction({ topicId: "topic-audit-1" });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(201);
 
@@ -543,7 +543,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "topic.custom_added",
-      expect.objectContaining({ teamId: "team-1", topicId: "topic-audit-1" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", topicId: "topic-audit-1" }),
     );
 
     // The denial-path audit write (topic.write_denied_locked) must never
@@ -560,7 +560,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     mockSuccessfulInsertTransaction();
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     // Only the 3 gate-check db.query calls occur; the transaction runs
     // entirely on the connected client, never on db.query directly.
@@ -574,7 +574,7 @@ describe("POST /api/v1/teams/:teamId/topics — successful creation (Task 5.4/5.
     mockSuccessfulInsertTransaction();
 
     const app = await buildApp("facilitator-with-no-history-for-team-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     expect(res.statusCode).toBe(201);
   });
@@ -629,8 +629,8 @@ describe("POST /api/v1/teams/:teamId/topics — concurrency (design.md Decision 
     // Issue both requests before either resolves — genuine concurrency, not
     // a sequential call pair.
     const [res1, res2] = await Promise.all([
-      app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: { ...VALID_BODY, name: "Topic A" } }),
-      app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: { ...VALID_BODY, name: "Topic B" } }),
+      app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: { ...VALID_BODY, name: "Topic A" } }),
+      app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: { ...VALID_BODY, name: "Topic B" } }),
     ]);
 
     expect(res1.statusCode).toBe(201);
@@ -652,7 +652,7 @@ describe("POST /api/v1/teams/:teamId/topics — timing floor applied on every br
   it("applies the timing floor on the 403 branch", async () => {
     mockAuthQuery("engineer", false);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -660,7 +660,7 @@ describe("POST /api/v1/teams/:teamId/topics — timing floor applied on every br
     mockAuthQuery("facilitator", false);
     mockTeamExists(false);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -670,14 +670,14 @@ describe("POST /api/v1/teams/:teamId/topics — timing floor applied on every br
     mockLockCount(0);
     mockDenialAuditInsert();
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
   it("applies the timing floor on the 422 branch", async () => {
     mockPassAllGates();
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: { name: "" } });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: { name: "" } });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -685,7 +685,7 @@ describe("POST /api/v1/teams/:teamId/topics — timing floor applied on every br
     mockPassAllGates();
     mockSuccessfulInsertTransaction();
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -721,7 +721,7 @@ describe("POST /api/v1/teams/:teamId/topics — timing floor applied on every br
       const app = await buildApp();
       await app.inject({
         method: "POST",
-        url: "/api/v1/teams/team-1/topics",
+        url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
         payload: setup === branches[3] ? { name: "" } : VALID_BODY,
       });
       expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
@@ -742,7 +742,7 @@ describe("POST /api/v1/teams/:teamId/topics — error envelope shape (design.md 
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     const body = res.json();
     expect(body.error.category).toBe("precondition_failed");
@@ -758,7 +758,7 @@ describe("POST /api/v1/teams/:teamId/topics — error envelope shape (design.md 
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     const body = res.json();
     expect(body.error.category).toBe("forbidden");
@@ -769,7 +769,7 @@ describe("POST /api/v1/teams/:teamId/topics — error envelope shape (design.md 
     mockAuthQuery("facilitator", true);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     const body = res.json();
     expect(body.error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
@@ -782,7 +782,7 @@ describe("POST /api/v1/teams/:teamId/topics — error envelope shape (design.md 
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics", payload: VALID_BODY });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics", payload: VALID_BODY });
 
     const body = res.json();
     expect(body.code).toBeUndefined();
@@ -880,7 +880,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockArchiveTransaction({ activeCount: 2 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -893,7 +893,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockArchiveTransaction({ activeCount: 2 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -902,7 +902,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -913,7 +913,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockAuthQuery("facilitator", true);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
@@ -923,7 +923,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockAuthQueryNoUser();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -940,7 +940,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(403);
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
@@ -951,7 +951,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTeamExists(false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/nonexistent-team/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics/topic-1" });
 
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
@@ -965,7 +965,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
@@ -980,7 +980,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTopicExists(null);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/nonexistent-topic" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/nonexistent-topic" });
 
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("TOPIC_NOT_FOUND");
@@ -993,7 +993,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTopicExists("archived");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ARCHIVED");
@@ -1006,7 +1006,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTopicExists("archived");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ARCHIVED");
@@ -1025,7 +1025,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
     mockArchiveTransaction({ activeCount: 1 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TOPIC_LAST_ACTIVE");
@@ -1036,7 +1036,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
     const client = mockArchiveTransaction({ activeCount: 3 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(200);
     const updateCall = client.query.mock.calls.find((call) => (call[0] as string).includes("UPDATE topics"));
@@ -1048,7 +1048,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
     const client = mockArchiveTransaction({ activeCount: 2 });
 
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     const calls = client.query.mock.calls.map((call) => call[0] as string);
     const lockIndex = calls.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
@@ -1072,7 +1072,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
         return Promise.resolve({ rows: [{ global_role: "facilitator", is_member: false }] });
       }
       if (text.includes("FROM teams WHERE id")) {
-        return Promise.resolve({ rows: [{ id: "team-1" }] });
+        return Promise.resolve({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] });
       }
       if (text.includes("FROM sessions WHERE team_id")) {
         return Promise.resolve({ rows: [{ count: "1" }] });
@@ -1108,8 +1108,8 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
 
     const app = await buildApp();
     const [res1, res2] = await Promise.all([
-      app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-a" }),
-      app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-b" }),
+      app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-a" }),
+      app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-b" }),
     ]);
 
     const statuses = [res1.statusCode, res2.statusCode].sort();
@@ -1136,7 +1136,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -1154,7 +1154,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("archived");
@@ -1170,7 +1170,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     const app = await buildApp();
     const res = await app.inject({
       method: "DELETE",
-      url: "/api/v1/teams/team-1/topics/topic-1?confirm=true",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1?confirm=true",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1191,7 +1191,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     const app = await buildApp();
     const res = await app.inject({
       method: "DELETE",
-      url: "/api/v1/teams/team-1/topics/topic-1?confirm=true",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1?confirm=true",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1215,7 +1215,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     const client = mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(200);
     const auditCall = client.query.mock.calls.find((call) =>
@@ -1223,13 +1223,13 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     );
     expect(auditCall).toBeDefined();
     expect(auditCall![1]).toContain("topic.archived");
-    expect(auditCall![1]).toContain("team-1");
+    expect(auditCall![1]).toContain("11111111-1111-4111-8111-111111111111");
     expect((auditCall![1] as unknown[])[5] as string).toContain('"openActionItemCount":0');
 
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "topic.archived",
-      expect.objectContaining({ teamId: "team-1", topicId: "topic-1", openActionItemCount: 0 }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", topicId: "topic-1", openActionItemCount: 0 }),
     );
   });
 
@@ -1245,7 +1245,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     });
 
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1?confirm=true" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1?confirm=true" });
 
     const auditCall = client.query.mock.calls.find((call) =>
       (call[0] as string).includes("INSERT INTO audit_log"),
@@ -1257,7 +1257,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(mockDbConnect).not.toHaveBeenCalled();
   });
@@ -1270,7 +1270,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().requiresConfirmation).toBe(true);
@@ -1292,7 +1292,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(409);
     const auditCall = mockDbQuery.mock.calls.find((call) =>
@@ -1308,7 +1308,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
 
     expect(res.statusCode).toBe(409);
     const auditCall = mockDbQuery.mock.calls.find((call) =>
@@ -1328,7 +1328,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
   it("applies the timing floor on the 403 branch", async () => {
     mockAuthQuery("engineer", false);
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1336,7 +1336,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockAuthQuery("facilitator", false);
     mockTeamExists(false);
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1346,7 +1346,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockLockCount(0);
     mockDenialAuditInsert();
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1356,14 +1356,14 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockLockCount(1);
     mockTopicExists(null);
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
   it("applies the timing floor on the 422 branch", async () => {
     mockPassAllArchiveGates("archived");
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1371,7 +1371,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockPassAllArchiveGates();
     mockArchiveTransaction({ activeCount: 1 });
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1379,7 +1379,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockPassAllArchiveGates();
     mockArchiveTransaction({ activeCount: 2, openItemsRows: [{ id: "ai-1", description: "open" }] });
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1387,7 +1387,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockPassAllArchiveGates();
     mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/team-1/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });
@@ -1452,7 +1452,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockRestoreTransaction({ newPosition: 3 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -1465,7 +1465,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockRestoreTransaction({ newPosition: 3 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -1474,7 +1474,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -1485,7 +1485,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockAuthQuery("facilitator", true);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
@@ -1495,7 +1495,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockAuthQueryNoUser();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -1512,7 +1512,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
@@ -1525,7 +1525,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/nonexistent-team/topics/topic-1/restore",
+      url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics/topic-1/restore",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1540,7 +1540,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
@@ -1557,7 +1557,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/topics/nonexistent-topic/restore",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/nonexistent-topic/restore",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1571,7 +1571,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     mockTopicExists("active");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
@@ -1591,7 +1591,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 4 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -1608,7 +1608,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 2 });
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     const calls = client.query.mock.calls.map((call) => call[0] as string);
     const lockIndex = calls.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
@@ -1623,7 +1623,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 2 });
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     const updateCall = client.query.mock.calls.find((call) => (call[0] as string).includes("UPDATE topics"));
     const sql = updateCall![0] as string;
@@ -1638,7 +1638,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 2, zeroRows: true });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
@@ -1658,7 +1658,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     const client = mockRestoreTransaction({ newPosition: 2 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(200);
     const auditCall = client.query.mock.calls.find((call) =>
@@ -1666,12 +1666,12 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     );
     expect(auditCall).toBeDefined();
     expect(auditCall![1]).toContain("topic.restored");
-    expect(auditCall![1]).toContain("team-1");
+    expect(auditCall![1]).toContain("11111111-1111-4111-8111-111111111111");
 
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "topic.restored",
-      expect.objectContaining({ teamId: "team-1", topicId: "topic-1" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", topicId: "topic-1" }),
     );
   });
 
@@ -1679,7 +1679,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(mockDbConnect).not.toHaveBeenCalled();
   });
@@ -1689,7 +1689,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     const client = mockRestoreTransaction({ newPosition: 2, zeroRows: true });
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     const auditCall = client.query.mock.calls.find((call) =>
       (call[0] as string).includes("INSERT INTO audit_log"),
@@ -1704,7 +1704,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     expect(res.statusCode).toBe(409);
     const auditCall = mockDbQuery.mock.calls.find((call) =>
@@ -1725,7 +1725,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
   it("applies the timing floor on the 403 branch", async () => {
     mockAuthQuery("engineer", false);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1733,7 +1733,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockAuthQuery("facilitator", false);
     mockTeamExists(false);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1743,7 +1743,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockLockCount(0);
     mockDenialAuditInsert();
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1753,7 +1753,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockLockCount(1);
     mockTopicExists(null);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1763,7 +1763,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockLockCount(1);
     mockTopicExists("active");
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1771,7 +1771,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockPassAllRestoreGates();
     mockRestoreTransaction({ newPosition: 2, zeroRows: true });
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1779,7 +1779,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockPassAllRestoreGates();
     mockRestoreTransaction({ newPosition: 2 });
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });
@@ -1797,7 +1797,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — error envelope 
     mockTopicExists("active");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     const body = res.json();
     expect(body.error.category).toBe("invalid_request");
@@ -1814,7 +1814,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — error envelope 
     mockTopicExists("active");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
 
     const body = res.json();
     expect(body.code).toBeUndefined();
@@ -1827,7 +1827,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — error envelope 
 // PUT /api/v1/teams/:teamId/topics/order  (TOPIC-006, reorder-topics)
 // ===========================================================================
 
-const REORDER_URL = "/api/v1/teams/team-1/topics/order";
+const REORDER_URL = "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/order";
 const T1 = "aaaaaaaa-0000-4000-8000-000000000001";
 const T2 = "aaaaaaaa-0000-4000-8000-000000000002";
 const T3 = "aaaaaaaa-0000-4000-8000-000000000003";
@@ -1870,7 +1870,7 @@ function makeReorderClient(
       return { rows: [], rowCount: opts.phase2Count ?? current.length };
     }
     if (sql.includes("FROM sessions")) {
-      return { rows: opts.openSessionCreatedAt ? [{ created_at: opts.openSessionCreatedAt }] : [] };
+      return { rows: opts.openSessionCreatedAt ? [{ opened_at: opts.openSessionCreatedAt }] : [] };
     }
     return { rows: [], rowCount: 0 };
   });
@@ -2108,7 +2108,7 @@ describe("PUT /api/v1/teams/:teamId/topics/order — stale set (design.md Decisi
 
     const calls = sqlCalls(client);
     expect(calls[0]).toBe("BEGIN");
-    expect(calls[1]).toContain("pg_advisory_xact_lock(hashtext($1::text))");
+    expect(calls[1]).toContain("pg_advisory_xact_lock(hashtext($1::uuid::text))");
     expect(calls[2]).toContain("WHERE team_id = $1 AND status = 'active'");
     expect(calls[2]).toContain("ORDER BY display_order, id");
   });
@@ -2212,14 +2212,14 @@ describe("PUT /api/v1/teams/:teamId/topics/order — changed save and audit (des
     expect(commit).toBeGreaterThan(audit);
 
     // Phase 1 binds the lowercased IDs as a JS array.
-    expect(client.query.mock.calls[phase1]![1]).toEqual(["team-1", [T3, T1, T2]]);
+    expect(client.query.mock.calls[phase1]![1]).toEqual(["11111111-1111-4111-8111-111111111111", [T3, T1, T2]]);
 
     const inserts = reorderAuditInserts(client);
     expect(inserts).toHaveLength(1);
     const params = inserts[0]![1] as unknown[];
     expect(params[0]).toBe("facilitator-1");
     expect(params[1]).toBe("facilitator");
-    expect(params[4]).toBe("team-1");
+    expect(params[4]).toBe("11111111-1111-4111-8111-111111111111");
     const metadata = JSON.parse(params[5] as string);
     expect(metadata).toEqual({ previous_order: [T1, T2, T3], new_order: [T3, T1, T2] });
     expect(params[5]).not.toContain("Topic");
@@ -2230,7 +2230,7 @@ describe("PUT /api/v1/teams/:teamId/topics/order — changed save and audit (des
     expect(Object.keys(fields as object).sort()).toEqual(
       ["actorGlobalRole", "actorIp", "actorUserId", "teamId", "topicCount"].sort(),
     );
-    expect(fields).toMatchObject({ actorUserId: "facilitator-1", teamId: "team-1", topicCount: 3 });
+    expect(fields).toMatchObject({ actorUserId: "facilitator-1", teamId: "11111111-1111-4111-8111-111111111111", topicCount: 3 });
     // emitAuditEvent runs only after COMMIT has been issued.
     const commitCallIndex = client.query.mock.invocationCallOrder[commit]!;
     const emitCallIndex = mockEmitAuditEvent.mock.invocationCallOrder[0]!;
@@ -2288,7 +2288,7 @@ describe("PUT /api/v1/teams/:teamId/topics/order — changed save and audit (des
 describe("PUT /api/v1/teams/:teamId/topics/order — openSessionCreatedAt (design.md Decision 7)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("for a facilitator, returns the open session's created_at and filters out draft and terminal statuses", async () => {
+  it("for a facilitator, returns the open session's room-open time (falling back to created_at) and filters out draft and terminal statuses", async () => {
     mockPassAllReorderGates("facilitator");
     const createdAt = new Date("2026-09-30T12:00:00.000Z");
     const client = makeReorderClient({ openSessionCreatedAt: createdAt });
@@ -2299,7 +2299,10 @@ describe("PUT /api/v1/teams/:teamId/topics/order — openSessionCreatedAt (desig
     const sessionsSql = sqlCalls(client).find((sql) => sql.includes("FROM sessions"));
     expect(sessionsSql).toContain("status IN ('lobby', 'pre_session', 'active', 'wrap_up')");
     expect(sessionsSql).not.toContain("draft");
-    expect(sessionsSql).toContain("ORDER BY created_at DESC");
+    // session-topics-snapshot-at-creation design.md Decision 5: room open,
+    // with created_at only as the pre-migration-20 fallback.
+    expect(sessionsSql).toContain("COALESCE(room_opened_at, created_at) AS opened_at");
+    expect(sessionsSql).toContain("ORDER BY COALESCE(room_opened_at, created_at) DESC");
     expect(sessionsSql).toContain("LIMIT 1");
   });
 
@@ -2373,4 +2376,46 @@ describe("PUT /api/v1/teams/:teamId/topics/order — atomicity and row-count gua
     expect((thrown[0] as Error).name).toBe("ReorderRowCountMismatchError");
     expectRolledBackWithoutAudit(client);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Implementation review M1/MF1 (session-topics-snapshot-at-creation): every
+// topic write route rejects a non-canonical teamId at the route boundary,
+// before the authorization query, so a spelling Postgres would resolve to a
+// real team never reaches the member-denial check, and a malformed id never
+// raises 22P02. Real-DB counterpart: session-topic-snapshot-integration.test.ts.
+// ---------------------------------------------------------------------------
+describe("topic write routes — non-canonical teamId (implementation review M1)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const TOPIC = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const spellings = [
+    ["hyphenless", "11111111111141118111111111111111"],
+    ["braced", "{11111111-1111-4111-8111-111111111111}"],
+    ["malformed", "not-a-uuid"],
+  ] as const;
+  const routes = [
+    ["POST add", "POST", (t: string) => `/api/v1/teams/${t}/topics`, { name: "X", prompt: "Y?", voteType: "finger" }],
+    ["DELETE archive", "DELETE", (t: string) => `/api/v1/teams/${t}/topics/${TOPIC}?confirm=true`, undefined],
+    ["POST restore", "POST", (t: string) => `/api/v1/teams/${t}/topics/${TOPIC}/restore`, {}],
+    ["PUT reorder", "PUT", (t: string) => `/api/v1/teams/${t}/topics/order`, { orderedTopicIds: [TOPIC] }],
+    ["PUT annotation", "PUT", (t: string) => `/api/v1/teams/${t}/topics/${TOPIC}/annotation`, { annotation: "x" }],
+  ] as const;
+
+  for (const [routeLabel, method, url, payload] of routes) {
+    it.each(spellings)(`${routeLabel}: a %s teamId is 404 TEAM_NOT_FOUND before any query`, async (_label, bad) => {
+      const app = await buildApp();
+      const res = await app.inject({
+        method,
+        url: url(encodeURIComponent(bad)),
+        ...(payload === undefined ? {} : { payload }),
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND" });
+      expect(mockDbQuery).not.toHaveBeenCalled();
+      expect(mockDbConnect).not.toHaveBeenCalled();
+      expect(mockApplyTimingFloor).toHaveBeenCalled();
+    });
+  }
 });

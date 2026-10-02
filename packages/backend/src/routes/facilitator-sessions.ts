@@ -14,6 +14,14 @@ import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-acce
 import { evaluateStandingFacilitatorAccess } from "../auth/standing-facilitator-access-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
+import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
+import { isCanonicalUuid } from "./uuid.js";
+import {
+  lockTeamTopics,
+  snapshotSessionTopics,
+  NoActiveTopicsError,
+} from "../sessions/session-topic-snapshot.js";
+import { buildErrorEnvelope } from "./error-envelope.js";
 import type {
   RevealFailureResponse,
   RevealAlreadyRevealedResponse,
@@ -41,6 +49,27 @@ import type {
 // engineer review Finding 1 -- see that handler's inline comment).
 // ---------------------------------------------------------------------------
 class TeamNameCollisionSignal extends Error {}
+
+// ---------------------------------------------------------------------------
+// SnapshotFailedSignal — wraps a session topic snapshot failure other than
+// NoActiveTopicsError inside the POST /api/v1/teams transaction, so the
+// catch can tell it apart from other errors in the same transaction and
+// answer a fixed 500 without echoing the database error
+// (session-topics-snapshot-at-creation design.md Decision 4; this app has
+// no global error handler, and Fastify's default echoes err.message).
+// ---------------------------------------------------------------------------
+class SnapshotFailedSignal extends Error {
+  constructor(cause: unknown) {
+    super("session topic snapshot failed", { cause });
+  }
+}
+
+// Fixed 500 bodies (non-normative copy; release-notes 10.4 sends them to
+// Priya). Each names the action the caller was taking. The database error is
+// logged with the body's correlationId and never formatted into a response.
+const SNAPSHOT_FAILED_MESSAGE = "Something went wrong while locking in this session's topics. Try again.";
+const ROOM_OPEN_FAILED_MESSAGE = "Something went wrong opening the room. Try again.";
+const TEAM_CREATION_FAILED_MESSAGE = "Something went wrong creating this team. Try again.";
 
 // ---------------------------------------------------------------------------
 // recordRevealTriggeredAudit — SEC-13/SEC-14 audit write for the reveal
@@ -259,6 +288,21 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
+    // Route boundary (session-topics-snapshot-at-creation implementation
+    // review M1/MF1): a non-canonical teamId (no hyphens, braces, ...) is
+    // 404 before any query. Postgres would canonicalise it, so without this
+    // the membership check and the existence check below could disagree
+    // about which team it names. A malformed id names no team.
+    if (!isCanonicalUuid(teamId)) {
+      return reply.code(404).send({
+        error: {
+          category: "not_found" as const,
+          message: "Team not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
     // topic-customization-lock-and-add-custom-topic, design.md Decision 9's
     // engineer-review (M2) addendum: this is the shared standing-facilitator
     // authorization query, extracted so POST /api/v1/teams/:teamId/topics
@@ -448,8 +492,9 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
   // POST /api/v1/teams  (inline-team-creation)
   //
   // Creates a new team, assigns it the canonical default topic set
-  // (default-topic-provisioning), and creates that team's first session --
-  // all in a single transaction (design.md D3).
+  // (default-topic-provisioning), creates that team's first session, and
+  // snapshots that session's topic list (session-topics-snapshot-at-creation
+  // #175) -- all in a single transaction (design.md D3).
   //
   // Route file placement (design.md D3, engineer review Finding 2):
   // implemented here, alongside POST /draft, not in teams.ts -- teams.ts is
@@ -567,6 +612,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     const client = await db.connect();
     let teamId: string;
     let newSessionId: string;
+    let topicIds: string[];
     try {
       await client.query("BEGIN");
 
@@ -609,19 +655,37 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
            (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
          SELECT $1, name, prompt, vote_type, display_order, is_default, first_session_description
          FROM topics
-         WHERE team_id = '00000000-0000-0000-0000-000000000001' AND is_default = true`,
-        [teamId],
+         WHERE team_id = $2 AND is_default = true`,
+        [teamId, DEFAULT_TOPICS_TEAM_ID],
       );
 
+      // session-topics-snapshot-at-creation (#175) design.md Decision 4:
+      // this session lands directly in lobby, so its creation IS its room
+      // open -- room_opened_at is set at insert and its topic list is
+      // snapshotted below, in this same transaction.
       const sessionResult = await client.query<{ id: string }>(
         `INSERT INTO sessions
-           (team_id, facilitator_id, status, is_first_session, session_number)
-         VALUES ($1, $2, 'lobby', true, 1)
+           (team_id, facilitator_id, status, is_first_session, session_number, room_opened_at)
+         VALUES ($1, $2, 'lobby', true, 1, now())
          RETURNING id`,
         [teamId, session.userId],
       );
       newSessionId = (sessionResult.rows[0] as { id: string }).id;
 
+      // The new team row is uncommitted and invisible to everyone else, so
+      // this lock prevents no race. It is taken for uniformity, so the
+      // snapshot helper's "caller holds the lock" contract has no exception.
+      await lockTeamTopics(client, teamId);
+      // Sees the uncommitted topic copy and session row (same transaction).
+      // NoActiveTopicsError (an empty template) and any other snapshot
+      // failure are handled in the catch below.
+      try {
+        ({ topicIds } = await snapshotSessionTopics(client, newSessionId));
+      } catch (err) {
+        throw err instanceof NoActiveTopicsError ? err : new SnapshotFailedSignal(err);
+      }
+
+      // design.md Decision 3b: ids and count only, never topic text.
       await client.query(
         `INSERT INTO audit_log
            (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
@@ -632,13 +696,45 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
           request.ip,
           "team.created_with_session",
           teamId,
-          JSON.stringify({ team_id: teamId, session_id: newSessionId }),
+          JSON.stringify({
+            team_id: teamId,
+            session_id: newSessionId,
+            topic_count: topicIds.length,
+            topic_ids: topicIds,
+          }),
         ],
       );
 
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
+
+      if (err instanceof NoActiveTopicsError) {
+        // The default topic template is empty: a configuration fault, not a
+        // caller error. The body carries a fixed message and the
+        // correlationId only -- never the template team id or SQL detail;
+        // the log line carries both. No audit row (it would roll back).
+        const body = buildErrorEnvelope(
+          "internal_error",
+          "Team creation is unavailable because the default topic set is not configured. Contact an administrator.",
+        );
+        request.log.error(
+          { templateTeamId: DEFAULT_TOPICS_TEAM_ID, correlationId: body.error.correlationId },
+          "default topic template is empty",
+        );
+        return reply.code(500).send(body);
+      }
+
+      if (err instanceof SnapshotFailedSignal) {
+        // Same rule as /advance: log the database error, never echo it. The
+        // copy names team creation, the action the caller took.
+        const body = buildErrorEnvelope("internal_error", TEAM_CREATION_FAILED_MESSAGE);
+        request.log.error(
+          { err: err.cause, correlationId: body.error.correlationId },
+          "session topic snapshot failed",
+        );
+        return reply.code(500).send(body);
+      }
 
       if (err instanceof TeamNameCollisionSignal) {
         const body: TeamNameCollisionResponse = {
@@ -648,7 +744,11 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
         return reply.code(409).send(body);
       }
 
-      throw err;
+      // Any other failure in the transaction: a fixed 500, the error logged
+      // with the body's correlationId, never echoed (security review SF1).
+      const body = buildErrorEnvelope("internal_error", TEAM_CREATION_FAILED_MESSAGE);
+      request.log.error({ err, correlationId: body.error.correlationId }, "team creation failed");
+      return reply.code(500).send(body);
     } finally {
       client.release();
     }
@@ -659,6 +759,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       actorIp: request.ip,
       teamId,
       sessionId: newSessionId,
+      topicCount: topicIds.length,
     });
 
     // join-link-redemption-wiring, design.md Decision 1's note: no joinToken
@@ -678,13 +779,29 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
   // POST /api/v1/teams/:teamId/sessions/:sessionId/advance  (Task 8.3)
   //
   // Advances a draft session to lobby status.
-  // draft → lobby transition: opens the room to participants.
+  // draft → lobby transition: opens the room to participants. This is
+  // "room open" (session-topics-snapshot-at-creation #175, D1): the moment
+  // the session's topic list is snapshotted into session_topics.
   // -------------------------------------------------------------------------
   app.post<{
     Params: { teamId: string; sessionId: string };
   }>("/api/v1/teams/:teamId/sessions/:sessionId/advance", async (request, reply) => {
     const session = request.session as unknown as SessionData;
     const { teamId, sessionId } = request.params;
+
+    // Route boundary: a non-canonical sessionId names no session, so it is
+    // 404 here rather than a 22P02 whose text Fastify's default handler
+    // would echo (security review SF1). teamId needs no check: it is never
+    // queried, only compared strictly with the session row's team_id.
+    if (!isCanonicalUuid(sessionId)) {
+      return reply.code(404).send({
+        error: {
+          category: "not_found" as const,
+          message: "Session not found.",
+          correlationId: crypto.randomUUID(),
+        },
+      });
+    }
 
     // Verify the session exists and belongs to this team
     const sessionResult = await db.query<{
@@ -737,35 +854,128 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       });
     }
 
-    if (sessionRow.status !== "draft") {
-      return reply.code(422).send({
-        error: {
-          category: "invalid_request" as const,
-          message: `Session cannot be advanced from status '${sessionRow.status}'.`,
-          correlationId: crypto.randomUUID(),
-        },
-      });
-    }
-
+    // session-topics-snapshot-at-creation (#175) design.md Decision 3a: the
+    // caller's LIVE users.global_role must still be 'facilitator'. Opening
+    // the room now also fixes the team's voting list (and grants untimed
+    // Path 3 team-content access), so a creator whose role was revoked after
+    // drafting may not do it. Runs after the 404/403 checks above and before
+    // the status check, so the pre-transaction order is: 404, 403 team, 403
+    // creator, 403 live role, 422 status. A missing user row is a denial.
     const actorResult = await db.query<{ global_role: string }>(
       `SELECT global_role FROM users WHERE id = $1`,
       [session.userId],
     );
     const actorGlobalRole = (actorResult.rows[0] as { global_role: string } | undefined)?.global_role ?? "unknown";
 
-    // Transition draft → lobby, and write the SEC-13/SEC-14 audit_log row,
-    // in the SAME transaction (websocket-delivery-time-authorization
-    // design.md Decision D7, transaction-pattern correction). Not blocked
-    // on GitHub issue #26 — this UPDATE already commits today.
+    if (actorGlobalRole !== "facilitator") {
+      // team.creation_denied_role precedent: a security-relevant rejection
+      // gets its own audit row, written immediately before the 403.
+      await db.query(
+        `INSERT INTO audit_log
+           (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          session.userId,
+          actorGlobalRole,
+          request.ip,
+          "session.advance_denied_role",
+          // The committed record takes the team from the row, not the URL
+          // (security review SF2; equal today after the strict check above).
+          sessionRow.team_id,
+          JSON.stringify({ session_id: sessionId }),
+        ],
+      );
+
+      emitAuditEvent(request.log, "session.advance_denied_role", {
+        actorUserId: session.userId,
+        actorGlobalRole,
+        actorIp: request.ip,
+        teamId: sessionRow.team_id,
+        sessionId,
+      });
+
+      return reply
+        .code(403)
+        .send(buildErrorEnvelope("forbidden", "Only a facilitator can open the room."));
+    }
+
+    if (sessionRow.status !== "draft") {
+      return reply
+        .code(422)
+        .send(buildErrorEnvelope("invalid_request", `Session cannot be advanced from status '${sessionRow.status}'.`));
+    }
+
+    // Room open (session-topics-snapshot-at-creation design.md Decision 3):
+    // transition draft -> lobby, snapshot the session's topic list, and
+    // write the SEC-13/SEC-14 audit_log row, all in the SAME transaction
+    // (websocket-delivery-time-authorization design.md Decision D7). The
+    // pre-transaction checks above are for fast, readable rejections; the
+    // conditional UPDATE below is what guarantees correctness.
+    let topicIds: string[];
     const client = await db.connect();
     try {
       await client.query("BEGIN");
 
-      await client.query(
-        `UPDATE sessions SET status = 'lobby' WHERE id = $1`,
-        [sessionId],
+      // The team lock is always taken first, and only after every
+      // authorization check has passed, matching every structural topic
+      // write (no lock-order inversion with the session row). Keyed on the
+      // session row's team_id, not the URL parameter.
+      await lockTeamTopics(client, sessionRow.team_id);
+
+      // team_id / facilitator_id predicates are defence in depth: the
+      // guarantee lives in the statement that commits. rowCount is checked
+      // explicitly, not for truthiness.
+      const updateResult = await client.query(
+        `UPDATE sessions SET status = 'lobby', room_opened_at = now()
+         WHERE id = $1 AND team_id = $2 AND facilitator_id = $3 AND status = 'draft'`,
+        [sessionId, sessionRow.team_id, session.userId],
       );
 
+      if (updateResult.rowCount !== 1) {
+        // D6, the double-click case: a concurrent /advance opened the room
+        // first. Re-read the status (cheap, the lock is held) so both 422
+        // paths return the same message.
+        const statusResult = await client.query<{ status: string }>(
+          `SELECT status FROM sessions WHERE id = $1`,
+          [sessionId],
+        );
+        const currentStatus = (statusResult.rows[0] as { status: string } | undefined)?.status ?? "unknown";
+        await client.query("ROLLBACK");
+        return reply
+          .code(422)
+          .send(buildErrorEnvelope("invalid_request", `Session cannot be advanced from status '${currentStatus}'.`));
+      }
+
+      try {
+        ({ topicIds } = await snapshotSessionTopics(client, sessionId));
+      } catch (err) {
+        if (err instanceof NoActiveTopicsError) {
+          // Defence in depth: unreachable through the API (TOPIC_LAST_ACTIVE
+          // and the customization lock prevent it), reachable only through
+          // data drift. No audit row: it would roll back with the transaction.
+          await client.query("ROLLBACK");
+          return reply
+            .code(409)
+            .send(
+              buildErrorEnvelope(
+                "precondition_failed",
+                "This team has no active topics. Add or restore a topic on Topic Management before opening the room.",
+                "NO_ACTIVE_TOPICS",
+              ),
+            );
+        }
+        // Any other snapshot failure (e.g. a 23505 from constraint drift):
+        // roll back and answer a fixed 500. The app registers no global
+        // error handler, and Fastify's default one would echo err.message,
+        // so the database error is logged here (with the correlationId) and
+        // never formatted into the response.
+        await client.query("ROLLBACK");
+        const body = buildErrorEnvelope("internal_error", SNAPSHOT_FAILED_MESSAGE);
+        request.log.error({ err, correlationId: body.error.correlationId, sessionId }, "session topic snapshot failed");
+        return reply.code(500).send(body);
+      }
+
+      // design.md Decision 3b: ids and count only, never topic text.
       await client.query(
         `INSERT INTO audit_log
            (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
@@ -775,27 +985,43 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
           actorGlobalRole,
           request.ip,
           "session.state_changed",
-          teamId,
-          JSON.stringify({ session_id: sessionId, prior_status: "draft", new_status: "lobby" }),
+          sessionRow.team_id,
+          JSON.stringify({
+            session_id: sessionId,
+            prior_status: "draft",
+            new_status: "lobby",
+            topic_count: topicIds.length,
+            topic_ids: topicIds,
+          }),
         ],
       );
 
       await client.query("COMMIT");
     } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
+      // Any other failure in the transaction (lock, conditional UPDATE,
+      // audit INSERT, COMMIT): roll back and answer a fixed 500, logging
+      // the error with the body's correlationId (security review SF1).
+      // Never rethrown: the app has no global error handler (release-notes
+      // follow-up 6), and Fastify's default one echoes err.message.
+      await client.query("ROLLBACK").catch(() => undefined);
+      const body = buildErrorEnvelope("internal_error", ROOM_OPEN_FAILED_MESSAGE);
+      request.log.error({ err, correlationId: body.error.correlationId, sessionId }, "room open failed");
+      return reply.code(500).send(body);
     } finally {
       client.release();
     }
 
+    // Sink split (design.md Decision 3b): the log line carries topicCount
+    // only, never the id list or any topic text.
     emitAuditEvent(request.log, "session.state_changed", {
       actorUserId: session.userId,
       actorGlobalRole,
       actorIp: request.ip,
       sessionId,
-      teamId,
+      teamId: sessionRow.team_id,
       priorStatus: "draft",
       newStatus: "lobby",
+      topicCount: topicIds.length,
     });
 
     // Publish-after-commit ordering (design.md Decision D2/D7, tasks.md
@@ -2183,12 +2409,28 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       },
     });
 
+    // session-topics-snapshot-at-creation (#175) design.md Decision 6: a
+    // draft carries the team's current active topic count for the "Open the
+    // room" confirmation and the zero-topic disabled state; every other
+    // status omits the field. Keyed on the session row's team_id, not the
+    // URL. ::int matters: node-postgres returns a bigint count as a string,
+    // and "0" === 0 is false.
+    let activeTopicCount: number | undefined;
+    if (sr.status === "draft") {
+      const countResult = await db.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM topics WHERE team_id = $1 AND status = 'active'`,
+        [sr.team_id],
+      );
+      activeTopicCount = Number((countResult.rows[0] as { count: number } | undefined)?.count ?? 0);
+    }
+
     const response: FacilitatorSessionStateResponse = {
       sessionId,
       teamId,
       currentSessionState: sr.status as SessionStatus,
       bannerState,
       joinToken,
+      ...(activeTopicCount !== undefined ? { activeTopicCount } : {}),
     };
 
     return reply.send(response);

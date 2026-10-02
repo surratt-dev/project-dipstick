@@ -151,7 +151,7 @@ describe("getOrCreateJoinLink", () => {
     const resolveActorGlobalRole = vi.fn();
 
     const token = await getOrCreateJoinLink({
-      teamId: "team-1",
+      teamId: "11111111-1111-4111-8111-111111111111",
       createdByUserId: "user-1",
       actorIp: "127.0.0.1",
       logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
@@ -172,7 +172,7 @@ describe("getOrCreateJoinLink", () => {
     mockDbQuery.mockResolvedValueOnce({ rows: [{ token: "most-recent-token" }] });
 
     await getOrCreateJoinLink({
-      teamId: "team-1",
+      teamId: "11111111-1111-4111-8111-111111111111",
       createdByUserId: "user-1",
       actorIp: "127.0.0.1",
       logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
@@ -196,7 +196,7 @@ describe("getOrCreateJoinLink", () => {
         rows: [
           {
             id: "link-new",
-            team_id: "team-1",
+            team_id: "11111111-1111-4111-8111-111111111111",
             token: "new-token",
             created_at: new Date("2026-01-01"),
             expires_at: new Date("2026-01-08"),
@@ -207,7 +207,7 @@ describe("getOrCreateJoinLink", () => {
     mockDbConnect.mockResolvedValueOnce(client);
 
     const token = await getOrCreateJoinLink({
-      teamId: "team-1",
+      teamId: "11111111-1111-4111-8111-111111111111",
       createdByUserId: "user-1",
       actorIp: "127.0.0.1",
       logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
@@ -219,7 +219,7 @@ describe("getOrCreateJoinLink", () => {
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "join.link_created",
-      expect.objectContaining({ teamId: "team-1", linkId: "link-new" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", linkId: "link-new" }),
     );
   });
 
@@ -229,7 +229,7 @@ describe("getOrCreateJoinLink", () => {
       { rows: [] },
       {
         rows: [
-          { id: "link-a", team_id: "team-1", token: "token-a", created_at: new Date(), expires_at: new Date() },
+          { id: "link-a", team_id: "11111111-1111-4111-8111-111111111111", token: "token-a", created_at: new Date(), expires_at: new Date() },
         ],
       },
     ]);
@@ -237,7 +237,7 @@ describe("getOrCreateJoinLink", () => {
       { rows: [] },
       {
         rows: [
-          { id: "link-b", team_id: "team-1", token: "token-b", created_at: new Date(), expires_at: new Date() },
+          { id: "link-b", team_id: "11111111-1111-4111-8111-111111111111", token: "token-b", created_at: new Date(), expires_at: new Date() },
         ],
       },
     ]);
@@ -245,14 +245,14 @@ describe("getOrCreateJoinLink", () => {
 
     const [tokenA, tokenB] = await Promise.all([
       getOrCreateJoinLink({
-        teamId: "team-1",
+        teamId: "11111111-1111-4111-8111-111111111111",
         createdByUserId: "user-1",
         actorIp: "127.0.0.1",
         logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
         resolveActorGlobalRole: vi.fn().mockResolvedValue("facilitator"),
       }),
       getOrCreateJoinLink({
-        teamId: "team-1",
+        teamId: "11111111-1111-4111-8111-111111111111",
         createdByUserId: "user-2",
         actorIp: "127.0.0.1",
         logger: { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger,
@@ -276,6 +276,27 @@ describe("getOrCreateJoinLink", () => {
 describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // Implementation review M1/MF1: Postgres would resolve these spellings to
+  // the same team, so they are rejected before the membership query rather
+  // than letting the membership and existence checks disagree.
+  it.each([
+    ["hyphenless", "11111111111141118111111111111111"],
+    ["braced", "{11111111-1111-4111-8111-111111111111}"],
+    ["regrouped", "11111111-11114111-81111111-11111111"],
+    ["malformed", "not-a-uuid"],
+  ])("a non-canonical (%s) teamId is 404 before any query, and nothing is written", async (_label, badTeamId) => {
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/v1/teams/${encodeURIComponent(badTeamId)}/sessions/draft`,
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ category: "not_found", message: "Team not found." });
+    expect(mockDbQuery).not.toHaveBeenCalled();
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
   function mockActorQuery(globalRole: string, isMember: boolean) {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: globalRole, is_member: isMember }],
@@ -289,7 +310,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(403);
@@ -307,7 +328,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/nonexistent-team/sessions/draft",
+      url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/sessions/draft",
     });
 
     expect(res.statusCode).toBe(404);
@@ -321,7 +342,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/nonexistent-team/sessions/draft",
+      url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/sessions/draft",
     });
 
     expect(res.statusCode).toBe(404);
@@ -334,13 +355,13 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // eligible-teams list state) -- the endpoint is the control, not the UI.
   it("2.3/2.6/2.7: facilitator with active membership on target team returns 403 with the named cross-team error, creates no session, and writes an audit row", async () => {
     mockActorQuery("facilitator", true);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
     mockDbQuery.mockResolvedValueOnce({ rows: [] }); // INSERT INTO audit_log (denial)
 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(403);
@@ -359,7 +380,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "session.draft_denied_membership_conflict",
-      expect.objectContaining({ teamId: "team-1" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111" }),
     );
   });
 
@@ -369,7 +390,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     // soft-deleted membership row makes is_member false at the DB layer —
     // simulated here directly, since the query itself is not re-executed.
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
@@ -383,7 +404,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(201);
@@ -400,7 +421,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // transaction client, not db.query, so it never appears in this list.
   it("the actor query's membership join excludes removed memberships via removed_at IS NULL", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
@@ -413,7 +434,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     const actorQueryCall = mockDbQuery.mock.calls.find((call) =>
@@ -428,7 +449,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // session-scoped value.
   it("returns 201 with draft status, a joinToken sourced from get-or-create, and writes the draft_created audit row in the same transaction as the insert", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
@@ -442,14 +463,14 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(201);
     const body = res.json();
     expect(body.status).toBe("draft");
     expect(body.sessionId).toBe("session-draft-1");
-    expect(body.teamId).toBe("team-1");
+    expect(body.teamId).toBe("11111111-1111-4111-8111-111111111111");
     expect(body.joinToken).toBe("active-join-token");
 
     // task 2.16: audit insert happens on the same client, between BEGIN/COMMIT
@@ -464,7 +485,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "session.draft_created",
-      expect.objectContaining({ teamId: "team-1", sessionId: "session-draft-1" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", sessionId: "session-draft-1" }),
     );
   });
 
@@ -475,7 +496,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // SELECT global_role query, on either the reuse or miss path.
   it("sources actor_global_role from the already-resolved value on both get-or-create's reuse and miss paths, issuing no additional SELECT global_role query", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const sessionClient = makeMockClient([
       { rows: [] }, // BEGIN
@@ -491,7 +512,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
         rows: [
           {
             id: "link-4",
-            team_id: "team-1",
+            team_id: "11111111-1111-4111-8111-111111111111",
             token: "new-join-token",
             created_at: new Date("2026-01-01"),
             expires_at: new Date("2026-01-08"),
@@ -504,7 +525,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(201);
@@ -525,7 +546,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // task 2.14: concurrent-session 409
   it("2.14: creating a session for a team that already has a lobby session returns 409 with the existing session's id/status, and creates no new row", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const violation = Object.assign(new Error("duplicate key"), {
       code: "23505",
@@ -550,7 +571,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(409);
@@ -558,7 +579,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     expect(body.errorState).toBe("session_already_exists");
     expect(body.existingSessionId).toBe("existing-session-1");
     expect(body.existingSessionStatus).toBe("lobby");
-    expect(body.teamId).toBe("team-1");
+    expect(body.teamId).toBe("11111111-1111-4111-8111-111111111111");
 
     expect(client.query).toHaveBeenCalledWith(expect.stringContaining("ROLLBACK"));
   });
@@ -566,7 +587,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // task 2.15: only prior session terminal -> permitted
   it("2.15: creating a session for a team whose only prior session is complete is permitted", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const client = makeMockClient([
       { rows: [] }, // BEGIN
@@ -580,7 +601,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(201);
@@ -601,7 +622,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // which of the two requests happens to reach Postgres first.
   it("2.17: of two concurrent creation requests for the same team, exactly one succeeds and the other receives 409 identifying the winner's session", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists (request A, the winner)
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists (request A, the winner)
 
     const winnerClient = makeMockClient([
       { rows: [] },
@@ -615,14 +636,14 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const resA = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
     expect(resA.statusCode).toBe(201);
     expect(resA.json().sessionId).toBe("session-winner");
 
     // Request B arrives after A has already committed — the index rejects it.
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists (request B, the loser)
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists (request B, the loser)
 
     const violation = Object.assign(new Error("duplicate key"), {
       code: "23505",
@@ -643,7 +664,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
 
     const resB = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(resB.statusCode).toBe(409);
@@ -658,7 +679,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // 23505" role this test exists to guard against.
   it("2.18: a 23505 unique-violation on a different constraint propagates as an unhandled 500, not a false-positive 409", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const otherViolation = Object.assign(new Error("duplicate key"), {
       code: "23505",
@@ -678,7 +699,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(500);
@@ -687,7 +708,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
   // task 2.19: a non-23505 database error must also propagate as a 500
   it("2.19: a non-23505 database error during the insert propagates as an unhandled 500, not a false-positive 409", async () => {
     mockActorQuery("facilitator", false);
-    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "team-1" }] }); // team exists
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: "11111111-1111-4111-8111-111111111111" }] }); // team exists
 
     const client = makeMockClient();
     client.query = vi.fn((sql: string) => {
@@ -701,7 +722,7 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/draft",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/draft",
     });
 
     expect(res.statusCode).toBe(500);
@@ -723,7 +744,7 @@ describe("POST /api/v1/teams", () => {
   }
 
   function mockCollisionPrecheck(collides: boolean) {
-    mockDbQuery.mockResolvedValueOnce({ rows: collides ? [{ id: "existing-team" }] : [] });
+    mockDbQuery.mockResolvedValueOnce({ rows: collides ? [{ id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }] : [] });
   }
 
   function successTransactionClient() {
@@ -732,8 +753,29 @@ describe("POST /api/v1/teams", () => {
       { rows: [{ id: "new-team-1" }] }, // INSERT teams
       { rows: [] }, // INSERT topics (copy)
       { rows: [{ id: "new-session-1" }] }, // INSERT sessions
+      { rows: [] }, // SELECT pg_advisory_xact_lock (uniformity)
+      {
+        rows: [
+          { topic_id: "default-2", display_order: 2 },
+          { topic_id: "default-1", display_order: 1 },
+        ],
+        rowCount: 2,
+      }, // INSERT INTO session_topics ... RETURNING (snapshot)
       { rows: [] }, // INSERT audit_log
       { rows: [] }, // COMMIT
+    ]);
+  }
+
+  /** The copy succeeds, but the snapshot's RETURNING yields nothing: an empty template. */
+  function emptyTemplateClient() {
+    return makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "new-team-1" }] }, // INSERT teams
+      { rows: [] }, // INSERT topics (copy)
+      { rows: [{ id: "new-session-1" }] }, // INSERT sessions
+      { rows: [] }, // lock
+      { rows: [], rowCount: 0 }, // snapshot RETURNING: none
+      { rows: [] }, // ROLLBACK
     ]);
   }
 
@@ -773,15 +815,196 @@ describe("POST /api/v1/teams", () => {
     // is_first_session and session_number are literal true/1 in the SQL text
     // itself (design.md D3), not bound parameters.
     expect(calls[3]).toContain("true, 1");
-    expect(calls[4]).toContain("INSERT INTO audit_log");
-    expect(client.query.mock.calls[4]![1]).toContain("team.created_with_session");
-    expect(calls[5]).toContain("COMMIT");
+    // session-topics-snapshot-at-creation: creation is this session's room open.
+    expect(calls[3]).toContain("room_opened_at");
+    expect(calls[3]).toContain("now()");
+    expect(calls[4]).toContain("pg_advisory_xact_lock(hashtext($1::uuid::text))");
+    expect(client.query.mock.calls[4]![1]).toEqual(["new-team-1"]);
+    expect(calls[5]).toContain("INSERT INTO session_topics");
+    expect(client.query.mock.calls[5]![1]).toEqual(["new-session-1"]);
+    expect(calls[6]).toContain("INSERT INTO audit_log");
+    expect(client.query.mock.calls[6]![1]).toContain("team.created_with_session");
+    expect(calls[7]).toContain("COMMIT");
 
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "team.created_with_session",
       expect.objectContaining({ teamId: "new-team-1", sessionId: "new-session-1" }),
     );
+  });
+
+  it("copies the template by the named DEFAULT_TOPICS_TEAM_ID constant, bound as a parameter", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+    const client = successTransactionClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    await app.inject({ method: "POST", url: "/api/v1/teams", payload: { name: "Platform Team" } });
+
+    expect(client.query.mock.calls[2]![1]).toEqual(["new-team-1", "00000000-0000-0000-0000-000000000001"]);
+  });
+
+  // session-topics-snapshot-at-creation design.md Decision 3b — sinks.
+  it("the audit row carries topic_count and ordered topic_ids; the event carries topicCount only", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+    const client = successTransactionClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    await app.inject({ method: "POST", url: "/api/v1/teams", payload: { name: "Platform Team" } });
+
+    const metadata = JSON.parse((client.query.mock.calls[6]![1] as unknown[])[5] as string);
+    expect(metadata).toEqual({
+      team_id: "new-team-1",
+      session_id: "new-session-1",
+      topic_count: 2,
+      topic_ids: ["default-1", "default-2"],
+    });
+    const fields = mockEmitAuditEvent.mock.calls.find((c) => c[1] === "team.created_with_session")![2] as Record<
+      string,
+      unknown
+    >;
+    expect(fields.topicCount).toBe(metadata.topic_count);
+    expect(fields).not.toHaveProperty("topicIds");
+    expect(fields).not.toHaveProperty("topic_ids");
+    expect(JSON.stringify(fields)).not.toContain("default-1");
+  });
+
+  it("an empty default-topic template rolls back and returns a fixed 500 internal_error, logged with templateTeamId and correlationId", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+    const client = emptyTemplateClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    // A logger whose child() returns itself, so request.log.error is observable.
+    const logError = vi.fn();
+    const noop = () => undefined;
+    const logger = {
+      level: "info",
+      info: noop,
+      warn: noop,
+      debug: noop,
+      trace: noop,
+      fatal: noop,
+      silent: noop,
+      error: logError,
+      child() {
+        return logger;
+      },
+    };
+    const app = Fastify({ loggerInstance: logger as unknown as FastifyBaseLogger });
+    app.decorateRequest("session", null);
+    app.addHook("onRequest", async (request) => {
+      (request as unknown as Record<string, unknown>).session = { userId: "facilitator-1" };
+    });
+    app.register(facilitatorSessionRoutes);
+    await app.ready();
+
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams", payload: { name: "Platform Team" } });
+
+    expect(res.statusCode).toBe(500);
+    const body = res.json();
+    expect(body.error).toEqual({
+      category: "internal_error",
+      message:
+        "Team creation is unavailable because the default topic set is not configured. Contact an administrator.",
+      correlationId: expect.any(String),
+    });
+    expect(res.body).not.toContain("00000000-0000-0000-0000-000000000001");
+
+    const logged = logError.mock.calls.find(
+      (args) => (args[0] as Record<string, unknown>)?.templateTeamId !== undefined,
+    );
+    expect(logged).toBeDefined();
+    expect(logged![0]).toEqual({
+      templateTeamId: "00000000-0000-0000-0000-000000000001",
+      correlationId: body.error.correlationId,
+    });
+
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+    expect(client.query).not.toHaveBeenCalledWith("COMMIT");
+    const calls = client.query.mock.calls.map((c) => c[0] as string);
+    expect(calls.some((c) => c.includes("INSERT INTO audit_log"))).toBe(false);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(expect.anything(), "team.created_with_session", expect.anything());
+  });
+
+  it("a database error from the snapshot leaves none of its text in the 500 body", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+    const secret = "relation session_topics violates sekrit constraint";
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("INSERT INTO teams")) return Promise.resolve({ rows: [{ id: "new-team-1" }] });
+      if (sql.includes("INSERT INTO sessions")) return Promise.resolve({ rows: [{ id: "new-session-1" }] });
+      if (sql.includes("INSERT INTO session_topics")) {
+        const err = Object.assign(new Error(secret), { code: "23505" });
+        Object.setPrototypeOf(err, DatabaseErrorProto);
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ rows: [] });
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams", payload: { name: "Platform Team" } });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error.category).toBe("internal_error");
+    expect(res.body).not.toContain("sekrit");
+    expect(res.body).not.toContain("session_topics");
+    // A 23505 from the snapshot is not mistaken for a team-name collision.
+    expect(res.json().errorState).toBeUndefined();
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+    expect(client.query).not.toHaveBeenCalledWith("COMMIT");
+  });
+
+  it("a snapshot failure's 500 copy names team creation, not locking in topics (architect review S2)", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("INSERT INTO teams")) return Promise.resolve({ rows: [{ id: "new-team-1" }] });
+      if (sql.includes("INSERT INTO sessions")) return Promise.resolve({ rows: [{ id: "new-session-1" }] });
+      if (sql.includes("INSERT INTO session_topics")) return Promise.reject(new Error("boom"));
+      return Promise.resolve({ rows: [] });
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams", payload: { name: "Platform Team" } });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error.message).toBe("Something went wrong creating this team. Try again.");
+  });
+
+  it("any other database error in the transaction answers a fixed 500 with no database text (security review SF1)", async () => {
+    mockActorRoleQuery("facilitator");
+    mockCollisionPrecheck(false);
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("INSERT INTO teams")) return Promise.resolve({ rows: [{ id: "new-team-1" }] });
+      if (sql.includes("INSERT INTO sessions")) {
+        const err = Object.assign(new Error("sekrit sessions detail"), { code: "XX000" });
+        Object.setPrototypeOf(err, DatabaseErrorProto);
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ rows: [] });
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams", payload: { name: "Platform Team" } });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error).toEqual({
+      category: "internal_error",
+      message: "Something went wrong creating this team. Try again.",
+      correlationId: expect.any(String),
+    });
+    expect(res.body).not.toContain("sekrit");
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
   });
 
   // Security-critical (design.md D6): a facilitator who creates a team must
@@ -1062,34 +1285,53 @@ describe("POST /api/v1/teams", () => {
 describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("transitions draft to lobby successfully", async () => {
-    mockDbQuery
-      .mockResolvedValueOnce({
-        rows: [{
-          id: "session-1",
-          team_id: "team-1",
-          facilitator_id: "facilitator-1",
-          status: "draft",
-        }],
-      }) // session lookup
-      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }); // actor global_role lookup
+  const DRAFT_ROW = { id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status: "draft" };
+  const NO_TOPICS_MESSAGE =
+    "This team has no active topics. Add or restore a topic on Topic Management before opening the room.";
 
-    const client = makeMockClient([
+  function mockPreTransaction(row: Record<string, unknown> = DRAFT_ROW, globalRole: string | null = "facilitator") {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [row] }) // session lookup
+      .mockResolvedValueOnce({ rows: globalRole === null ? [] : [{ global_role: globalRole }] }); // live global_role
+  }
+
+  /**
+   * Room-open transaction (session-topics-snapshot-at-creation design.md
+   * Decision 3): BEGIN, team lock, conditional UPDATE, snapshot, audit, COMMIT.
+   */
+  function successClient(snapshotRows = [
+    { topic_id: "topic-b", display_order: 2 },
+    { topic_id: "topic-a", display_order: 1 },
+    { topic_id: "topic-c", display_order: 3 },
+  ]) {
+    return makeMockClient([
       { rows: [] }, // BEGIN
-      { rows: [] }, // UPDATE sessions
+      { rows: [] }, // SELECT pg_advisory_xact_lock
+      { rows: [], rowCount: 1 }, // UPDATE sessions ... AND status = 'draft'
+      { rows: snapshotRows, rowCount: snapshotRows.length }, // INSERT INTO session_topics ... RETURNING
       { rows: [] }, // INSERT audit_log (session.state_changed)
       { rows: [] }, // COMMIT
     ]);
+  }
+
+  async function advance(userId = "facilitator-1") {
+    const app = await buildApp(userId);
+    return app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/advance" });
+  }
+
+  function sqlOf(client: ReturnType<typeof makeMockClient>) {
+    return client.query.mock.calls.map((c) => c[0] as string);
+  }
+
+  it("transitions draft to lobby successfully", async () => {
+    mockPreTransaction();
+    const client = successClient();
     mockDbConnect.mockResolvedValueOnce(client);
 
-    const app = await buildApp("facilitator-1");
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/teams/team-1/sessions/session-1/advance",
-    });
+    const res = await advance();
 
     expect(res.statusCode).toBe(200);
-    expect(res.json().status).toBe("lobby");
+    expect(res.json()).toEqual({ sessionId: "5e550000-0000-4000-8000-000000000001", teamId: "11111111-1111-4111-8111-111111111111", status: "lobby" });
 
     const auditInsertCall = client.query.mock.calls.find((call) =>
       (call[0] as string).includes("INSERT INTO audit_log"),
@@ -1099,47 +1341,383 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
 
     // Publish-after-commit: published only after the transaction committed.
     expect(mockPublishSessionStateChange).toHaveBeenCalledWith(
-      "session-1",
+      "5e550000-0000-4000-8000-000000000001",
       expect.objectContaining({ previousStatus: "draft", newStatus: "lobby" }),
     );
   });
 
-  it("returns 422 when session is not in draft status", async () => {
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{
-        id: "session-1",
-        team_id: "team-1",
-        facilitator_id: "facilitator-1",
-        status: "active",
-      }],
-    });
+  it("takes the canonical team lock on the session row's team, then the conditional update, then the snapshot", async () => {
+    mockPreTransaction();
+    const client = successClient();
+    mockDbConnect.mockResolvedValueOnce(client);
 
-    const app = await buildApp("facilitator-1");
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/teams/team-1/sessions/session-1/advance",
-    });
+    await advance();
+
+    const calls = sqlOf(client);
+    expect(calls[0]).toBe("BEGIN");
+    expect(calls[1]).toContain("pg_advisory_xact_lock(hashtext($1::uuid::text))");
+    expect(client.query.mock.calls[1]![1]).toEqual(["11111111-1111-4111-8111-111111111111"]);
+    expect(calls[2]).toContain("SET status = 'lobby', room_opened_at = now()");
+    expect(calls[2]).toContain("WHERE id = $1 AND team_id = $2 AND facilitator_id = $3 AND status = 'draft'");
+    expect(client.query.mock.calls[2]![1]).toEqual(["5e550000-0000-4000-8000-000000000001", "11111111-1111-4111-8111-111111111111", "facilitator-1"]);
+    expect(calls[3]).toContain("INSERT INTO session_topics");
+    expect(client.query.mock.calls[3]![1]).toEqual(["5e550000-0000-4000-8000-000000000001"]);
+    expect(calls[4]).toContain("INSERT INTO audit_log");
+    expect(calls[5]).toBe("COMMIT");
+  });
+
+  it("returns 422 when session is not in draft status", async () => {
+    mockPreTransaction({ ...DRAFT_ROW, status: "active" });
+
+    const res = await advance();
 
     expect(res.statusCode).toBe(422);
+    expect(res.json().error.message).toBe("Session cannot be advanced from status 'active'.");
+    expect(mockDbConnect).not.toHaveBeenCalled();
   });
 
   it("returns 403 when actor is not the session facilitator", async () => {
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{
-        id: "session-1",
-        team_id: "team-1",
-        facilitator_id: "other-facilitator",
-        status: "draft",
-      }],
-    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ ...DRAFT_ROW, facilitator_id: "other-facilitator" }] });
 
-    const app = await buildApp("facilitator-1"); // different user
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/teams/team-1/sessions/session-1/advance",
-    });
+    const res = await advance("facilitator-1"); // different user
 
     expect(res.statusCode).toBe(403);
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for an unknown session, before any role or status check", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(404);
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the session belongs to another team, before the creator and role checks", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ ...DRAFT_ROW, team_id: "22222222-2222-4222-8222-222222222222" }] });
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toBe("Session does not belong to this team.");
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    expect(mockDbConnect).not.toHaveBeenCalled();
+  });
+
+  it("a failure after the snapshot (the audit insert) rolls back and rethrows, with no event or publish", async () => {
+    mockPreTransaction();
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("UPDATE sessions")) return Promise.resolve({ rows: [], rowCount: 1 });
+      if (sql.includes("INSERT INTO session_topics"))
+        return Promise.resolve({ rows: [{ topic_id: "topic-a", display_order: 1 }], rowCount: 1 });
+      if (sql.includes("INSERT INTO audit_log")) return Promise.reject(new Error("audit write failed"));
+      return Promise.resolve({ rows: [] });
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(500);
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+    expect(client.query).not.toHaveBeenCalledWith("COMMIT");
+    expect(client.release).toHaveBeenCalled();
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+  });
+
+  // design.md Decision 3a — the live facilitator role.
+  describe("live facilitator role (design.md Decision 3a)", () => {
+    it("rejects a creator whose global_role is no longer facilitator with 403 forbidden and a denial audit row", async () => {
+      mockPreTransaction(DRAFT_ROW, "engineer");
+      mockDbQuery.mockResolvedValueOnce({ rows: [] }); // INSERT audit_log (denial)
+
+      const res = await advance();
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.category).toBe("forbidden");
+      expect(res.json().error.message).toBe("Only a facilitator can open the room.");
+      expect(res.json().error.correlationId).toEqual(expect.any(String));
+
+      const auditCall = mockDbQuery.mock.calls.find((c) => (c[0] as string).includes("INSERT INTO audit_log"));
+      expect(auditCall![1]).toEqual([
+        "facilitator-1",
+        "engineer",
+        expect.any(String),
+        "session.advance_denied_role",
+        "11111111-1111-4111-8111-111111111111",
+        JSON.stringify({ session_id: "5e550000-0000-4000-8000-000000000001" }),
+      ]);
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "session.advance_denied_role",
+        expect.objectContaining({ actorGlobalRole: "engineer", teamId: "11111111-1111-4111-8111-111111111111", sessionId: "5e550000-0000-4000-8000-000000000001" }),
+      );
+
+      // The session stays draft: no transaction, no event.
+      expect(mockDbConnect).not.toHaveBeenCalled();
+      expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+    });
+
+    it("treats a missing user row as a denial, recorded with actor_global_role 'unknown'", async () => {
+      mockPreTransaction(DRAFT_ROW, null);
+      mockDbQuery.mockResolvedValueOnce({ rows: [] }); // INSERT audit_log (denial)
+
+      const res = await advance();
+
+      expect(res.statusCode).toBe(403);
+      const auditCall = mockDbQuery.mock.calls.find((c) => (c[0] as string).includes("INSERT INTO audit_log"));
+      expect((auditCall![1] as unknown[])[1]).toBe("unknown");
+      expect(mockDbConnect).not.toHaveBeenCalled();
+    });
+
+    it("checks the live role before the status: a revoked creator of a non-draft session gets 403, not 422", async () => {
+      mockPreTransaction({ ...DRAFT_ROW, status: "lobby" }, "engineer");
+      mockDbQuery.mockResolvedValueOnce({ rows: [] }); // INSERT audit_log (denial)
+
+      const res = await advance();
+
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  it("a conditional update matching no row (double-click) re-reads the status, rolls back, and returns today's 422", async () => {
+    mockPreTransaction();
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // lock
+      { rows: [], rowCount: 0 }, // UPDATE matched nothing
+      { rows: [{ status: "lobby" }] }, // re-read status
+      { rows: [] }, // ROLLBACK
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.category).toBe("invalid_request");
+    expect(res.json().error.message).toBe("Session cannot be advanced from status 'lobby'.");
+    const calls = sqlOf(client);
+    expect(calls[3]).toContain("SELECT status FROM sessions WHERE id = $1");
+    expect(calls[4]).toBe("ROLLBACK");
+    expect(calls.some((c) => c.includes("INSERT INTO session_topics"))).toBe(false);
+    expect(calls.some((c) => c.includes("INSERT INTO audit_log"))).toBe(false);
+    expect(calls).not.toContain("COMMIT");
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+    expect(client.release).toHaveBeenCalled();
+  });
+
+  it("an undefined rowCount is not treated as success (explicit rowCount === 1)", async () => {
+    mockPreTransaction();
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // lock
+      { rows: [] }, // UPDATE with rowCount undefined
+      { rows: [] }, // re-read status: row gone
+      { rows: [] }, // ROLLBACK
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.message).toBe("Session cannot be advanced from status 'unknown'.");
+  });
+
+  it("zero active topics rolls back and returns 409 NO_ACTIVE_TOPICS with no audit row and no event", async () => {
+    mockPreTransaction();
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // lock
+      { rows: [], rowCount: 1 }, // UPDATE
+      { rows: [], rowCount: 0 }, // snapshot RETURNING: no rows
+      { rows: [] }, // ROLLBACK
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toEqual({
+      category: "precondition_failed",
+      code: "NO_ACTIVE_TOPICS",
+      message: NO_TOPICS_MESSAGE,
+      correlationId: expect.any(String),
+    });
+    const calls = sqlOf(client);
+    expect(calls[4]).toBe("ROLLBACK");
+    expect(calls.some((c) => c.includes("INSERT INTO audit_log"))).toBe(false);
+    expect(calls).not.toContain("COMMIT");
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+  });
+
+  it("a database error from the snapshot rolls back and never echoes its text in the response", async () => {
+    mockPreTransaction();
+    const secret = "duplicate key value violates unique constraint session_topics_session_topic DETAIL sekrit";
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("UPDATE sessions")) return Promise.resolve({ rows: [], rowCount: 1 });
+      if (sql.includes("INSERT INTO session_topics")) {
+        const err = Object.assign(new Error(secret), { code: "23505" });
+        Object.setPrototypeOf(err, DatabaseErrorProto);
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ rows: [] });
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error.category).toBe("internal_error");
+    expect(res.body).not.toContain("sekrit");
+    expect(res.body).not.toContain("duplicate key");
+    expect(res.body).not.toContain("session_topics");
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+    expect(client.query).not.toHaveBeenCalledWith("COMMIT");
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+  });
+
+  // Security review SF1: every other failure inside the room-open
+  // transaction also answers a fixed 500, never the database text.
+  it.each([
+    ["the team lock", "pg_advisory_xact_lock"],
+    ["the conditional UPDATE", "UPDATE sessions"],
+    ["the audit INSERT", "INSERT INTO audit_log"],
+    ["COMMIT", "COMMIT"],
+  ])("a database error from %s rolls back and answers a fixed 500 with no database text", async (_label, failing) => {
+    mockPreTransaction();
+    const secret = "sekrit relation detail from postgres";
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes(failing)) {
+        const err = Object.assign(new Error(secret), { code: "XX000" });
+        Object.setPrototypeOf(err, DatabaseErrorProto);
+        return Promise.reject(err);
+      }
+      if (sql.includes("UPDATE sessions")) return Promise.resolve({ rows: [], rowCount: 1 });
+      if (sql.includes("INSERT INTO session_topics")) {
+        return Promise.resolve({ rows: [{ topic_id: "topic-a", display_order: 1 }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [] });
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error).toEqual({
+      category: "internal_error",
+      message: "Something went wrong opening the room. Try again.",
+      correlationId: expect.any(String),
+    });
+    expect(res.body).not.toContain("sekrit");
+    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
+    expect(client.release).toHaveBeenCalled();
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+  });
+
+  it("a ROLLBACK that itself fails still answers the fixed 500", async () => {
+    mockPreTransaction();
+    const client = makeMockClient();
+    client.query = vi.fn((sql: string) => {
+      if (sql.includes("UPDATE sessions") || sql === "ROLLBACK") return Promise.reject(new Error("sekrit"));
+      return Promise.resolve({ rows: [] });
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).not.toContain("sekrit");
+  });
+
+  it.each(["not-a-uuid", "5e5500000000400080000000000000001", "{5e550000-0000-4000-8000-000000000001}"])(
+    "a non-canonical sessionId (%s) is 404 before any query, never a 22P02 500 (security review SF1)",
+    async (badSessionId) => {
+      const app = await buildApp("facilitator-1");
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/${encodeURIComponent(badSessionId)}/advance`,
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error).toMatchObject({ category: "not_found", message: "Session not found." });
+      expect(mockDbQuery).not.toHaveBeenCalled();
+      expect(mockDbConnect).not.toHaveBeenCalled();
+    },
+  );
+
+  // Security review SF2: the committed records take the team from the
+  // session row, not the URL.
+  it("both audit sinks take team_id from the session row", async () => {
+    mockPreTransaction();
+    const client = successClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    await advance();
+
+    const auditCall = client.query.mock.calls.find((c) => (c[0] as string).includes("INSERT INTO audit_log"));
+    expect((auditCall![1] as unknown[])[4]).toBe(DRAFT_ROW.team_id);
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "session.state_changed",
+      expect.objectContaining({ teamId: DRAFT_ROW.team_id }),
+    );
+  });
+
+  // design.md Decision 3b — audit content boundary and sinks.
+  it("the audit row carries topic_count and topic_ids in snapshot order; the event carries topicCount only", async () => {
+    mockPreTransaction();
+    const client = successClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    await advance();
+
+    const auditInsertCall = client.query.mock.calls.find((call) =>
+      (call[0] as string).includes("INSERT INTO audit_log"),
+    )!;
+    const metadata = JSON.parse((auditInsertCall[1] as unknown[])[5] as string);
+    expect(metadata).toEqual({
+      session_id: "5e550000-0000-4000-8000-000000000001",
+      prior_status: "draft",
+      new_status: "lobby",
+      topic_count: 3,
+      topic_ids: ["topic-a", "topic-b", "topic-c"],
+    });
+
+    const eventCall = mockEmitAuditEvent.mock.calls.find((c) => c[1] === "session.state_changed")!;
+    const fields = eventCall[2] as Record<string, unknown>;
+    expect(fields.topicCount).toBe(3);
+    expect(fields).not.toHaveProperty("topicIds");
+    expect(fields).not.toHaveProperty("topic_ids");
+    expect(JSON.stringify(fields)).not.toContain("topic-a");
+  });
+
+  it("emits and publishes only after COMMIT", async () => {
+    mockPreTransaction();
+    const order: string[] = [];
+    const client = successClient();
+    const inner = client.query;
+    client.query = vi.fn((...args: unknown[]) => {
+      order.push(String(args[0]).trim().split(/\s+/)[0]!);
+      return inner(...args);
+    }) as typeof client.query;
+    mockDbConnect.mockResolvedValueOnce(client);
+    mockEmitAuditEvent.mockImplementationOnce(() => order.push("emit"));
+    mockPublishSessionStateChange.mockImplementationOnce(async () => {
+      order.push("publish");
+    });
+
+    await advance();
+
+    expect(order.slice(-3)).toEqual(["COMMIT", "emit", "publish"]);
   });
 });
 
@@ -1152,7 +1730,7 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
   it("transitions lobby to pre_session and returns action items oldest first", async () => {
     mockDbQuery
       .mockResolvedValueOnce({
-        rows: [{ id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "lobby" }],
+        rows: [{ id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status: "lobby" }],
       }) // session lookup
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }) // actor global_role
       .mockResolvedValueOnce({
@@ -1183,13 +1761,13 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/sessions/session-1/start",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/start",
     });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.status).toBe("pre_session");
-    expect(body.sessionId).toBe("session-1");
+    expect(body.sessionId).toBe("5e550000-0000-4000-8000-000000000001");
     expect(body.hasOpenItems).toBe(true);
     expect(body.actionItems).toHaveLength(1);
     expect(body.actionItems[0].stalenessLevel).toBe("red"); // 5 sessions since update -> fixed mapping, >= 3 is red
@@ -1200,7 +1778,7 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
     expect(auditInsertCall![1]).toContain("session.state_changed");
 
     expect(mockPublishSessionStateChange).toHaveBeenCalledWith(
-      "session-1",
+      "5e550000-0000-4000-8000-000000000001",
       expect.objectContaining({ previousStatus: "lobby", newStatus: "pre_session" }),
     );
   });
@@ -1208,7 +1786,7 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
   it("returns hasOpenItems: false and an empty array as a pass-through, not a screen to dismiss", async () => {
     mockDbQuery
       .mockResolvedValueOnce({
-        rows: [{ id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "lobby" }],
+        rows: [{ id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status: "lobby" }],
       })
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] })
       .mockResolvedValueOnce({ rows: [] }); // no open action items
@@ -1222,7 +1800,7 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
     mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/start" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/start" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -1232,22 +1810,22 @@ describe("POST /api/v1/sessions/:sessionId/start", () => {
 
   it("returns 403 when actor is not the session facilitator", async () => {
     mockDbQuery.mockResolvedValueOnce({
-      rows: [{ id: "session-1", team_id: "team-1", facilitator_id: "other-facilitator", status: "lobby" }],
+      rows: [{ id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "other-facilitator", status: "lobby" }],
     });
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/start" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/start" });
 
     expect(res.statusCode).toBe(403);
   });
 
   it("returns 409 when session is not in lobby status", async () => {
     mockDbQuery.mockResolvedValueOnce({
-      rows: [{ id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1", status: "active" }],
+      rows: [{ id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status: "active" }],
     });
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/start" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/start" });
 
     expect(res.statusCode).toBe(409);
   });
@@ -1263,7 +1841,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "pre_session", is_first_session: false,
         }],
       })
@@ -1289,7 +1867,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/begin-voting" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -1301,7 +1879,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     // firstSessionTopicId (session_topics.id = "session-topic-1").
     const updateSessionsCall = client.query.mock.calls[2]!;
     expect((updateSessionsCall[0] as string).toLowerCase()).toContain("update sessions");
-    expect(updateSessionsCall[1]).toEqual(["session-1", "topic-catalog-1"]);
+    expect(updateSessionsCall[1]).toEqual(["5e550000-0000-4000-8000-000000000001", "topic-catalog-1"]);
 
     // The session_topics UPDATE's WHERE id = ... must receive
     // firstSessionTopicId ("session-topic-1"), NOT firstTopicId.
@@ -1315,7 +1893,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     expect(auditInsertCall![1]).toContain("session.state_changed");
 
     expect(mockPublishSessionStateChange).toHaveBeenCalledWith(
-      "session-1",
+      "5e550000-0000-4000-8000-000000000001",
       expect.objectContaining({ previousStatus: "pre_session", newStatus: "active" }),
     );
   });
@@ -1324,7 +1902,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "pre_session", is_first_session: true,
         }],
       })
@@ -1347,7 +1925,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/begin-voting" });
 
     expect(res.json().currentTopic.firstSessionDescription).toBe("Welcome! Here's how voting works.");
   });
@@ -1355,13 +1933,13 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
   it("returns 403 when actor is not the session facilitator", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
-        id: "session-1", team_id: "team-1", facilitator_id: "other-facilitator",
+        id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "other-facilitator",
         status: "pre_session", is_first_session: false,
       }],
     });
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/begin-voting" });
 
     expect(res.statusCode).toBe(403);
   });
@@ -1369,13 +1947,13 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
   it("returns 409 when session is not in pre_session status", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
-        id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+        id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
         status: "lobby", is_first_session: false,
       }],
     });
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/begin-voting" });
 
     expect(res.statusCode).toBe(409);
   });
@@ -1384,7 +1962,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "pre_session", is_first_session: false,
         }],
       })
@@ -1413,7 +1991,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/begin-voting" });
 
     // The handler rethrows after ROLLBACK — Fastify surfaces this as a 500,
     // not a partial success.
@@ -1436,7 +2014,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "pre_session", is_first_session: false,
         }],
       })
@@ -1450,7 +2028,7 @@ describe("POST /api/v1/sessions/:sessionId/begin-voting", () => {
     mockDbConnect.mockResolvedValueOnce(client);
 
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/begin-voting" });
 
     expect(res.statusCode).toBe(409);
     const body = res.json();
@@ -1480,8 +2058,8 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
   it("authorized participant success: 200 with the team's action items and isFacilitator: false", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "participant",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       actorGlobalRole: "engineer",
     });
     mockDbQuery
@@ -1506,7 +2084,7 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     const app = await buildApp("participant-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/action-items-review",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1514,14 +2092,14 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     expect(body.isFacilitator).toBe(false);
     expect(body.actionItems).toHaveLength(1);
     expect(body.actionItems[0].stalenessLevel).toBe("yellow");
-    expect(mockEvaluateSessionSubscriberAccess).toHaveBeenCalledWith("participant-1", "session-1");
+    expect(mockEvaluateSessionSubscriberAccess).toHaveBeenCalledWith("participant-1", "5e550000-0000-4000-8000-000000000001");
   });
 
   it("authorized facilitator success: 200 with the same action items and isFacilitator: true", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "facilitator",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       sessionStatus: "pre_session",
       actorGlobalRole: "facilitator",
     });
@@ -1532,7 +2110,7 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/action-items-review",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1547,7 +2125,7 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     const app = await buildApp("stranger-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/action-items-review",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1565,7 +2143,7 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     const app = await buildApp("em-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/action-items-review",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1574,8 +2152,8 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
   it("wrong session status (lobby): 409 with currentSessionStatus and isFacilitator", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "facilitator",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       sessionStatus: "lobby",
       actorGlobalRole: "facilitator",
     });
@@ -1584,7 +2162,7 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/action-items-review",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review",
     });
 
     expect(res.statusCode).toBe(409);
@@ -1596,8 +2174,8 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
   it("wrong session status (active): 409 with currentSessionStatus and isFacilitator: false for a participant", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "participant",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       actorGlobalRole: "engineer",
     });
     mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "active" }] });
@@ -1605,7 +2183,7 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     const app = await buildApp("participant-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/action-items-review",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review",
     });
 
     expect(res.statusCode).toBe(409);
@@ -1617,8 +2195,8 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
   it("response shape: 200 body carries only actionItems and isFacilitator for both grant paths", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "participant",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       actorGlobalRole: "engineer",
     });
     mockDbQuery
@@ -1628,7 +2206,7 @@ describe("GET /api/v1/sessions/:sessionId/action-items-review", () => {
     const app = await buildApp("participant-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/action-items-review",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review",
     });
 
     expect(Object.keys(res.json()).sort()).toEqual(["actionItems", "isFacilitator"]);
@@ -1650,7 +2228,7 @@ describe("GET .../action-items-review — F1/F2 regression coverage (tasks.md 3.
   it("applies the timing floor on the 404 path", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce(null);
     const app = await buildApp("stranger-1");
-    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review" });
 
     expect(res.statusCode).toBe(404);
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
@@ -1659,11 +2237,11 @@ describe("GET .../action-items-review — F1/F2 regression coverage (tasks.md 3.
 
   it("applies the timing floor on the 409 path", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
-      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+      path: "participant", sessionId: "5e550000-0000-4000-8000-000000000001", teamId: "11111111-1111-4111-8111-111111111111", actorGlobalRole: "engineer",
     });
     mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "active" }] });
     const app = await buildApp("participant-1");
-    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review" });
 
     expect(res.statusCode).toBe(409);
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
@@ -1672,13 +2250,13 @@ describe("GET .../action-items-review — F1/F2 regression coverage (tasks.md 3.
 
   it("applies the timing floor on the 200 path", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
-      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+      path: "participant", sessionId: "5e550000-0000-4000-8000-000000000001", teamId: "11111111-1111-4111-8111-111111111111", actorGlobalRole: "engineer",
     });
     mockDbQuery
       .mockResolvedValueOnce({ rows: [{ status: "pre_session" }] })
       .mockResolvedValueOnce({ rows: [] });
     const app = await buildApp("participant-1");
-    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    const res = await app.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review" });
 
     expect(res.statusCode).toBe(200);
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
@@ -1689,27 +2267,27 @@ describe("GET .../action-items-review — F1/F2 regression coverage (tasks.md 3.
     // 404
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce(null);
     const app1 = await buildApp("stranger-1");
-    const res404 = await app1.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    const res404 = await app1.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review" });
     expect(res404.headers["cache-control"]).toBe("no-store");
 
     // 409
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
-      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+      path: "participant", sessionId: "5e550000-0000-4000-8000-000000000001", teamId: "11111111-1111-4111-8111-111111111111", actorGlobalRole: "engineer",
     });
     mockDbQuery.mockResolvedValueOnce({ rows: [{ status: "lobby" }] });
     const app2 = await buildApp("participant-1");
-    const res409 = await app2.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    const res409 = await app2.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review" });
     expect(res409.headers["cache-control"]).toBe("no-store");
 
     // 200
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
-      path: "participant", sessionId: "session-1", teamId: "team-1", actorGlobalRole: "engineer",
+      path: "participant", sessionId: "5e550000-0000-4000-8000-000000000001", teamId: "11111111-1111-4111-8111-111111111111", actorGlobalRole: "engineer",
     });
     mockDbQuery
       .mockResolvedValueOnce({ rows: [{ status: "pre_session" }] })
       .mockResolvedValueOnce({ rows: [] });
     const app3 = await buildApp("participant-1");
-    const res200 = await app3.inject({ method: "GET", url: "/api/v1/sessions/session-1/action-items-review" });
+    const res200 = await app3.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/action-items-review" });
     expect(res200.headers["cache-control"]).toBe("no-store");
   });
 });
@@ -1724,8 +2302,8 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
   it("facilitator success: 200 with the roster, alphabetically ordered", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "facilitator",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       sessionStatus: "lobby",
       actorGlobalRole: "facilitator",
     });
@@ -1739,7 +2317,7 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/participants-roster",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/participants-roster",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1754,8 +2332,8 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
   it("empty roster: 200 with an empty participants array when no one has joined yet", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "facilitator",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       sessionStatus: "lobby",
       actorGlobalRole: "facilitator",
     });
@@ -1764,7 +2342,7 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/participants-roster",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/participants-roster",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1777,7 +2355,7 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
     const app = await buildApp("stranger-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/participants-roster",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/participants-roster",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1795,15 +2373,15 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
   it("participant-grant caller: 404, not a filtered 200 (caller-level authorization, security review Finding 2)", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "participant",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       actorGlobalRole: "engineer",
     });
 
     const app = await buildApp("participant-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/participants-roster",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/participants-roster",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1817,8 +2395,8 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
   it("row-level filtering: the roster query excludes engineering_manager rows", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
       path: "facilitator",
-      sessionId: "session-1",
-      teamId: "team-1",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
+      teamId: "11111111-1111-4111-8111-111111111111",
       sessionStatus: "lobby",
       actorGlobalRole: "facilitator",
     });
@@ -1827,7 +2405,7 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
     const app = await buildApp("facilitator-1");
     await app.inject({
       method: "GET",
-      url: "/api/v1/sessions/session-1/participants-roster",
+      url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/participants-roster",
     });
 
     const [sql] = mockDbQuery.mock.calls[0] as [string, unknown[]];
@@ -1839,15 +2417,15 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
   it("applies the timing floor and Cache-Control: no-store on both the 404 and 200 paths (security review Finding 4)", async () => {
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce(null);
     const app1 = await buildApp("stranger-1");
-    const res404 = await app1.inject({ method: "GET", url: "/api/v1/sessions/session-1/participants-roster" });
+    const res404 = await app1.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/participants-roster" });
     expect(res404.headers["cache-control"]).toBe("no-store");
 
     mockEvaluateSessionSubscriberAccess.mockResolvedValueOnce({
-      path: "facilitator", sessionId: "session-1", teamId: "team-1", sessionStatus: "lobby", actorGlobalRole: "facilitator",
+      path: "facilitator", sessionId: "5e550000-0000-4000-8000-000000000001", teamId: "11111111-1111-4111-8111-111111111111", sessionStatus: "lobby", actorGlobalRole: "facilitator",
     });
     mockDbQuery.mockResolvedValueOnce({ rows: [] });
     const app2 = await buildApp("facilitator-1");
-    const res200 = await app2.inject({ method: "GET", url: "/api/v1/sessions/session-1/participants-roster" });
+    const res200 = await app2.inject({ method: "GET", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/participants-roster" });
     expect(res200.headers["cache-control"]).toBe("no-store");
 
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(2);
@@ -1865,8 +2443,8 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "session-1",
-          team_id: "team-1",
+          id: "5e550000-0000-4000-8000-000000000001",
+          team_id: "11111111-1111-4111-8111-111111111111",
           facilitator_id: "facilitator-1",
           status: "wrap_up",
         }],
@@ -1884,7 +2462,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/session-1/complete",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/complete",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1903,7 +2481,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     expect(auditInsertCall![1]).toContain("session.state_changed");
 
     expect(mockPublishSessionStateChange).toHaveBeenCalledWith(
-      "session-1",
+      "5e550000-0000-4000-8000-000000000001",
       expect.objectContaining({ previousStatus: "wrap_up", newStatus: "complete" }),
     );
   });
@@ -1913,8 +2491,8 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "session-1",
-          team_id: "team-1",
+          id: "5e550000-0000-4000-8000-000000000001",
+          team_id: "11111111-1111-4111-8111-111111111111",
           facilitator_id: "facilitator-1",
           status: "wrap_up",
         }],
@@ -1933,7 +2511,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     // Attempt to supply facilitator_access_expires_at in the request body
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/session-1/complete",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/complete",
       payload: { facilitatorAccessExpiresAt: "9999-12-31T00:00:00Z" }, // should be ignored
     });
 
@@ -1945,14 +2523,14 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     const updateValues = updateCall[1] as unknown[];
     // The only parameter should be the session ID — expires_at is computed server-side
     expect(updateValues).toHaveLength(1);
-    expect(updateValues[0]).toBe("session-1");
+    expect(updateValues[0]).toBe("5e550000-0000-4000-8000-000000000001");
   });
 
   it("returns 422 when session is not in wrap_up status", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
-        id: "session-1",
-        team_id: "team-1",
+        id: "5e550000-0000-4000-8000-000000000001",
+        team_id: "11111111-1111-4111-8111-111111111111",
         facilitator_id: "facilitator-1",
         status: "active", // not wrap_up
       }],
@@ -1961,7 +2539,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/complete", () => {
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/session-1/complete",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/complete",
     });
 
     expect(res.statusCode).toBe(422);
@@ -1980,7 +2558,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -1997,7 +2575,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/reveal",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/reveal",
     });
 
     expect(res.statusCode).toBe(200);
@@ -2032,7 +2610,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -2052,7 +2630,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/reveal",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/reveal",
     });
 
     expect(res.statusCode).toBe(409);
@@ -2091,7 +2669,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
       // First request
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -2099,7 +2677,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
       // Second request
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -2123,8 +2701,8 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     mockDbConnect.mockResolvedValueOnce(winnerClient).mockResolvedValueOnce(loserClient);
 
     const app = await buildApp("facilitator-1");
-    const res1 = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/sessions/sess-1/reveal" });
-    const res2 = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/sessions/sess-1/reveal" });
+    const res1 = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/reveal" });
+    const res2 = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/reveal" });
 
     expect(res1.statusCode).toBe(200);
     expect(res2.statusCode).toBe(409);
@@ -2144,7 +2722,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -2161,14 +2739,14 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     const facilitatorApp = await buildApp("facilitator-1");
     const revealRes = await facilitatorApp.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/reveal",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/reveal",
     });
     expect(revealRes.statusCode).toBe(200);
 
     // Lock-in request for the same topic, arriving after the reveal committed.
     mockDbQuery
       .mockResolvedValueOnce({
-        rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }],
+        rows: [{ session_status: "active", team_id: "11111111-1111-4111-8111-111111111111", topic_status: "voting" }],
       }) // pre-transaction check still sees 'voting' (the race window)
       .mockResolvedValueOnce({ rows: [{ global_role: "engineer", membership_role: "participant", membership_removed_at: null, membership_exists: true }] })
       .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
@@ -2199,7 +2777,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
   it("3.13: a non-facilitator's reveal against an already-revealed topic returns the generic 403, never already_revealed", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
-        id: "sess-1", team_id: "team-1", facilitator_id: "other-facilitator",
+        id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "other-facilitator",
         status: "active", current_topic_id: "topic-1",
       }],
     });
@@ -2207,7 +2785,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/reveal — reveal write
     const app = await buildApp("facilitator-1"); // not the session's facilitator
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/reveal",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/reveal",
     });
 
     // Session is live (active), so this is the recoverable 503 auth-failure
@@ -2233,7 +2811,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -2262,7 +2840,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/topics/advance",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/topics/advance",
     });
 
     expect(res.statusCode).toBe(200);
@@ -2295,7 +2873,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
       "session.topic_advanced",
       expect.objectContaining({
         sessionId: "sess-1",
-        teamId: "team-1",
+        teamId: "11111111-1111-4111-8111-111111111111",
         completedSessionTopicId: "session-topic-1",
         newSessionTopicId: "session-topic-2",
       }),
@@ -2303,8 +2881,8 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
 
     expect(mockPublishTopicHistoryUpdate).toHaveBeenCalledTimes(1);
     expect(mockPublishTopicHistoryUpdate).toHaveBeenCalledWith(
-      "team-1",
-      expect.objectContaining({ teamId: "team-1", updateType: "topic_advanced", sessionId: "sess-1", topicId: "topic-2" }),
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", updateType: "topic_advanced", sessionId: "sess-1", topicId: "topic-2" }),
     );
     expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
   });
@@ -2313,7 +2891,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
   it("4.12: a facilitator of a different session's team is rejected with 403 (team-id cross-check)", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
-        id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+        id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
         status: "active", current_topic_id: "topic-1",
       }],
     });
@@ -2321,7 +2899,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-2/sessions/sess-1/topics/advance", // wrong team
+      url: "/api/v1/teams/22222222-2222-4222-8222-222222222222/sessions/sess-1/topics/advance", // wrong team
     });
 
     expect(res.statusCode).toBe(403);
@@ -2332,7 +2910,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
   it("4.12: a non-facilitator's advance against a not-yet-revealed topic returns the generic 403, never advance_blocked", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{
-        id: "sess-1", team_id: "team-1", facilitator_id: "other-facilitator",
+        id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "other-facilitator",
         status: "active", current_topic_id: "topic-1",
       }],
     });
@@ -2340,7 +2918,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     const app = await buildApp("facilitator-1"); // not the session's facilitator
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/topics/advance",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/topics/advance",
     });
 
     expect(res.statusCode).toBe(403);
@@ -2354,7 +2932,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-final",
         }],
       })
@@ -2376,7 +2954,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/topics/advance",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/topics/advance",
     });
 
     expect(res.statusCode).toBe(200);
@@ -2406,7 +2984,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
       "session.state_changed",
       expect.objectContaining({
         sessionId: "sess-1",
-        teamId: "team-1",
+        teamId: "11111111-1111-4111-8111-111111111111",
         priorStatus: "active",
         newStatus: "wrap_up",
         completedSessionTopicId: "session-topic-final",
@@ -2418,8 +2996,8 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
       expect.objectContaining({ previousStatus: "active", newStatus: "wrap_up" }),
     );
     expect(mockPublishTopicHistoryUpdate).toHaveBeenCalledWith(
-      "team-1",
-      expect.objectContaining({ teamId: "team-1", updateType: "topic_advanced", sessionId: "sess-1", topicId: "topic-final" }),
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", updateType: "topic_advanced", sessionId: "sess-1", topicId: "topic-final" }),
     );
   });
 
@@ -2428,7 +3006,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -2446,7 +3024,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance", () => 
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/team-1/sessions/sess-1/topics/advance",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/topics/advance",
     });
 
     expect(res.statusCode).toBe(409);
@@ -2481,8 +3059,8 @@ describe("recordRevealTriggeredAudit (task 7.2 — BLOCKED on #26 for production
       actorUserId: "facilitator-1",
       actorGlobalRole: "facilitator",
       actorIp: "127.0.0.1",
-      teamId: "team-1",
-      sessionId: "session-1",
+      teamId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
     });
 
     expect(client.query).toHaveBeenCalledTimes(1);
@@ -2492,7 +3070,7 @@ describe("recordRevealTriggeredAudit (task 7.2 — BLOCKED on #26 for production
     const metadataArg = (params as unknown[]).find(
       (p) => typeof p === "string" && p.includes("session_id"),
     ) as string;
-    expect(JSON.parse(metadataArg)).toEqual({ session_id: "session-1" });
+    expect(JSON.parse(metadataArg)).toEqual({ session_id: "5e550000-0000-4000-8000-000000000001" });
   });
 
   it("also emits the structured-log counterpart via emitAuditEvent", async () => {
@@ -2503,14 +3081,14 @@ describe("recordRevealTriggeredAudit (task 7.2 — BLOCKED on #26 for production
       actorUserId: "facilitator-1",
       actorGlobalRole: "facilitator",
       actorIp: "127.0.0.1",
-      teamId: "team-1",
-      sessionId: "session-1",
+      teamId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "5e550000-0000-4000-8000-000000000001",
     });
 
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       logger,
       "session.reveal_triggered",
-      expect.objectContaining({ sessionId: "session-1", teamId: "team-1" }),
+      expect.objectContaining({ sessionId: "5e550000-0000-4000-8000-000000000001", teamId: "11111111-1111-4111-8111-111111111111" }),
     );
   });
 });
@@ -2590,8 +3168,8 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
       .mockResolvedValueOnce({
         rows: [
           {
-            id: "session-1",
-            team_id: "team-1",
+            id: "5e550000-0000-4000-8000-000000000001",
+            team_id: "11111111-1111-4111-8111-111111111111",
             facilitator_id: "facilitator-1",
             status: "active",
           },
@@ -2602,13 +3180,13 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/teams/team-1/sessions/session-1/facilitator-state",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/facilitator-state",
     });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.sessionId).toBe("session-1");
-    expect(body.teamId).toBe("team-1");
+    expect(body.sessionId).toBe("5e550000-0000-4000-8000-000000000001");
+    expect(body.teamId).toBe("11111111-1111-4111-8111-111111111111");
     expect(body.currentSessionState).toBe("active");
     expect(body.bannerState).toBeNull();
     expect(body.joinToken).toBe("active-join-token");
@@ -2619,6 +3197,66 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
     expect(teamMembershipsCall).toBeUndefined();
   });
 
+  // session-topics-snapshot-at-creation design.md Decision 6: activeTopicCount.
+  it("a draft session carries activeTopicCount as a number, counted for the session row's team", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status: "draft" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] }) // get-or-create reuse
+      .mockResolvedValueOnce({ rows: [{ count: 9 }] }); // active topic count
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/facilitator-state",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().activeTopicCount).toBe(9);
+    expect(typeof res.json().activeTopicCount).toBe("number");
+    const countCall = mockDbQuery.mock.calls.find((c) => (c[0] as string).includes("count(*)::int"));
+    expect(countCall![0]).toContain("FROM topics WHERE team_id = $1 AND status = 'active'");
+    expect(countCall![1]).toEqual(["11111111-1111-4111-8111-111111111111"]);
+  });
+
+  it("a draft whose team has no active topics reports activeTopicCount: 0, and a string count is coerced to a number", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{ id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status: "draft" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] })
+      .mockResolvedValueOnce({ rows: [{ count: "0" }] });
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/facilitator-state",
+    });
+
+    expect(res.json().activeTopicCount).toBe(0);
+  });
+
+  it.each(["lobby", "pre_session", "active", "wrap_up"])(
+    "a %s session omits activeTopicCount and issues no count query",
+    async (status) => {
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status }],
+        })
+        .mockResolvedValueOnce({ rows: [{ token: "active-join-token" }] });
+
+      const app = await buildApp("facilitator-1");
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/facilitator-state",
+      });
+
+      expect(res.json()).not.toHaveProperty("activeTopicCount");
+      expect(mockDbQuery.mock.calls.some((c) => (c[0] as string).includes("count(*)"))).toBe(false);
+    },
+  );
+
   // join-link-redemption-wiring, tasks.md Task 2.3/2.4: the miss-path
   // actor_global_role SELECT (SELECT global_role FROM users WHERE id = $1)
   // fires only when get-or-create is about to create a new join_links row,
@@ -2628,8 +3266,8 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
       .mockResolvedValueOnce({
         rows: [
           {
-            id: "session-1",
-            team_id: "team-1",
+            id: "5e550000-0000-4000-8000-000000000001",
+            team_id: "11111111-1111-4111-8111-111111111111",
             facilitator_id: "facilitator-1",
             status: "active",
           },
@@ -2640,7 +3278,7 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
     const app = await buildApp("facilitator-1");
     await app.inject({
       method: "GET",
-      url: "/api/v1/teams/team-1/sessions/session-1/facilitator-state",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/facilitator-state",
     });
 
     const globalRoleCall = mockDbQuery.mock.calls.find((call) =>
@@ -2657,8 +3295,8 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
       .mockResolvedValueOnce({
         rows: [
           {
-            id: "session-1",
-            team_id: "team-1",
+            id: "5e550000-0000-4000-8000-000000000001",
+            team_id: "11111111-1111-4111-8111-111111111111",
             facilitator_id: "facilitator-1",
             status: "active",
           },
@@ -2673,7 +3311,7 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
         rows: [
           {
             id: "link-1",
-            team_id: "team-1",
+            team_id: "11111111-1111-4111-8111-111111111111",
             token: "new-join-token",
             created_at: new Date("2026-01-01"),
             expires_at: new Date("2026-01-08"),
@@ -2686,7 +3324,7 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
     const app = await buildApp("facilitator-1");
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/teams/team-1/sessions/session-1/facilitator-state",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/5e550000-0000-4000-8000-000000000001/facilitator-state",
     });
 
     expect(res.statusCode).toBe(200);
@@ -2701,7 +3339,7 @@ describe("GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state", () =
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "join.link_created",
-      expect.objectContaining({ teamId: "team-1", linkId: "link-1" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", linkId: "link-1" }),
     );
   });
 });
@@ -2730,7 +3368,7 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] }) // actor check
       .mockResolvedValueOnce({
         rows: [
-          { team_id: "team-2", team_name: "Team Two", last_session_at: new Date("2026-08-01T00:00:00Z") },
+          { team_id: "22222222-2222-4222-8222-222222222222", team_name: "Team Two", last_session_at: new Date("2026-08-01T00:00:00Z") },
         ],
       }) // eligible query
       .mockResolvedValueOnce({ rows: [{ exists: true }] }); // callerHasTeamMemberships
@@ -2741,11 +3379,11 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.eligibleTeams).toEqual([
-      { teamId: "team-2", teamName: "Team Two", lastSessionAt: "2026-08-01T00:00:00.000Z" },
+      { teamId: "22222222-2222-4222-8222-222222222222", teamName: "Team Two", lastSessionAt: "2026-08-01T00:00:00.000Z" },
     ]);
   });
 
-  // task 3.7 — deactivated-team exclusion lives in the query's WHERE clause
+  // task 3.7 — dddddddd-dddd-4ddd-8ddd-dddddddddddd exclusion lives in the query's WHERE clause
   // (deactivated_at IS NULL); this test documents that contract at the
   // handler level by asserting the query text, since the mock DB layer
   // cannot itself enforce a WHERE predicate.
@@ -2791,7 +3429,7 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
     mockDbQuery
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] })
       .mockResolvedValueOnce({
-        rows: [{ team_id: "team-1", team_name: "Team One", last_session_at: null }],
+        rows: [{ team_id: "11111111-1111-4111-8111-111111111111", team_name: "Team One", last_session_at: null }],
       })
       .mockResolvedValueOnce({ rows: [{ exists: false }] });
 
@@ -2826,7 +3464,7 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
       .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] })
       .mockResolvedValueOnce({
         rows: [
-          { team_id: "team-3", team_name: "Team Three", last_session_at: null },
+          { team_id: "33333333-3333-4333-8333-333333333333", team_name: "Team Three", last_session_at: null },
         ],
       })
       .mockResolvedValueOnce({ rows: [{ exists: false }] });
@@ -2901,7 +3539,7 @@ describe("topic-annotation — session payloads read the snapshot only (design.m
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "session-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "pre_session", is_first_session: false,
         }],
       })
@@ -2921,7 +3559,7 @@ describe("topic-annotation — session payloads read the snapshot only (design.m
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/session-1/begin-voting" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/sessions/5e550000-0000-4000-8000-000000000001/begin-voting" });
     return { res, client };
   }
 
@@ -2929,7 +3567,7 @@ describe("topic-annotation — session payloads read the snapshot only (design.m
     mockDbQuery
       .mockResolvedValueOnce({
         rows: [{
-          id: "sess-1", team_id: "team-1", facilitator_id: "facilitator-1",
+          id: "sess-1", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
           status: "active", current_topic_id: "topic-1",
         }],
       })
@@ -2953,7 +3591,7 @@ describe("topic-annotation — session payloads read the snapshot only (design.m
     ]);
     mockDbConnect.mockResolvedValueOnce(client);
     const app = await buildApp("facilitator-1");
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/team-1/sessions/sess-1/topics/advance" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/sessions/sess-1/topics/advance" });
     return { res, client };
   }
 

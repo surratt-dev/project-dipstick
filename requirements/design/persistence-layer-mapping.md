@@ -34,11 +34,13 @@ The facilitator submits a session creation request. The session enters the `lobb
 | Store | Operation | Details |
 |-------|-----------|---------|
 | **PostgreSQL** | INSERT into `sessions` | Inserts a new session row with `status = 'lobby'`, generates `join_token`, sets `facilitator_id`, `team_id`, `is_first_session`, `session_number`. |
-| **PostgreSQL** | INSERT into `session_topics` | Inserts one row per topic in the team's current active topic set (in display order), snapshotting `topic_name`, `topic_prompt`, `vote_type`. All rows start with `status = 'waiting'`. |
+| **PostgreSQL** | INSERT into `session_topics` | Inserts one row per topic in the team's current active topic set (in display order), snapshotting `topic_name`, `topic_prompt`, `vote_type`, and `topic_annotation` (from `topics.team_annotation`). `display_order` is renumbered densely 1..N (`row_number()` over the active topics' `display_order`, then `id`), so gaps left by archived topics never reach the session. All rows start with `status = 'waiting'`. A single `INSERT ... SELECT`, written under the team's topic advisory lock. |
 | **Redis** | HSET `session:{id}:state` | Sets `status = 'lobby'`, `facilitator_id`, `team_id`, `facilitator_connected = 0`, `current_topic_id = ''`. |
 | **Redis** | SADD `session:{id}:joined_users` | Empty set created (or first member added if the facilitator is added at creation). |
 | **Redis** | SET `session:{id}:snapshot` | Initial snapshot with status `lobby`, empty participant list, topic queue. |
 | **Redis** | EXPIRE (all keys) | TTL set to 8 hours on all new session keys. |
+
+**Room open (#175).** The `session_topics` insert happens at *room open*, the moment a session's status first becomes `lobby`, and at no other time. For a session created directly in `lobby` (`POST /api/v1/teams`, a new team's first session), that is this creation event, and `sessions.room_opened_at` is set at insert. For a session created in `draft` (`POST /draft`), no `session_topics` rows are written at creation; the draft-to-lobby transition (`POST .../advance`) performs the same insert, in the same transaction as the `UPDATE sessions SET status = 'lobby', room_opened_at = now()`, so topic edits made during the draft reach the session. A team with no active topics cannot open the room (`409 NO_ACTIVE_TOPICS`).
 
 **Ordering:** PostgreSQL writes happen first (INSERT sessions, then INSERT session_topics in a transaction). On success, Redis keys are initialized. The join link (containing the `join_token`) is returned to the facilitator after both writes complete. If the PostgreSQL transaction fails, no Redis keys are created and the request returns an error.
 

@@ -644,13 +644,20 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
         );
         const byTeam = new Map(rows.rows.map((r) => [r.team_id, r]));
         expect(byTeam.get(TEAM)?.team_annotation).toBe("Our meaning of this default topic");
-        for (const teamId of [SENTINEL_TEAM_ID, OTHER_TEAM]) {
-          expect(byTeam.get(teamId)).toMatchObject({
-            team_annotation: null,
-            annotation_updated_by: null,
-            annotation_updated_at: null,
-          });
-        }
+        expect(byTeam.get(OTHER_TEAM)).toMatchObject({
+          team_annotation: null,
+          annotation_updated_by: null,
+          annotation_updated_at: null,
+        });
+        // The template is checked as a whole rather than by name: the
+        // parallel default-topic-provisioning suite may have atomically
+        // swapped the template's rows (and names) since templateRow was read.
+        const annotatedTemplateRows = await db.query(
+          `SELECT id FROM topics
+            WHERE team_id = $1 AND (team_annotation IS NOT NULL OR annotation_updated_by = $2)`,
+          [SENTINEL_TEAM_ID, F],
+        );
+        expect(annotatedTemplateRows.rows).toHaveLength(0);
       } finally {
         await cleanup(db, [TEAM, OTHER_TEAM], [F]);
       }
@@ -767,8 +774,10 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
 
         // Annotate an existing template row in place (no new rows, so the
         // parallel default-topic-provisioning suite's row counts are not
-        // disturbed). Retried briefly in case that suite is mid-swap of the
-        // template rows.
+        // disturbed). That suite's swap is atomic (#175 tasks.md 1.6), so the
+        // subquery always sees a row, but the UPDATE can still lose a row
+        // deleted by a concurrent swap after the subquery chose it; hence
+        // the brief retry stays.
         for (let attempt = 0; attempt < 5 && !templateTopicId; attempt++) {
           const updated = await db.query<{ id: string }>(
             `UPDATE topics

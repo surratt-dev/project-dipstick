@@ -65,6 +65,30 @@ async function loadModules() {
   return { db, facilitatorSessionRoutes };
 }
 
+// session-topics-snapshot-at-creation (#175) tasks.md 1.6: the template
+// swap and restore each run as ONE transaction on one checked-out client
+// (BEGIN; DELETE; INSERT...; COMMIT), so a concurrent POST /api/v1/teams from
+// another test file sees the old set or the new set, never an empty template.
+// Since #175, an empty template turns POST /teams into a 500, so a
+// non-atomic swap would make parallel test files flaky.
+async function swapSentinelTopicsAtomically(
+  db: pg.Pool,
+  insertRows: (client: pg.PoolClient) => Promise<void>,
+): Promise<void> {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM topics WHERE team_id = $1 AND is_default = true`, [SENTINEL_TEAM_ID]);
+    await insertRows(client);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 interface TopicRow {
   id: string;
   team_id: string;
@@ -143,14 +167,15 @@ describe.skipIf(!dbUp)("default-topic-provisioning — real Postgres coverage (t
 
     let newTeamId: string | undefined;
     try {
-      await db.query(`DELETE FROM topics WHERE team_id = $1 AND is_default = true`, [SENTINEL_TEAM_ID]);
-      for (const t of fixture) {
-        await db.query(
-          `INSERT INTO topics (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [SENTINEL_TEAM_ID, t.name, t.prompt, t.vote_type, t.display_order, t.is_default, t.first_session_description],
-        );
-      }
+      await swapSentinelTopicsAtomically(db, async (client) => {
+        for (const t of fixture) {
+          await client.query(
+            `INSERT INTO topics (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [SENTINEL_TEAM_ID, t.name, t.prompt, t.vote_type, t.display_order, t.is_default, t.first_session_description],
+          );
+        }
+      });
 
       await makeFacilitator(db, userId);
       const app = await buildApp(userId);
@@ -188,14 +213,15 @@ describe.skipIf(!dbUp)("default-topic-provisioning — real Postgres coverage (t
       await cleanupTeam(db, newTeamId, userId);
 
       // Restore the sentinel team's original rows.
-      await db.query(`DELETE FROM topics WHERE team_id = $1 AND is_default = true`, [SENTINEL_TEAM_ID]);
-      for (const r of originalRows) {
-        await db.query(
-          `INSERT INTO topics (id, team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [r.id, r.team_id, r.name, r.prompt, r.vote_type, r.display_order, r.is_default, r.first_session_description],
-        );
-      }
+      await swapSentinelTopicsAtomically(db, async (client) => {
+        for (const r of originalRows) {
+          await client.query(
+            `INSERT INTO topics (id, team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [r.id, r.team_id, r.name, r.prompt, r.vote_type, r.display_order, r.is_default, r.first_session_description],
+          );
+        }
+      });
     }
   });
 
@@ -291,6 +317,9 @@ describe.skipIf(!dbUp)("default-topic-provisioning — real Postgres coverage (t
 
       // Mutate, then delete, one of the new team's copied topics.
       await db.query(`UPDATE topics SET name = 'Mutated' WHERE id = $1`, [copiedFirst.id]);
+      // Since #175 the new team's lobby session snapshots its topics, so the
+      // copied topic is referenced by a session_topics row; drop that first.
+      await db.query(`DELETE FROM session_topics WHERE topic_id = $1`, [copiedFirst.id]);
       await db.query(`DELETE FROM topics WHERE id = $1`, [copiedFirst.id]);
 
       const afterSentinel = (

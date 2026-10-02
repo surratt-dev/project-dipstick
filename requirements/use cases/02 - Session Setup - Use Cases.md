@@ -32,8 +32,8 @@
 
 **Addendum (draft-landing decision):**
 
-9. The Facilitator reviews the draft control view, then activates "Open the room" when ready. Because this transition cannot be reversed, the application requires a lightweight inline confirmation before the request is submitted.
-10. Once confirmed, the application advances the session out of `draft` status into an open, joinable state. The same view updates in place — without navigating away — to the participant readiness view (initially empty), and the join link becomes usable for participants.
+9. The Facilitator reviews the draft control view, then activates "Open the room" when ready. Opening the room is "room open": the moment the session's topic list is locked in (the team's active topics, in their current order, with their current annotations). Topic changes made during the draft (reorder, archive, restore, annotate) reach this session; changes made after room open apply to the team's next session. Because this transition cannot be reversed, the application requires a lightweight inline confirmation before the request is submitted, stating the number of topics being locked in.
+10. Once confirmed, the application advances the session out of `draft` status into an open, joinable state and locks in its topic list in the same step. The same view updates in place — without navigating away — to the participant readiness view (initially empty), and the join link becomes usable for participants. If the team has no active topics, the room cannot be opened, and the view points the Facilitator to Topic Management.
 
 ## Alternate Flows
 - **Facilitator has no eligible teams to facilitate:** The application displays a message explaining that no teams are available (either all teams include the Facilitator as a member, or no teams exist). No session is created.
@@ -100,7 +100,7 @@
 
 **Addendum (draft-skip decision):**
 
-11. Unlike the existing-team flow (see "Create Session for Existing Team," Addendum: draft-landing decision), this flow does not pass through `draft` status. A brand-new team has no prior team context for the Facilitator to review before opening the room, so the review-gate rationale that motivates the existing-team flow's draft/lobby split does not apply here. The application lands the Facilitator directly in `lobby` (step 10 above), with an inline name-echo confirmation on the submit control ("Create team '<name>' and open session room") taking the place of the draft gate as the point where the irreversible action — team creation — is confirmed before it happens.
+11. Unlike the existing-team flow (see "Create Session for Existing Team," Addendum: draft-landing decision), this flow does not pass through `draft` status. A brand-new team has no prior team context for the Facilitator to review before opening the room, so the review-gate rationale that motivates the existing-team flow's draft/lobby split does not apply here. The application lands the Facilitator directly in `lobby` (step 10 above), with an inline name-echo confirmation on the submit control ("Create team '<name>' and open session room") taking the place of the draft gate as the point where the irreversible action — team creation — is confirmed before it happens. Because the session lands directly in `lobby`, its creation is its room open: the session's topic list (the new team's default topics, in canonical order) is locked in at creation, in the same step.
 
 ## Alternate Flows
 - **Team name already exists:** The application displays an inline validation error and prompts the Facilitator to enter a different name. No team or session is created until a unique name is provided.

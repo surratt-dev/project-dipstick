@@ -46,7 +46,41 @@ type LoadState =
   | { status: "error"; message: string }
   | { status: "loaded"; data: FacilitatorSessionStateResponse };
 
-type AdvanceState = { phase: "idle" } | { phase: "confirming" } | { phase: "submitting" } | { phase: "failed"; message: string };
+// session-topics-snapshot-at-creation design.md Decision 7: "checking" is
+// the pending state while the confirm's silent refetch is in flight (further
+// clicks are ignored); "confirming" carries the fresh active topic count;
+// "failed" shows an inline error and leaves "Open the room" enabled: the
+// next click re-runs the confirm refetch, which is the authoritative check
+// (after a 409 whose refetch failed, it lands on the confirm or on the
+// zero-topic disabled state, so the page never gets stuck; architect
+// implementation review S3).
+type AdvanceState =
+  | { phase: "idle" }
+  | { phase: "checking" }
+  | { phase: "confirming"; activeTopicCount: number | undefined }
+  | { phase: "submitting" }
+  | { phase: "failed"; message: string };
+
+type RefetchResult =
+  | { kind: "ok"; data: FacilitatorSessionStateResponse }
+  | { kind: "failed" }
+  | { kind: "expired" };
+
+const NO_ACTIVE_TOPICS_COPY =
+  "This team has no active topics. Add or restore a topic on Topic Management before opening the room.";
+
+/** The room-open confirmation copy, with the singular for one topic. */
+function roomOpenConfirmCopy(activeTopicCount: number | undefined): string {
+  // An older backend may omit the count; never invent one.
+  const topics =
+    activeTopicCount === undefined
+      ? "topics"
+      : `${activeTopicCount} ${activeTopicCount === 1 ? "topic" : "topics"}`;
+  return (
+    `Opening the room lets participants join immediately and locks in this session's ${topics} ` +
+    "in their current order. Topic changes after this apply to your next session. This cannot be undone."
+  );
+}
 
 // session-lobby-routing-gap design.md D1: no "confirming" phase -- Start
 // Session has no confirmation step, matching SessionLobbyPage's
@@ -104,6 +138,59 @@ export function DraftSessionHost() {
     void loadFacilitatorState();
   }, [loadFacilitatorState]);
 
+  // session-topics-snapshot-at-creation design.md Decision 7: a SILENT
+  // refetch for the confirm, post-422, and post-409 paths. Unlike
+  // loadFacilitatorState it never sets loadState to "loading" or "error"
+  // (which would replace the control view and reset the copy-link banner);
+  // on success it replaces loadState.data in place, which mounts
+  // LiveReadinessView if the session has left draft. Session expiry still
+  // goes through detectSessionExpiry.
+  const refetchFacilitatorState = useCallback(async (): Promise<RefetchResult> => {
+    if (!teamId || !sessionId) return { kind: "failed" };
+    try {
+      const res = await fetch(`/api/v1/teams/${teamId}/sessions/${sessionId}/facilitator-state`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const { isSessionExpired } = await detectSessionExpiry(res);
+        if (isSessionExpired) {
+          setReauthRequired({ returnTo: window.location.pathname + window.location.search });
+          return { kind: "expired" };
+        }
+        return { kind: "failed" };
+      }
+      const data = (await res.json()) as FacilitatorSessionStateResponse;
+      setLoadState({ status: "loaded", data });
+      return { kind: "ok", data };
+    } catch {
+      return { kind: "failed" };
+    }
+  }, [teamId, sessionId]);
+
+  // "Open the room": refetch first so the confirmation's count is never
+  // stale, and show it only once the refetch returns.
+  async function beginOpenTheRoom() {
+    if (advanceState.phase === "checking" || advanceState.phase === "submitting") return;
+    setAdvanceState({ phase: "checking" });
+    const result = await refetchFacilitatorState();
+    if (result.kind === "expired") return;
+    if (result.kind === "failed") {
+      setAdvanceState({
+        phase: "failed",
+        message: "Couldn't check this session's topics. Please try again.",
+      });
+      return;
+    }
+    const { data } = result;
+    if (data.currentSessionState !== "draft" || data.activeTopicCount === 0) {
+      // Opened elsewhere (the live view mounts, no error), or no active
+      // topics (the disabled state applies instead of the confirmation).
+      setAdvanceState({ phase: "idle" });
+      return;
+    }
+    setAdvanceState({ phase: "confirming", activeTopicCount: data.activeTopicCount });
+  }
+
   async function openTheRoom() {
     if (!teamId || !sessionId) return;
     setAdvanceState({ phase: "submitting" });
@@ -118,10 +205,36 @@ export function DraftSessionHost() {
           setReauthRequired({ returnTo: window.location.pathname + window.location.search });
           return;
         }
-        setAdvanceState({
-          phase: "failed",
-          message: (body as { error?: { message: string } } | null)?.error?.message ?? "Could not open the room. Please try again.",
-        });
+        const error = (body as { error?: { message?: string; code?: string } } | null)?.error;
+        const message = error?.message ?? "Could not open the room. Please try again.";
+
+        if (res.status === 422) {
+          // Most often a double-click: the first request already opened the
+          // room. Decide from the refetched status, never from the message.
+          const result = await refetchFacilitatorState();
+          if (result.kind === "expired") return;
+          if (result.kind === "ok" && result.data.currentSessionState !== "draft") {
+            setAdvanceState({ phase: "idle" });
+            return;
+          }
+          setAdvanceState({ phase: "failed", message });
+          return;
+        }
+
+        if (res.status === 409 && error?.code === "NO_ACTIVE_TOPICS") {
+          // The refetched count drives the disabled state, whose copy is the
+          // only message shown. The server message appears only if the
+          // refetch fails; the button then stays enabled, and its next
+          // click re-runs the confirm refetch (no separate retry control).
+          const result = await refetchFacilitatorState();
+          if (result.kind === "expired") return;
+          setAdvanceState(
+            result.kind === "ok" ? { phase: "idle" } : { phase: "failed", message },
+          );
+          return;
+        }
+
+        setAdvanceState({ phase: "failed", message });
         return;
       }
       // Task 7.5: update in place, no navigation.
@@ -193,6 +306,7 @@ export function DraftSessionHost() {
 
   const { data } = loadState;
   const teamLabel = teamNameHint ?? `Team ${teamId}`;
+  const noActiveTopics = data.activeTopicCount === 0;
   // join-link-display-copy design.md D1: computed exactly once and passed
   // into whichever branch renders, never rebuilt separately per branch.
   const joinUrl = `${window.location.origin}${buildJoinLinkPath(data.joinToken)}`;
@@ -282,22 +396,38 @@ export function DraftSessionHost() {
         </p>
       )}
 
+      {/* session-topics-snapshot-at-creation design.md Decision 7: defence
+          in depth (zero active topics is unreachable through the API), so a
+          plain line and a link, nothing more. Only an explicit 0 disables;
+          an absent count never does. */}
+      {noActiveTopics && (
+        <p data-testid="open-the-room-no-topics">
+          {NO_ACTIVE_TOPICS_COPY}{" "}
+          <Link to={`/team/${teamId}/topics`} data-testid="open-the-room-no-topics-link">
+            Go to Topic Management
+          </Link>
+        </p>
+      )}
+
       {advanceState.phase !== "confirming" && (
         <button
           type="button"
           data-testid="open-the-room"
-          disabled={advanceState.phase === "submitting"}
-          onClick={() => setAdvanceState({ phase: "confirming" })}
+          disabled={
+            noActiveTopics ||
+            advanceState.phase === "checking" ||
+            advanceState.phase === "submitting"
+          }
+          aria-busy={advanceState.phase === "checking" || undefined}
+          onClick={() => void beginOpenTheRoom()}
         >
-          Open the room
+          {advanceState.phase === "checking" ? "Checking…" : "Open the room"}
         </button>
       )}
 
       {advanceState.phase === "confirming" && (
         <div data-testid="open-the-room-confirm" style={{ marginTop: "0.75rem" }}>
-          <p>
-            Opening the room lets participants join immediately, and cannot be undone. Continue?
-          </p>
+          <p data-testid="open-the-room-confirm-copy">{roomOpenConfirmCopy(advanceState.activeTopicCount)}</p>
           <button type="button" data-testid="open-the-room-confirm-yes" onClick={() => void openTheRoom()}>
             Yes, open the room
           </button>
