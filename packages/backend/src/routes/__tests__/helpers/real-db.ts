@@ -117,7 +117,15 @@ export type Mods = Awaited<ReturnType<typeof loadModules>>;
 export type Db = Mods["db"];
 
 /** A Fastify app with every route plugin this change touches, authenticated as userId. */
-export async function buildApp(mods: Mods, userId: string): Promise<FastifyInstance> {
+export async function buildApp(
+  mods: Mods,
+  userId: string,
+  opts: { keepTopicWriteBudget?: boolean } = {},
+): Promise<FastifyInstance> {
+  // #184 5.4b: a fresh topic-write budget for this actor, so reruns never
+  // inherit one. Tests that pre-seed the actor's windows pass
+  // keepTopicWriteBudget and seed AFTER building the app or before with it.
+  if (!opts.keepTopicWriteBudget) await resetTopicWriteBudget(userId);
   const app = Fastify();
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (request) => {
@@ -141,7 +149,9 @@ export async function buildFullApp(
   mods: Mods,
   userId: string,
   onRoute?: (route: RouteOptions) => void,
+  opts: { keepTopicWriteBudget?: boolean } = {},
 ): Promise<FastifyInstance> {
+  if (!opts.keepTopicWriteBudget) await resetTopicWriteBudget(userId); // #184 5.4b
   const app = Fastify();
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (request) => {
@@ -263,6 +273,7 @@ export class Fixture {
       await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [teamId]);
       await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
     }
+    await resetTopicWriteBudget(...this.userIds); // #184 5.4b: no stray limiter keys
     for (const userId of this.userIds) {
       await db.query(`DELETE FROM audit_log WHERE actor_user_id = $1`, [userId]);
       await db.query(`DELETE FROM users WHERE id = $1`, [userId]);
@@ -366,4 +377,144 @@ export async function withTeamLockGate<T>(
   }
   gate.release();
   return Promise.all(pending);
+}
+
+// ---------------------------------------------------------------------------
+// withTeamLockGateStaged — harden-topic-write-endpoints (#184) tasks 3.6-3.8.
+//
+// Like withTeamLockGate, but fires the requests one at a time: request i+1 is
+// started only after request i is queued on the team lock. Postgres grants a
+// contended advisory lock in queue order, so once the gate commits the
+// requests run in exactly the order given. That lets a test pin WHICH
+// operation ran first and observe that the second waited for it.
+//
+// The gate takes the lock with the production key on the canonical
+// (lowercase) teamId. A request whose path used another letter case only
+// counts as a waiter if it hashes to the same key -- which is the L1 property
+// these tests prove. If it did not, the poll below times out and the test
+// fails rather than passing without overlap.
+// ---------------------------------------------------------------------------
+
+async function teamLockWaiters(mods: Mods, key: number): Promise<number> {
+  const waiting = await mods.db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM pg_locks
+      WHERE locktype = 'advisory' AND granted = false AND objsubid = 1
+        AND objid = ($1::bigint & 4294967295)::oid`,
+    [key],
+  );
+  return waiting.rows[0]?.n ?? 0;
+}
+
+export async function withTeamLockGateStaged<T>(
+  mods: Mods,
+  teamId: string,
+  fires: Array<() => Promise<T>>,
+  opts: { timeoutMs?: number } = {},
+): Promise<T[]> {
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const gate = await mods.db.connect();
+  const pending: Promise<T>[] = [];
+  try {
+    await gate.query("BEGIN");
+    await gate.query(mods.snapshot.LOCK_TEAM_TOPICS_SQL, [teamId]);
+    const { rows } = await gate.query<{ key: number }>(
+      `SELECT ${mods.snapshot.TEAM_TOPICS_LOCK_KEY_SQL} AS key`,
+      [teamId],
+    );
+    const key = rows[0]!.key;
+
+    for (const [index, fire] of fires.entries()) {
+      const p = fire();
+      p.catch(() => undefined);
+      pending.push(p);
+      const deadline = Date.now() + timeoutMs;
+      while ((await teamLockWaiters(mods, key)) < index + 1) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `withTeamLockGateStaged: timed out waiting for request ${index + 1} to queue on the team lock`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    }
+
+    await gate.query("COMMIT");
+  } catch (err) {
+    await gate.query("ROLLBACK").catch(() => undefined);
+    gate.release();
+    await Promise.allSettled(pending);
+    throw err;
+  }
+  gate.release();
+  return Promise.all(pending);
+}
+
+// ---------------------------------------------------------------------------
+// resetTopicWriteBudget — harden-topic-write-endpoints (#184) task 5.4b.
+//
+// Topic writes now go through a Redis-backed per-actor budget whose daily
+// window lives 24 h in the docker compose Redis. Integration files that use
+// fixed actor ids would otherwise accumulate budget across local reruns until
+// unrelated tests see 429s. This deletes all four of the actor's topic-write
+// keys (burst, daily and both breach markers). Keys come from the production
+// key function, so the helper cannot drift from the limiter.
+// ---------------------------------------------------------------------------
+export async function resetTopicWriteBudget(...userIds: string[]): Promise<void> {
+  if (userIds.length === 0) return;
+  const { redis } = await import("../../../redis.js");
+  const { topicWriteRateLimitKeys } = await import("../../topic-write-rate-limit.js");
+  const keys = userIds.flatMap((id) => Object.values(topicWriteRateLimitKeys(id)));
+  await redis.del(...keys);
+}
+
+/**
+ * Pre-seeds an actor's topic-write windows with ZADD (#184 Decision 13: route
+ * tests pre-seed instead of sending hundreds of requests). Each score is one
+ * counted request at that time (ms). Sets the window TTLs as an admit would.
+ */
+export async function seedTopicWriteWindows(
+  userId: string,
+  windows: { burst?: number[]; daily?: number[] },
+): Promise<void> {
+  const { redis } = await import("../../../redis.js");
+  const { topicWriteRateLimitKeys, TOPIC_WRITE_LIMITS } = await import("../../topic-write-rate-limit.js");
+  const keys = topicWriteRateLimitKeys(userId);
+  const pipeline = redis.pipeline();
+  for (const [key, scores, ttl] of [
+    [keys.burst, windows.burst ?? [], TOPIC_WRITE_LIMITS.burst.windowMs],
+    [keys.daily, windows.daily ?? [], TOPIC_WRITE_LIMITS.daily.windowMs],
+  ] as const) {
+    if (scores.length === 0) continue;
+    scores.forEach((score, i) => pipeline.zadd(key, score, `seed-${score}-${i}-${randomUUID()}`));
+    pipeline.pexpire(key, ttl);
+  }
+  await pipeline.exec();
+}
+
+/** An actor over both limits: `n` entries (default the limit) one second ago in both windows. */
+export async function seedOverBudget(userId: string, opts: { burst?: number; daily?: number } = {}): Promise<void> {
+  const { TOPIC_WRITE_LIMITS } = await import("../../topic-write-rate-limit.js");
+  const at = Date.now() - 1_000;
+  const burst = opts.burst ?? TOPIC_WRITE_LIMITS.burst.limit;
+  const daily = opts.daily ?? Math.max(burst, 0);
+  await seedTopicWriteWindows(userId, {
+    burst: Array.from({ length: burst }, () => at),
+    daily: Array.from({ length: daily }, () => at),
+  });
+}
+
+/** ZCARD and PTTL of an actor's two topic-write windows, plus whether each breach marker exists. */
+export async function topicWriteWindowState(userId: string) {
+  const { redis } = await import("../../../redis.js");
+  const { topicWriteRateLimitKeys } = await import("../../topic-write-rate-limit.js");
+  const keys = topicWriteRateLimitKeys(userId);
+  const [burst, daily, burstTtl, dailyTtl, burstMarker, dailyMarker] = await Promise.all([
+    redis.zcard(keys.burst),
+    redis.zcard(keys.daily),
+    redis.pttl(keys.burst),
+    redis.pttl(keys.daily),
+    redis.exists(keys.burstMarker),
+    redis.exists(keys.dailyMarker),
+  ]);
+  return { burst, daily, burstTtl, dailyTtl, burstMarker: burstMarker === 1, dailyMarker: dailyMarker === 1 };
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
-import pg from "pg";
 import Fastify from "fastify";
+import { probeInfra, requireInfraOrThrow, resetTopicWriteBudget } from "./helpers/real-db.js";
 
 // ---------------------------------------------------------------------------
 // Real Postgres coverage for topic-customization-lock-and-add-custom-topic
@@ -23,29 +23,13 @@ process.env["OIDC_CLIENT_SECRET"] ??= "dipstick-local-secret";
 process.env["OIDC_REDIRECT_URI"] ??= "http://localhost:3000/auth/callback";
 process.env["NODE_ENV"] ??= "test";
 
-const DATABASE_URL = process.env["DATABASE_URL"]!;
-const PROBE_TIMEOUT_MS = 750;
 
-async function isPostgresReachable(): Promise<boolean> {
-  const pool = new pg.Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: PROBE_TIMEOUT_MS });
-  try {
-    await pool.query("SELECT 1");
-    return true;
-  } catch {
-    return false;
-  } finally {
-    await pool.end().catch(() => undefined);
-  }
-}
-
-const dbUp = await isPostgresReachable();
-
-if (!dbUp) {
-  console.warn(
-    `[topics-integration.test.ts] SKIPPED — Postgres (${DATABASE_URL.replace(/:[^:@]+@/, ":****@")}) not reachable. ` +
-      "Run `docker compose up` (repo root) and re-run this file.",
-  );
-}
+// harden-topic-write-endpoints (#184) 5.4a/5.4b: topic writes now go through
+// the Redis-backed topic-write rate limiter, so this file needs Redis as well
+// as Postgres. It probes both through the shared harness (which also makes it
+// a "real-Redis" file for the limiter-mock structural guard).
+const dbUp = await probeInfra();
+requireInfraOrThrow(dbUp, "topics-integration.test.ts");
 
 async function loadModules() {
   const { db } = await import("../../db.js");
@@ -61,7 +45,10 @@ describe.skipIf(!dbUp)("topic-customization-lock-and-add-custom-topic — real P
     mods = await loadModules();
   });
 
-  function buildApp(userId: string) {
+  async function buildApp(userId: string) {
+    // #184 5.4b: this file uses fixed actor ids, so start every app with the
+    // actor's topic-write budget cleared; reruns never inherit one.
+    await resetTopicWriteBudget(userId);
     const app = Fastify();
     app.decorateRequest("session", null);
     app.addHook("onRequest", async (request) => {
@@ -285,7 +272,10 @@ describe.skipIf(!dbUp)("reorder-topics group 1 — active-only display_order uni
   const teamId = fixtureId(PREFIX, 0xfa1);
   const sessionId = fixtureId(PREFIX, 0xfb1);
 
-  function buildApp(userId: string) {
+  async function buildApp(userId: string) {
+    // #184 5.4b: this file uses fixed actor ids, so start every app with the
+    // actor's topic-write budget cleared; reruns never inherit one.
+    await resetTopicWriteBudget(userId);
     const app = Fastify();
     app.decorateRequest("session", null);
     app.addHook("onRequest", async (request) => {
@@ -435,7 +425,10 @@ describe.skipIf(!dbUp)("reorder-topics group 5 — PUT /topics/order real Postgr
   const SENTINEL_TEAM_ID = "00000000-0000-0000-0000-000000000001";
   const orderUrl = (id = teamId) => `/api/v1/teams/${id}/topics/order`;
 
-  function buildApp(userId: string) {
+  async function buildApp(userId: string) {
+    // #184 5.4b: this file uses fixed actor ids, so start every app with the
+    // actor's topic-write budget cleared; reruns never inherit one.
+    await resetTopicWriteBudget(userId);
     const app = Fastify();
     app.decorateRequest("session", null);
     app.addHook("onRequest", async (request) => {

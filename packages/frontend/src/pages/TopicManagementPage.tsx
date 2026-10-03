@@ -12,6 +12,7 @@ import type {
   UpdateTopicAnnotationResponse,
 } from "@dipstick/shared";
 import { arraysEqual, moveDown, moveToBottom, moveToTop, moveUp } from "./topicOrder.js";
+import { isTopicWritePause, topicWriteErrorMessage } from "./topicWriteRateLimit.js";
 import {
   EMPTY_ADD_FORM_VALUES,
   VOTE_TYPE_LABELS,
@@ -76,6 +77,10 @@ type RemoveTopicState =
       openActionItemCount: number;
       openActionItems: Array<{ actionItemId: string; description: string }>;
       message: string;
+      // harden-topic-write-endpoints (#184) task 6.5: a 429/503 on the
+      // ?confirm=true call keeps this escalated confirmation open, with its
+      // list, and shows the message here instead of dropping to "error".
+      error?: string;
     }
   | { status: "blocked_last_active"; topicId: string; message: string }
   | { status: "error"; topicId: string; message: string };
@@ -488,6 +493,21 @@ function RemoveTopicDialog({ state, teamName, onCancel, onConfirm, onConfirmAnyw
               ))}
             </ul>
           )}
+          {state.error && (
+            <div
+              role="alert"
+              data-testid={`open-items-confirm-error-${topic.topicId}`}
+              style={{
+                marginTop: "0.75rem",
+                padding: "0.75rem 1rem",
+                backgroundColor: "#fce4e4",
+                border: "1px solid #e57373",
+                borderRadius: "4px",
+              }}
+            >
+              {state.error}
+            </div>
+          )}
           <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
             <button
               onClick={() => onConfirmAnyway(topic)}
@@ -732,7 +752,11 @@ export function TopicManagementPage() {
   }, []);
 
   const submitArchive = useCallback(
-    async (topic: ActiveTopic, confirm: boolean) => {
+    async (
+      topic: ActiveTopic,
+      confirm: boolean,
+      escalation?: Extract<RemoveTopicState, { status: "awaiting_open_items_confirmation" }>,
+    ) => {
       if (!teamId) return;
       setRemoveState({ status: "submitting", topic });
 
@@ -757,11 +781,16 @@ export function TopicManagementPage() {
             });
             return;
           }
-          setRemoveState({
-            status: "error",
-            topicId: topic.topicId,
-            message: typeof body?.error?.message === "string" ? body.error.message : "Unable to archive this topic.",
-          });
+          // #184 6.2: rate-limit copy for a 429 (by error.code), the
+          // server's message otherwise.
+          const message = topicWriteErrorMessage(res, body, "Unable to archive this topic.");
+          if (confirm && escalation && isTopicWritePause(res.status, body)) {
+            // #184 6.5: a pause keeps the escalated confirmation, its list
+            // and its Archive anyway button. Nothing is retried.
+            setRemoveState({ ...escalation, error: message });
+            return;
+          }
+          setRemoveState({ status: "error", topicId: topic.topicId, message });
           return;
         }
 
@@ -830,11 +859,12 @@ export function TopicManagementPage() {
         });
 
         if (!res.ok) {
-          const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+          const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
           setRestoreState({
             status: "error",
             topicId: topic.topicId,
-            message: body?.error?.message ?? "Unable to restore this topic.",
+            // #184 6.2: rate-limit copy for a 429; no refetch on this path.
+            message: topicWriteErrorMessage(res, body, "Unable to restore this topic."),
           });
           return;
         }
@@ -986,8 +1016,9 @@ export function TopicManagementPage() {
           setSaveState("stale");
           return;
         }
+        // #184 6.2: the draft stays, marked unsaved, with Save order enabled.
         setSaveState("error");
-        setSaveError(body?.error?.message ?? SAVE_FALLBACK_ERROR);
+        setSaveError(topicWriteErrorMessage(res, body, SAVE_FALLBACK_ERROR));
         return;
       }
 
@@ -1087,7 +1118,7 @@ export function TopicManagementPage() {
             topicId,
             draft,
             phase: "editing",
-            error: body?.error?.message ?? DEFINITION_SAVE_FALLBACK_ERROR,
+            error: topicWriteErrorMessage(res, body, DEFINITION_SAVE_FALLBACK_ERROR), // #184 6.2
             ...(rowGone || refetchPending ? { refetchOnClose: true } : {}),
           });
           return;
@@ -1364,6 +1395,13 @@ export function TopicManagementPage() {
     // that parsed as the JSON error envelope with a string message.
     const body: unknown = await res.json().catch(() => null);
     if (hasEnvelopeMessage(body)) {
+      // #184 6.2: a 429/503 from the topic-write limiter is a pause. The form
+      // stays open with every field, the message goes in its error area, and
+      // nothing is retried or refetched.
+      if (isTopicWritePause(res.status, body)) {
+        returnAddFormToEditing({ formError: topicWriteErrorMessage(res, body, body.error.message) });
+        return;
+      }
       if (res.status === 403 || res.status === 404) {
         returnAddFormToEditing({ formError: body.error.message });
         return;
@@ -1743,7 +1781,13 @@ export function TopicManagementPage() {
                     teamName={data.teamName || "this team"}
                     onCancel={cancelRemove}
                     onConfirm={(t) => void submitArchive(t, false)}
-                    onConfirmAnyway={(t) => void submitArchive(t, true)}
+                    onConfirmAnyway={(t) =>
+                      void submitArchive(
+                        t,
+                        true,
+                        dialogState.status === "awaiting_open_items_confirmation" ? dialogState : undefined,
+                      )
+                    }
                   />
                 )}
               </li>

@@ -10,8 +10,13 @@ import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
 import { getOpenActionItemsForTopic } from "../auth/open-action-items-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import type { SessionData } from "../auth/session-store.js";
-import { buildErrorEnvelope } from "./error-envelope.js";
+// teamNotFoundEnvelope: the single TEAM_NOT_FOUND envelope every topic-write
+// 404 sends, so the template-team 404 matches the missing-team 404 by
+// construction (#188 architect implementation review S4; shared since #184 m5).
+import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
+import type { TopicWriteDenialContext } from "./topic-write-context.js";
+import { enforceTopicWriteRateLimit } from "./topic-write-rate-limit.js";
 import { lockTeamTopics } from "../sessions/session-topic-snapshot.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
 import type {
@@ -42,6 +47,13 @@ import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 //      NOT_A_FACILITATOR / FACILITATOR_IS_TEAM_MEMBER. Admits a non-member
 //      facilitator or an application admin (FR-8.2, #176). Reveals nothing
 //      about any specific team.
+//   1a. Topic-write rate limit (enforceTopicWriteRateLimit, #184) -- 429
+//      TOPIC_WRITE_{BURST,DAILY}_LIMIT_EXCEEDED or fail-closed 503
+//      TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE. One per-actor budget shared by
+//      every topic-write handler (TOPIC-003..007), called explicitly in each
+//      one right after step 1 and before step 2. No DB query, so the 429 says
+//      nothing about the team. (Before step 1, every handler answers a
+//      non-canonical teamId 404 and then lowercases teamId.)
 //   2. Writable team (checkWritableTeam) -- 404 TEAM_NOT_FOUND. Runs only
 //      after step 1 passes. Answers 404 for a nonexistent team AND for the
 //      __default_topics__ template team (#188, default-topic-provisioning
@@ -130,13 +142,6 @@ async function checkStandingFacilitatorAuthorization(
   return { rejected: false, actorGlobalRole: grant.globalRole };
 }
 
-// The single TEAM_NOT_FOUND envelope every topic-write 404 sends, so the
-// template-team 404 matches the missing-team 404 by construction (#188
-// architect implementation review S4).
-function teamNotFoundEnvelope() {
-  return buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND");
-}
-
 // ---------------------------------------------------------------------------
 // Route-boundary teamId check (session-topics-snapshot-at-creation
 // implementation review M1/MF1). Runs first in every handler, before the
@@ -157,16 +162,6 @@ async function rejectNonCanonicalTeamId(
   await applyTimingFloor(startTime);
   await reply.code(404).send(teamNotFoundEnvelope());
   return { rejected: true };
-}
-
-// Shared context for every topic-write denial helper below (lock gate, lock
-// denial audit, template guard, template denial audit).
-interface TopicWriteDenialContext {
-  actorUserId: string;
-  actorGlobalRole: string;
-  teamId: string;
-  endpoint: string;
-  attemptedOperation: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,8 +200,10 @@ async function checkWritableTeam(
   }
 
   // design.md D2: a constant comparison on the existing query's input -- no
-  // extra round trip. rejectNonCanonicalTeamId has already run, so the
-  // canonical spelling is the only one that can reach here.
+  // extra round trip. rejectNonCanonicalTeamId has already run and every
+  // handler lowercases teamId right after it (#184 Decision 9), so this
+  // compare is case-insensitive by construction: DEFAULT_TOPICS_TEAM_ID is
+  // itself lowercase canonical (pinned by a unit test).
   if (ctx.teamId === DEFAULT_TOPICS_TEAM_ID) {
     // Envelope first, so the audit's correlationId matches the response.
     const envelope = teamNotFoundEnvelope();
@@ -531,6 +528,15 @@ async function checkTopicExistsAndActive(
   topicId: string,
   startTime: number,
 ): Promise<{ rejected: boolean }> {
+  // #184 Decision 10: a non-canonical topicId cannot name a topic. Answer
+  // 404 here, at the topic-existence step (so the cascade order is
+  // unchanged), with no query -- never a Postgres 22P02 500.
+  if (!isCanonicalUuid(topicId)) {
+    await applyTimingFloor(startTime);
+    await reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+    return { rejected: true };
+  }
+
   const result = await db.query<{ id: string; status: string }>(
     `SELECT id, status FROM topics WHERE id = $1 AND team_id = $2`,
     [topicId, teamId],
@@ -602,6 +608,15 @@ async function checkTopicExistsAndArchived(
   topicId: string,
   startTime: number,
 ): Promise<{ rejected: boolean }> {
+  // #184 Decision 10: a non-canonical topicId cannot name a topic. Answer
+  // 404 here, at the topic-existence step (so the cascade order is
+  // unchanged), with no query -- never a Postgres 22P02 500.
+  if (!isCanonicalUuid(topicId)) {
+    await applyTimingFloor(startTime);
+    await reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+    return { rejected: true };
+  }
+
   const result = await db.query<{ id: string; status: string }>(
     `SELECT id, status FROM topics WHERE id = $1 AND team_id = $2`,
     [topicId, teamId],
@@ -853,13 +868,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
   }>("/api/v1/teams/:teamId/topics", async (request, reply) => {
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId } = request.params;
+    const { teamId: rawTeamId } = request.params;
     const endpoint = "POST /api/v1/teams/:teamId/topics";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // 403, checked first. Facilitator (non-member) or application admin
     // (any team, FR-8.2; #176).
@@ -873,37 +892,30 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.custom_added",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Task 3.2 / Task 3.6 — 404, checked second: a nonexistent team or the
     // template team (#188, checkWritableTeam).
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.custom_added",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
 
     // Task 3.3 / Task 3.6 — 409, checked third.
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.custom_added",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1033,13 +1045,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
   }>("/api/v1/teams/:teamId/topics/:topicId", async (request, reply) => {
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId, topicId } = request.params;
+    const { teamId: rawTeamId, topicId } = request.params;
     const endpoint = "DELETE /api/v1/teams/:teamId/topics/:topicId";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
     const confirmed = request.query.confirm === "true";
 
     // Task 3.1 / Task 3.6 — 403, checked first.
@@ -1048,20 +1064,24 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.archived",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Writable team — 404, checked second: a nonexistent team or the
     // template team (#188, checkWritableTeam). Shared with TOPIC-003.
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.archived",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
@@ -1069,18 +1089,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     // Customization lock — 409, checked third. Reused unchanged from
     // TOPIC-003, including its writeLockDenialAudit call (the shared
     // topic.write_denied_locked operation, no new per-endpoint variant).
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.archived",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1255,13 +1264,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
   }>("/api/v1/teams/:teamId/topics/:topicId/restore", async (request, reply) => {
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId, topicId } = request.params;
+    const { teamId: rawTeamId, topicId } = request.params;
     const endpoint = "POST /api/v1/teams/:teamId/topics/:topicId/restore";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // Step 1 -- 403, checked first.
     const authResult = await checkRestoreTopicAuthorization(reply, session.userId, teamId, startTime);
@@ -1269,20 +1282,24 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.restored",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Step 2 -- 404, checked second: a nonexistent team or the template
     // team (#188, checkWritableTeam). Shared with TOPIC-003/004.
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.restored",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
@@ -1290,18 +1307,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     // Step 3 -- 409, checked third. Reused unchanged from TOPIC-003/004,
     // including its writeLockDenialAudit call (the shared
     // topic.write_denied_locked operation, no new per-endpoint variant).
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.restored",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1434,13 +1440,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
 
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId } = request.params;
+    const { teamId: rawTeamId } = request.params;
     const endpoint = "PUT /api/v1/teams/:teamId/topics/order";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // Step 1 -- 403, checked first.
     const authResult = await checkReorderTopicsAuthorization(reply, session.userId, teamId, startTime);
@@ -1448,37 +1458,30 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.reordered",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Step 2 -- 404, checked second: a nonexistent team or the template
     // team (#188, checkWritableTeam).
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.reordered",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
 
     // Step 3 -- 409, checked third.
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.reordered",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1649,13 +1652,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
 
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId, topicId } = request.params;
+    const { teamId: rawTeamId, topicId } = request.params;
     const endpoint = "PUT /api/v1/teams/:teamId/topics/:topicId/annotation";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // Step 1 -- 403. Deliberately the facilitator-only check,
     // NOT checkStandingFacilitatorOrAdminAuthorization like TOPIC-003/004/005/006:
@@ -1674,37 +1681,30 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.annotation_updated",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Step 2 -- 404 TEAM_NOT_FOUND: a nonexistent team or the template team
     // (#188, checkWritableTeam).
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.annotation_updated",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
 
     // Step 3 -- 409 TOPIC_CUSTOMIZATION_LOCKED.
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.annotation_updated",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1720,12 +1720,8 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     }
     const annotation = validation.annotation;
 
-    // Steps 5/6 -- a non-UUID topicId cannot name a topic: answer 404 here
-    // rather than letting Postgres raise 22P02 (-> 500).
-    if (!isCanonicalUuid(topicId)) {
-      await applyTimingFloor(startTime);
-      return reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
-    }
+    // Steps 5/6 -- a non-UUID topicId is answered 404 inside
+    // checkTopicExistsAndActive (#184 Decision 10), never by a 22P02 500.
     const topicCheck = await checkTopicExistsAndActive(reply, teamId, topicId, startTime);
     if (topicCheck.rejected) {
       return reply;

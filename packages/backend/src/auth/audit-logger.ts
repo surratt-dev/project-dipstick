@@ -424,7 +424,34 @@ export type AuditEventName =
   // action: "set" | "cleared", length } -- NEVER the annotation text, in
   // either the audit_log row or the structured-log event, so neither log can
   // become the version history the use case rules out.
-  | "topic.annotation_updated";
+  | "topic.annotation_updated"
+  // topic.write_rate_limited / topic.write_rate_limit_exceeded /
+  // topic.write_rate_limit_check_failed: harden-topic-write-endpoints (#184)
+  // design.md Decisions 6-7. The topic-write limiter shared by TOPIC-003..007
+  // (routes/topic-write-rate-limit.ts).
+  //
+  // topic.write_rate_limited: the audit_log OPERATION for a breach. Written
+  // once per breach episode (first 429 that finds a window at its limit with
+  // no open episode), synchronously before the 429, through the fail-open
+  // audit path (AUDIT_WRITE_TIMEOUT_MS; auth.audit_write_failed on failure).
+  // metadata: { limit: "burst" | "daily", windows, observedCount, endpoint,
+  // team_verified: false }. `limit` and `observedCount` describe the REPORTED
+  // window (the longer wait), which is not necessarily the window whose
+  // episode this row opens -- that is `windows` (architect implementation
+  // review N3, security N1). team_id is the lowercase path value, never
+  // checked against teams. No migration: audit_log.operation is unconstrained
+  // TEXT and team_id has no FK (migrations/8_audit_log.sql).
+  //
+  // topic.write_rate_limit_exceeded: structured event on EVERY 429, including
+  // the ones whose audit row is suppressed within an episode; carries
+  // suppressedCount. Log only.
+  //
+  // topic.write_rate_limit_check_failed: the limiter's Redis call errored or
+  // exceeded 500 ms, so the write failed closed with 503. Log only; no DB
+  // write of any kind for that request.
+  | "topic.write_rate_limited"
+  | "topic.write_rate_limit_exceeded"
+  | "topic.write_rate_limit_check_failed";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

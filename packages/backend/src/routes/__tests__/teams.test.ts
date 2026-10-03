@@ -123,6 +123,22 @@ function makeMockClient(queryResponses: Array<{ rows: unknown[] }> = []) {
 describe("GET /api/v1/teams/:teamId/members", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // #184 m5 task 2.4 (deliberate API change): a team that does not exist is
+  // the shared teamNotFoundEnvelope() -- category not_found (was
+  // invalid_request) with code TEAM_NOT_FOUND (was absent). Check order is
+  // unchanged: the actor/membership check still runs first.
+  it("returns 404 not_found / TEAM_NOT_FOUND for a team that does not exist", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // team lookup: none
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/members" });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("returns 403 when actor is not a team member and not application_admin", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineer", is_member: false }],
@@ -842,6 +858,22 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role — TEAM-005 promotio
 describe("GET /api/v1/teams/:teamId", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // #184 m5 task 2.4 (deliberate API change): a team that does not exist is
+  // the shared teamNotFoundEnvelope() -- category not_found (was
+  // invalid_request) with code TEAM_NOT_FOUND (was absent). Check order is
+  // unchanged: the actor/membership check still runs first.
+  it("returns 404 not_found / TEAM_NOT_FOUND for a team that does not exist", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // team lookup: none
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("returns 403 when actor is not a team member and not application_admin", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineer", is_member: false }],
@@ -1094,6 +1126,9 @@ describe("POST /api/v1/teams/:teamId/managers", () => {
     expect(res.statusCode).toBe(404);
     // Must NOT return 409 for this condition
     expect(res.statusCode).not.toBe(409);
+    // #184 m5 task 2.4: the shared teamNotFoundEnvelope(); this route was
+    // already not_found and now also carries the code.
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
   });
 
   // Task 3.2 — 409 for global_role precondition failure
@@ -1739,5 +1774,58 @@ describe("POST /api/v1/teams/:teamId/managers — rate limiting (task 3.10)", ()
     // — the rejection above only overrode a single call.
     const recoveredRes = await postManagers(app);
     expect(recoveredRes.statusCode).toBeLessThan(300);
+  });
+
+  // harden-topic-write-endpoints (#184) task 2.5: TEAM-006's 429 and 503 are
+  // now built by buildErrorEnvelope instead of inline `as const` literals.
+  // The serialized bodies must be byte-identical to the pre-change literals
+  // apart from correlationId. The expected strings below are the old literal
+  // shapes ({ error: { category, code, message, correlationId } }, in that
+  // key order), written out independently of the production constants.
+  describe("#184 task 2.5: bodies are byte-identical to the former inline literals", () => {
+    const CORRELATION = "<correlation-id>";
+    function normalizeCorrelationId(payload: string): string {
+      return payload.replace(/"correlationId":"[^"]+"/, `"correlationId":"${CORRELATION}"`);
+    }
+
+    it("429 TEAM006_BURST_LIMIT_EXCEEDED", async () => {
+      const app = await buildApp({ userId: "actor-byte-identity-429" });
+      for (let i = 0; i < 20; i++) await postManagers(app);
+      const res = await postManagers(app);
+      expect(res.statusCode).toBe(429);
+      const expected = JSON.stringify({
+        error: {
+          category: "rate_limited",
+          code: "TEAM006_BURST_LIMIT_EXCEEDED",
+          message:
+            "You've reached the limit of 20 manager-association requests per 10 minutes. " +
+            "Wait a few minutes and try again. If you're onboarding a large number of teams at once and " +
+            "genuinely need a higher rate, escalate through your organization's standard security/support " +
+            "process to request a scoped, time-limited increase.",
+          correlationId: CORRELATION,
+        },
+      });
+      expect(normalizeCorrelationId(res.payload)).toBe(expected);
+    });
+
+    it("503 TEAM006_RATE_LIMIT_UNAVAILABLE", async () => {
+      const app = await buildApp({ userId: "actor-byte-identity-503" });
+      mockRedisEval.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+      const res = await postManagers(app);
+      expect(res.statusCode).toBe(503);
+      const expected = JSON.stringify({
+        error: {
+          category: "service_unavailable",
+          code: "TEAM006_RATE_LIMIT_UNAVAILABLE",
+          message:
+            "The manager-association rate limiter is temporarily unavailable, so this request " +
+            "has been denied as a precaution rather than let through unlimited. This is a " +
+            "rate-limiting safety control, not a data or account issue — retry shortly, or " +
+            "escalate through your organization's standard security/support process if this persists.",
+          correlationId: CORRELATION,
+        },
+      });
+      expect(normalizeCorrelationId(res.payload)).toBe(expected);
+    });
   });
 });

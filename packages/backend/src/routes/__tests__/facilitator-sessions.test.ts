@@ -292,7 +292,8 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     });
 
     expect(res.statusCode).toBe(404);
-    expect(res.json().error).toMatchObject({ category: "not_found", message: "Team not found." });
+    // #184 m5 task 2.3: the shared teamNotFoundEnvelope(), with its code.
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
     expect(mockDbQuery).not.toHaveBeenCalled();
     expect(mockDbConnect).not.toHaveBeenCalled();
   });
@@ -332,6 +333,8 @@ describe("POST /api/v1/teams/:teamId/sessions/draft", () => {
     });
 
     expect(res.statusCode).toBe(404);
+    // #184 m5 task 2.3: the shared teamNotFoundEnvelope(), with its code.
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
   });
 
   // task 2.8: a nonexistent team where the caller also has no membership row

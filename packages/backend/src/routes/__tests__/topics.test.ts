@@ -23,6 +23,9 @@ vi.mock("../../content/timing-oracle.js", () => ({
   CONTENT_TIMING_FLOOR_MS: 150,
 }));
 
+// #184 5.4a: the topic-write rate limiter is replaced by the shared "allowed"
+// stand-in (helpers/topic-write-rate-limit-mock.ts); see that file for why.
+vi.mock("../topic-write-rate-limit.js", () => import("./helpers/topic-write-rate-limit-mock.js"));
 vi.mock("../../config.js", () => ({
   config: {
     DATABASE_URL: "postgres://test",
@@ -85,7 +88,7 @@ function mockPassAllGates() {
 
 /** DELETE cascade query #4: topic existence/status (Task 3.2/3.3). */
 function mockTopicExists(status: "active" | "archived" | null) {
-  mockDbQuery.mockResolvedValueOnce({ rows: status ? [{ id: "topic-1", status }] : [] });
+  mockDbQuery.mockResolvedValueOnce({ rows: status ? [{ id: "70000000-0000-4000-8000-000000000001", status }] : [] });
 }
 
 /** Standard happy path through all four gate checks TOPIC-004 shares before its transaction. */
@@ -1112,7 +1115,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockArchiveTransaction({ activeCount: 2 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -1125,7 +1128,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockArchiveTransaction({ activeCount: 2 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -1134,7 +1137,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -1145,7 +1148,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockAuthQuery("facilitator", true);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
@@ -1155,7 +1158,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — identity/role (design
     mockAuthQueryNoUser();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -1172,7 +1175,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(403);
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
@@ -1183,7 +1186,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTeamExists(false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
@@ -1197,7 +1200,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
@@ -1212,7 +1215,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTopicExists(null);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/nonexistent-topic" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/7000ffff-0000-4000-8000-00000000ffff" });
 
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("TOPIC_NOT_FOUND");
@@ -1225,7 +1228,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTopicExists("archived");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ARCHIVED");
@@ -1238,7 +1241,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — check ordering (desig
     mockTopicExists("archived");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ARCHIVED");
@@ -1257,7 +1260,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
     mockArchiveTransaction({ activeCount: 1 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TOPIC_LAST_ACTIVE");
@@ -1268,7 +1271,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
     const client = mockArchiveTransaction({ activeCount: 3 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(200);
     const updateCall = client.query.mock.calls.find((call) => (call[0] as string).includes("UPDATE topics"));
@@ -1280,7 +1283,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
     const client = mockArchiveTransaction({ activeCount: 2 });
 
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     const calls = client.query.mock.calls.map((call) => call[0] as string);
     const lockIndex = calls.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
@@ -1310,7 +1313,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
         return Promise.resolve({ rows: [{ count: "1" }] });
       }
       if (text.includes("FROM topics WHERE id")) {
-        return Promise.resolve({ rows: [{ id: "topic-1", status: "active" }] });
+        return Promise.resolve({ rows: [{ id: "70000000-0000-4000-8000-000000000001", status: "active" }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -1340,8 +1343,8 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — last-active-topic gua
 
     const app = await buildApp();
     const [res1, res2] = await Promise.all([
-      app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-a" }),
-      app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-b" }),
+      app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/7000000a-0000-4000-8000-00000000000a" }),
+      app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/7000000b-0000-4000-8000-00000000000b" }),
     ]);
 
     const statuses = [res1.statusCode, res2.statusCode].sort();
@@ -1368,7 +1371,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -1386,7 +1389,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("archived");
@@ -1402,7 +1405,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     const app = await buildApp();
     const res = await app.inject({
       method: "DELETE",
-      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1?confirm=true",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001?confirm=true",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1423,7 +1426,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — open-action-item conf
     const app = await buildApp();
     const res = await app.inject({
       method: "DELETE",
-      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1?confirm=true",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001?confirm=true",
     });
 
     expect(res.statusCode).toBe(200);
@@ -1447,7 +1450,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     const client = mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(200);
     const auditCall = client.query.mock.calls.find((call) =>
@@ -1461,7 +1464,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "topic.archived",
-      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", topicId: "topic-1", openActionItemCount: 0 }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", topicId: "70000000-0000-4000-8000-000000000001", openActionItemCount: 0 }),
     );
   });
 
@@ -1477,7 +1480,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     });
 
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1?confirm=true" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001?confirm=true" });
 
     const auditCall = client.query.mock.calls.find((call) =>
       (call[0] as string).includes("INSERT INTO audit_log"),
@@ -1489,7 +1492,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(mockDbConnect).not.toHaveBeenCalled();
   });
@@ -1502,7 +1505,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().requiresConfirmation).toBe(true);
@@ -1524,7 +1527,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(409);
     const auditCall = mockDbQuery.mock.calls.find((call) =>
@@ -1540,7 +1543,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — audit logging (design
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    const res = await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
 
     expect(res.statusCode).toBe(409);
     const auditCall = mockDbQuery.mock.calls.find((call) =>
@@ -1560,7 +1563,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
   it("applies the timing floor on the 403 branch", async () => {
     mockAuthQuery("engineer", false);
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1568,7 +1571,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockAuthQuery("facilitator", false);
     mockTeamExists(false);
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1578,7 +1581,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockLockCount(0);
     mockDenialAuditInsert();
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1588,14 +1591,14 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockLockCount(1);
     mockTopicExists(null);
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
   it("applies the timing floor on the 422 branch", async () => {
     mockPassAllArchiveGates("archived");
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1603,7 +1606,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockPassAllArchiveGates();
     mockArchiveTransaction({ activeCount: 1 });
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1611,7 +1614,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockPassAllArchiveGates();
     mockArchiveTransaction({ activeCount: 2, openItemsRows: [{ id: "ai-1", description: "open" }] });
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1619,7 +1622,7 @@ describe("DELETE /api/v1/teams/:teamId/topics/:topicId — timing floor applied 
     mockPassAllArchiveGates();
     mockArchiveTransaction({ activeCount: 2, openItemsRows: [] });
     const app = await buildApp();
-    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1" });
+    await app.inject({ method: "DELETE", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });
@@ -1684,7 +1687,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockRestoreTransaction({ newPosition: 3 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -1697,7 +1700,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockRestoreTransaction({ newPosition: 3 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(200);
   });
@@ -1706,7 +1709,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -1717,7 +1720,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockAuthQuery("facilitator", true);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
@@ -1727,7 +1730,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — identity/role (
     mockAuthQueryNoUser();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
@@ -1744,7 +1747,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(403);
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
@@ -1757,7 +1760,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics/topic-1/restore",
+      url: "/api/v1/teams/99999999-9999-4999-8999-999999999999/topics/70000000-0000-4000-8000-000000000001/restore",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1772,7 +1775,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
@@ -1789,7 +1792,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/nonexistent-topic/restore",
+      url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/7000ffff-0000-4000-8000-00000000ffff/restore",
     });
 
     expect(res.statusCode).toBe(404);
@@ -1803,7 +1806,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — check ordering 
     mockTopicExists("active");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
@@ -1823,7 +1826,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 4 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -1840,7 +1843,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 2 });
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     const calls = client.query.mock.calls.map((call) => call[0] as string);
     const lockIndex = calls.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
@@ -1855,7 +1858,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 2 });
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     const updateCall = client.query.mock.calls.find((call) => (call[0] as string).includes("UPDATE topics"));
     const sql = updateCall![0] as string;
@@ -1870,7 +1873,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — reposition and 
     const client = mockRestoreTransaction({ newPosition: 2, zeroRows: true });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
@@ -1890,7 +1893,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     const client = mockRestoreTransaction({ newPosition: 2 });
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(200);
     const auditCall = client.query.mock.calls.find((call) =>
@@ -1903,7 +1906,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     expect(mockEmitAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
       "topic.restored",
-      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", topicId: "topic-1" }),
+      expect.objectContaining({ teamId: "11111111-1111-4111-8111-111111111111", topicId: "70000000-0000-4000-8000-000000000001" }),
     );
   });
 
@@ -1911,7 +1914,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     mockAuthQuery("engineer", false);
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(mockDbConnect).not.toHaveBeenCalled();
   });
@@ -1921,7 +1924,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     const client = mockRestoreTransaction({ newPosition: 2, zeroRows: true });
 
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     const auditCall = client.query.mock.calls.find((call) =>
       (call[0] as string).includes("INSERT INTO audit_log"),
@@ -1936,7 +1939,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — audit logging (
     mockDenialAuditInsert();
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     expect(res.statusCode).toBe(409);
     const auditCall = mockDbQuery.mock.calls.find((call) =>
@@ -1957,7 +1960,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
   it("applies the timing floor on the 403 branch", async () => {
     mockAuthQuery("engineer", false);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1965,7 +1968,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockAuthQuery("facilitator", false);
     mockTeamExists(false);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1975,7 +1978,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockLockCount(0);
     mockDenialAuditInsert();
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1985,7 +1988,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockLockCount(1);
     mockTopicExists(null);
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -1995,7 +1998,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockLockCount(1);
     mockTopicExists("active");
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -2003,7 +2006,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockPassAllRestoreGates();
     mockRestoreTransaction({ newPosition: 2, zeroRows: true });
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 
@@ -2011,7 +2014,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — timing floor ap
     mockPassAllRestoreGates();
     mockRestoreTransaction({ newPosition: 2 });
     const app = await buildApp();
-    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
   });
 });
@@ -2029,7 +2032,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — error envelope 
     mockTopicExists("active");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     const body = res.json();
     expect(body.error.category).toBe("invalid_request");
@@ -2046,7 +2049,7 @@ describe("POST /api/v1/teams/:teamId/topics/:topicId/restore — error envelope 
     mockTopicExists("active");
 
     const app = await buildApp();
-    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/topic-1/restore" });
+    const res = await app.inject({ method: "POST", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/70000000-0000-4000-8000-000000000001/restore" });
 
     const body = res.json();
     expect(body.code).toBeUndefined();

@@ -1,9 +1,14 @@
 import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { db } from "../db.js";
-import { redis } from "../redis.js";
 import { config } from "../config.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
+import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
+import {
+  recordAndCountSlidingWindow,
+  retryAfterSeconds,
+  type SlidingWindowResult,
+} from "../auth/sliding-window-limiter.js";
 import type {
   TeamMember,
   LegacyTeamMembersResponse,
@@ -71,61 +76,6 @@ function team006BurstKey(actorUserId: string): string {
 
 function team006DailyKey(actorUserId: string): string {
   return `dipstick:ratelimit:team-manager:daily:${actorUserId}`;
-}
-
-// Atomically: drop entries older than the window, record this request, and
-// return the resulting count plus the oldest surviving entry's timestamp
-// (used to compute a precise Retry-After). PEXPIRE bounds how long an idle
-// key lingers in Redis once an actor stops making requests.
-const SLIDING_WINDOW_LUA = `
-local key = KEYS[1]
-local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local member = ARGV[3]
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
-redis.call('ZADD', key, now, member)
-redis.call('PEXPIRE', key, window)
-local count = redis.call('ZCARD', key)
-local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-local oldestScore = now
-if oldest[2] then
-  oldestScore = oldest[2]
-end
-return {count, oldestScore}
-`;
-
-interface SlidingWindowResult {
-  count: number;
-  oldestEntryMs: number;
-}
-
-async function recordAndCountSlidingWindow(
-  key: string,
-  nowMs: number,
-  windowMs: number,
-): Promise<SlidingWindowResult> {
-  const member = `${nowMs}-${crypto.randomUUID()}`;
-  const result = (await redis.eval(
-    SLIDING_WINDOW_LUA,
-    1,
-    key,
-    nowMs,
-    windowMs,
-    member,
-  )) as [number | string, number | string];
-
-  return {
-    count: Number(result[0]),
-    oldestEntryMs: Number(result[1]),
-  };
-}
-
-function retryAfterSeconds(
-  window: SlidingWindowResult,
-  nowMs: number,
-  windowMs: number,
-): number {
-  return Math.max(1, Math.ceil((window.oldestEntryMs + windowMs - nowMs) / 1000));
 }
 
 type Team006RateLimitCode =
@@ -420,13 +370,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     );
 
     if (teamResult.rows.length === 0) {
-      return reply.code(404).send({
-        error: {
-          category: "invalid_request" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     const teamName = (teamResult.rows[0] as { name: string }).name;
@@ -571,13 +515,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     );
 
     if (teamResult.rows.length === 0) {
-      return reply.code(404).send({
-        error: {
-          category: "invalid_request" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     const teamName = (teamResult.rows[0] as { name: string }).name;
@@ -1110,18 +1048,21 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
         // letting it through as if no limit applied — an explicit, tested
         // 503, not an accident of an uncaught rejection reaching Fastify's
         // generic error handler.
-        return reply.code(503).send({
-          error: {
-            category: "service_unavailable" as const,
-            code: "TEAM006_RATE_LIMIT_UNAVAILABLE",
-            message:
-              "The manager-association rate limiter is temporarily unavailable, so this request " +
+        //
+        // #184 task 2.5: built with the shared buildErrorEnvelope now that
+        // ErrorCategory includes service_unavailable. The body is
+        // byte-identical to the former inline literal apart from
+        // correlationId (pinned in teams.test.ts).
+        return reply.code(503).send(
+          buildErrorEnvelope(
+            "service_unavailable",
+            "The manager-association rate limiter is temporarily unavailable, so this request " +
               "has been denied as a precaution rather than let through unlimited. This is a " +
               "rate-limiting safety control, not a data or account issue — retry shortly, or " +
               "escalate through your organization's standard security/support process if this persists.",
-            correlationId: crypto.randomUUID(),
-          },
-        });
+            "TEAM006_RATE_LIMIT_UNAVAILABLE",
+          ),
+        );
       }
       throw err;
     }
@@ -1160,14 +1101,15 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       return reply
         .code(429)
         .header("Retry-After", String(rateLimitResult.retryAfterSeconds))
-        .send({
-          error: {
-            category: "rate_limited" as const,
-            code: rateLimitResult.code,
-            message: TEAM006_RATE_LIMIT_MESSAGES[rateLimitResult.code],
-            correlationId: crypto.randomUUID(),
-          },
-        });
+        // #184 task 2.5: shared builder; body byte-identical to the former
+        // inline literal apart from correlationId.
+        .send(
+          buildErrorEnvelope(
+            "rate_limited",
+            TEAM006_RATE_LIMIT_MESSAGES[rateLimitResult.code],
+            rateLimitResult.code,
+          ),
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1182,13 +1124,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     );
 
     if (teamResult.rows.length === 0) {
-      return reply.code(404).send({
-        error: {
-          category: "not_found" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     // -----------------------------------------------------------------------

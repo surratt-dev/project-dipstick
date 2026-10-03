@@ -39,6 +39,7 @@ This spec does NOT cover the reorder controls on the Topic Management screen (se
 
 `PUT /api/v1/teams/:teamId/topics/order` SHALL evaluate checks in the following order. It SHALL reject on the first check that fails, and SHALL neither evaluate nor report the outcome of any later check:
 1. **Identity/role:** `403 Forbidden`, `NOT_A_FACILITATOR` or `FACILITATOR_IS_TEAM_MEMBER`. An `application_admin` is exempt from both sub-checks.
+1b. **Topic-write rate limit:** `503 Service Unavailable`, `TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE`, or `429 Too Many Requests`, `TOPIC_WRITE_BURST_LIMIT_EXCEEDED` or `TOPIC_WRITE_DAILY_LIMIT_EXCEEDED` (see `topic-write-rate-limiting`).
 2. **Team existence:** `404 Not Found`, `TEAM_NOT_FOUND`.
 2a. **Template team:** a `teamId` equal to `DEFAULT_TOPICS_TEAM_ID` is answered exactly as a nonexistent team: `404 Not Found`, `TEAM_NOT_FOUND` (see `default-topic-provisioning`, Requirement: The template team is never written through a team-scoped topic-write endpoint).
 3. **Customization lock:** `409 Conflict`, `TOPIC_CUSTOMIZATION_LOCKED`.
@@ -96,6 +97,15 @@ Every entry SHALL be lowercased before the duplicate check, and only the lowerca
 - **AND** exactly one `topic.write_denied_template` row is written, with `metadata.attempted_operation = "topic.reordered"`
 - **AND** the response matches this endpoint's own nonexistent-team `404` (see `default-topic-provisioning`)
 - **AND** no topics row is modified
+
+#### Scenario: An over-budget actor receives 429 before team existence, template, lock or body checks
+- **WHEN** an authorized actor who is over the topic-write budget submits a reorder request against a nonexistent team, the template team, a locked team, or with an invalid body
+- **THEN** the response is `429 Too Many Requests` with the same body in every case
+- **AND** no `topic.write_denied_template` or `topic.write_denied_locked` row is written
+
+#### Scenario: A caller who fails authorization receives 403, never 429
+- **WHEN** a caller who fails identity/role authorization submits a reorder request, however many requests that caller has made
+- **THEN** the response is `403 Forbidden`
 
 ### Requirement: A well-formed list that does not equal the current active set is rejected as stale
 

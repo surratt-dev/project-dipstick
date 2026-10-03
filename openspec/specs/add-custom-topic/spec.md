@@ -122,13 +122,13 @@ This endpoint's administrator arm SHALL NOT be shared with `PUT /api/v1/teams/:t
 - **THEN** the topic is created successfully; prior session history with this specific facilitator is not required
 ### Requirement: Add Custom Topic evaluates checks in a fixed order — identity/role, team existence, lock, then body validation
 
-`POST /api/v1/teams/:teamId/topics` SHALL evaluate the following checks in this order, rejecting on the first one that fails and evaluating no later check — nor reporting its outcome — once an earlier one has already failed: (1) identity/role authorization (`403 Forbidden`, `NOT_A_FACILITATOR` or `FACILITATOR_IS_TEAM_MEMBER`; an `application_admin` always passes this check); (2) team existence (`404 Not Found`); (2a) the template team — a `teamId` equal to `DEFAULT_TOPICS_TEAM_ID` is answered exactly as a nonexistent team (`404 Not Found`, `TEAM_NOT_FOUND`) (see `default-topic-provisioning`, Requirement: The template team is never written through a team-scoped topic-write endpoint); (3) the customization lock (`409 Conflict`, `TOPIC_CUSTOMIZATION_LOCKED`); (4) request body validation (`422 Unprocessable Entity`). This ordering is stated once, here, as the canonical sequence; the individual requirements above and below describe each check's own condition and reason code but defer to this requirement for their relative order. The order SHALL be the same for administrators and facilitators.
+`POST /api/v1/teams/:teamId/topics` SHALL evaluate the following checks in this order, rejecting on the first one that fails and evaluating no later check — nor reporting its outcome — once an earlier one has already failed: (1) identity/role authorization (`403 Forbidden`, `NOT_A_FACILITATOR` or `FACILITATOR_IS_TEAM_MEMBER`; an `application_admin` always passes this check); (1b) the topic-write rate limit (`503 Service Unavailable`, `TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE`, or `429 Too Many Requests`, `TOPIC_WRITE_BURST_LIMIT_EXCEEDED` or `TOPIC_WRITE_DAILY_LIMIT_EXCEEDED`; see `topic-write-rate-limiting`); (2) team existence (`404 Not Found`, `TEAM_NOT_FOUND`); (2a) the template team — a `teamId` equal to `DEFAULT_TOPICS_TEAM_ID` is answered exactly as a nonexistent team (`404 Not Found`, `TEAM_NOT_FOUND`) (see `default-topic-provisioning`, Requirement: The template team is never written through a team-scoped topic-write endpoint); (3) the customization lock (`409 Conflict`, `TOPIC_CUSTOMIZATION_LOCKED`); (4) request body validation (`422 Unprocessable Entity`). This ordering is stated once, here, as the canonical sequence; the individual requirements above and below describe each check's own condition and reason code but defer to this requirement for their relative order. The order SHALL be the same for administrators and facilitators.
 
-The shipped handler SHALL also apply a constant minimum response-time floor (`applyTimingFloor`) at every one of these early-return points, plus the `201` success path, so that this ordering's status-code-level anti-enumeration guarantee is not reopened through response-latency differences. This includes the template-team `404`, both `403` branches emitted by the administrator-aware authorization check and the `404` and `409` returns reached by an administrator. A status-code ordering alone is not sufficient for this requirement to be considered met.
+The shipped handler SHALL also apply a constant minimum response-time floor (`applyTimingFloor`) at every one of these early-return points, plus the `201` success path and the rate-limit `429` and `503` returns, so that this ordering's status-code-level anti-enumeration guarantee is not reopened through response-latency differences. This includes the template-team `404`, both `403` branches emitted by the administrator-aware authorization check and the `404` and `409` returns reached by an administrator. A status-code ordering alone is not sufficient for this requirement to be considered met.
 
 #### Scenario: A request against a nonexistent team is rejected with 404
 - **WHEN** a standing facilitator who is not an active member of any team submits a request against a `teamId` that does not correspond to any existing team
-- **THEN** the response is `404 Not Found`
+- **THEN** the response is `404 Not Found` with reason code `TEAM_NOT_FOUND`
 - **AND** no topic is created
 
 #### Scenario: A caller who is neither facilitator nor administrator receives 403 rather than 404 against a nonexistent team
@@ -148,12 +148,12 @@ The shipped handler SHALL also apply a constant minimum response-time floor (`ap
 
 #### Scenario: A request against a nonexistent team with an invalid body still receives 404, not 422
 - **WHEN** a standing facilitator who is not an active member of any team submits a request with a missing `prompt` against a `teamId` that does not correspond to any existing team
-- **THEN** the response is `404 Not Found`
+- **THEN** the response is `404 Not Found` with reason code `TEAM_NOT_FOUND`
 - **AND** the response does not include `error.field`
 
 #### Scenario: An administrator against a nonexistent team with an invalid body receives 404, not 422
 - **WHEN** an `application_admin` submits a request with a missing `prompt` against a canonical-format `teamId` that does not correspond to any existing team
-- **THEN** the response is `404 Not Found`
+- **THEN** the response is `404 Not Found` with reason code `TEAM_NOT_FOUND`
 - **AND** the response does not include `error.field`
 
 #### Scenario: An administrator against a locked team with an invalid body receives 409, not 422
@@ -178,6 +178,15 @@ The shipped handler SHALL also apply a constant minimum response-time floor (`ap
 - **AND** the response matches this endpoint's own nonexistent-team `404` (see `default-topic-provisioning`)
 - **AND** the response does not include `error.field`
 - **AND** no topic is created
+
+#### Scenario: An over-budget actor receives 429 before team existence, template, lock or body checks
+- **WHEN** an authorized actor who is over the topic-write budget submits an add-custom-topic request against a nonexistent team, the template team, a locked team, or with an invalid body
+- **THEN** the response is `429 Too Many Requests` with the same body in every case
+- **AND** no `topic.write_denied_template` or `topic.write_denied_locked` row is written
+
+#### Scenario: A caller who fails authorization receives 403, never 429
+- **WHEN** a caller who fails identity/role authorization submits an add-custom-topic request, however many requests that caller has made
+- **THEN** the response is `403 Forbidden`
 
 ### Requirement: Concurrent Add Custom Topic requests against the same team never collide on displayOrder
 

@@ -35,6 +35,9 @@ vi.mock("../../content/timing-oracle.js", () => ({
   CONTENT_TIMING_FLOOR_MS: 150,
 }));
 
+// #184 5.4a: the topic-write rate limiter is replaced by the shared "allowed"
+// stand-in (helpers/topic-write-rate-limit-mock.ts); see that file for why.
+vi.mock("../topic-write-rate-limit.js", () => import("./helpers/topic-write-rate-limit-mock.js"));
 vi.mock("../../config.js", () => ({
   config: {
     DATABASE_URL: "postgres://test",

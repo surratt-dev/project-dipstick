@@ -65,11 +65,25 @@ export function makeTopics(overrides: Partial<GetAllTopicsResponse> = {}): GetAl
   };
 }
 
-export function mockFetchResponse(body: unknown, status = 200): Response {
+/**
+ * A minimal Response double. `headers` is optional (#184 task 6.1): when it
+ * is omitted the double has NO `headers` property at all, like every double
+ * these suites used before, so code that reads headers must do so
+ * defensively.
+ */
+export function mockFetchResponse(body: unknown, status = 200, headers?: Record<string, string>): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(body),
+    ...(headers
+      ? {
+          headers: {
+            get: (name: string) =>
+              Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ?? null,
+          },
+        }
+      : {}),
   } as unknown as Response;
 }
 
@@ -83,8 +97,18 @@ export function unparseableResponse(status: number): Response {
   } as unknown as Response;
 }
 
-export function envelope(status: number, code: string, message: string, field?: string): Response {
-  return mockFetchResponse({ error: { category: "x", code, message, correlationId: "c-1", ...(field ? { field } : {}) } }, status);
+export function envelope(
+  status: number,
+  code: string,
+  message: string,
+  field?: string,
+  headers?: Record<string, string>,
+): Response {
+  return mockFetchResponse(
+    { error: { category: "x", code, message, correlationId: "c-1", ...(field ? { field } : {}) } },
+    status,
+    headers,
+  );
 }
 
 export interface Deferred<T> {
@@ -114,6 +138,10 @@ export interface FetchRoutes {
   removes?: Reply[];
   // POST …/topics/:id/restore (TOPIC-005)
   restores?: Reply[];
+  // PUT …/topics/order (TOPIC-006)
+  reorders?: Reply[];
+  // PUT …/topics/:id/annotation (TOPIC-007)
+  annotations?: Reply[];
 }
 
 function answer(reply: Reply | undefined): Promise<Response> {
@@ -125,7 +153,13 @@ function answer(reply: Reply | undefined): Promise<Response> {
 /** Route-aware fetch mock. */
 export function installFetch(routes: FetchRoutes = {}) {
   const gets = routes.gets ?? [mockFetchResponse(makeTopics())];
-  const queues = { adds: [...(routes.adds ?? [])], removes: [...(routes.removes ?? [])], restores: [...(routes.restores ?? [])] };
+  const queues = {
+    adds: [...(routes.adds ?? [])],
+    removes: [...(routes.removes ?? [])],
+    restores: [...(routes.restores ?? [])],
+    reorders: [...(routes.reorders ?? [])],
+    annotations: [...(routes.annotations ?? [])],
+  };
   let getIndex = 0;
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -135,6 +169,8 @@ export function installFetch(routes: FetchRoutes = {}) {
     if (method === "POST" && url.endsWith("/restore")) return answer(queues.restores.shift());
     if (method === "POST" && /\/teams\/[^/]+\/topics$/.test(url)) return answer(queues.adds.shift());
     if (method === "DELETE") return answer(queues.removes.shift());
+    if (method === "PUT" && url.endsWith("/topics/order")) return answer(queues.reorders.shift());
+    if (method === "PUT" && url.endsWith("/annotation")) return answer(queues.annotations.shift());
     return answer(undefined);
   });
   global.fetch = fetchMock as unknown as typeof fetch;
