@@ -10,7 +10,10 @@ import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
 import { getOpenActionItemsForTopic } from "../auth/open-action-items-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import type { SessionData } from "../auth/session-store.js";
-import { buildErrorEnvelope } from "./error-envelope.js";
+// teamNotFoundEnvelope: the single TEAM_NOT_FOUND envelope every topic-write
+// 404 sends, so the template-team 404 matches the missing-team 404 by
+// construction (#188 architect implementation review S4; shared since #184 m5).
+import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
 import { lockTeamTopics } from "../sessions/session-topic-snapshot.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
@@ -128,13 +131,6 @@ async function checkStandingFacilitatorAuthorization(
   }
 
   return { rejected: false, actorGlobalRole: grant.globalRole };
-}
-
-// The single TEAM_NOT_FOUND envelope every topic-write 404 sends, so the
-// template-team 404 matches the missing-team 404 by construction (#188
-// architect implementation review S4).
-function teamNotFoundEnvelope() {
-  return buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND");
 }
 
 // ---------------------------------------------------------------------------

@@ -23,7 +23,12 @@ export type ErrorCategory =
   | "not_found"
   | "precondition_failed"
   | "invalid_request"
-  | "internal_error";
+  | "internal_error"
+  // harden-topic-write-endpoints (#184) Decision 1/6: the topic-write
+  // limiter's 429 and fail-closed 503. TEAM-006 used these two strings as
+  // inline literals before they were part of the union (task 2.5).
+  | "rate_limited"
+  | "service_unavailable";
 
 export interface ErrorEnvelope {
   error: { category: ErrorCategory; code?: string; field?: string; message: string; correlationId: string };
@@ -44,4 +49,19 @@ export function buildErrorEnvelope(
       correlationId: crypto.randomUUID(),
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// teamNotFoundEnvelope — the ONE "team does not exist" body in the backend
+//
+// harden-topic-write-endpoints (#184 m5) design.md Decision 11: every 404
+// that means "this team does not exist" (topic routes, content routes, draft
+// session creation, the teams.ts GET/managers routes) sends this envelope,
+// so a missing team, a malformed team id and the template team all look the
+// same by construction. Moved here from topics.ts. A structural test
+// (team-not-found-envelope-structural.test.ts) fails if the message literal
+// appears anywhere else in backend source.
+// ---------------------------------------------------------------------------
+export function teamNotFoundEnvelope(): ErrorEnvelope {
+  return buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND");
 }

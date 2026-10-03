@@ -4,6 +4,7 @@ import { redis } from "../redis.js";
 import { config } from "../config.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
+import { buildErrorEnvelope } from "./error-envelope.js";
 import type {
   TeamMember,
   LegacyTeamMembersResponse,
@@ -1110,18 +1111,21 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
         // letting it through as if no limit applied — an explicit, tested
         // 503, not an accident of an uncaught rejection reaching Fastify's
         // generic error handler.
-        return reply.code(503).send({
-          error: {
-            category: "service_unavailable" as const,
-            code: "TEAM006_RATE_LIMIT_UNAVAILABLE",
-            message:
-              "The manager-association rate limiter is temporarily unavailable, so this request " +
+        //
+        // #184 task 2.5: built with the shared buildErrorEnvelope now that
+        // ErrorCategory includes service_unavailable. The body is
+        // byte-identical to the former inline literal apart from
+        // correlationId (pinned in teams.test.ts).
+        return reply.code(503).send(
+          buildErrorEnvelope(
+            "service_unavailable",
+            "The manager-association rate limiter is temporarily unavailable, so this request " +
               "has been denied as a precaution rather than let through unlimited. This is a " +
               "rate-limiting safety control, not a data or account issue — retry shortly, or " +
               "escalate through your organization's standard security/support process if this persists.",
-            correlationId: crypto.randomUUID(),
-          },
-        });
+            "TEAM006_RATE_LIMIT_UNAVAILABLE",
+          ),
+        );
       }
       throw err;
     }
@@ -1160,14 +1164,15 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       return reply
         .code(429)
         .header("Retry-After", String(rateLimitResult.retryAfterSeconds))
-        .send({
-          error: {
-            category: "rate_limited" as const,
-            code: rateLimitResult.code,
-            message: TEAM006_RATE_LIMIT_MESSAGES[rateLimitResult.code],
-            correlationId: crypto.randomUUID(),
-          },
-        });
+        // #184 task 2.5: shared builder; body byte-identical to the former
+        // inline literal apart from correlationId.
+        .send(
+          buildErrorEnvelope(
+            "rate_limited",
+            TEAM006_RATE_LIMIT_MESSAGES[rateLimitResult.code],
+            rateLimitResult.code,
+          ),
+        );
     }
 
     // -----------------------------------------------------------------------

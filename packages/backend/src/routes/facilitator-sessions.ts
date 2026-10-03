@@ -21,7 +21,7 @@ import {
   snapshotSessionTopics,
   NoActiveTopicsError,
 } from "../sessions/session-topic-snapshot.js";
-import { buildErrorEnvelope } from "./error-envelope.js";
+import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import type {
   RevealFailureResponse,
   RevealAlreadyRevealedResponse,
@@ -294,13 +294,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     // the membership check and the existence check below could disagree
     // about which team it names. A malformed id names no team.
     if (!isCanonicalUuid(teamId)) {
-      return reply.code(404).send({
-        error: {
-          category: "not_found" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     // topic-customization-lock-and-add-custom-topic, design.md Decision 9's
@@ -338,13 +332,7 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     );
 
     if (teamResult.rows.length === 0) {
-      return reply.code(404).send({
-        error: {
-          category: "not_found" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     // Facilitator-from-another-team constraint (Decision D1): a facilitator

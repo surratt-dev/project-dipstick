@@ -12,11 +12,11 @@ Tasks marked **[SEC]** are security-sensitive (see design.md, "Security-sensitiv
 
 ## 2. Shared error envelope and TEAM_NOT_FOUND consistency
 
-- [ ] 2.1 Add `rate_limited` and `service_unavailable` to `ErrorCategory` in `routes/error-envelope.ts`.
-- [ ] 2.2 Move `teamNotFoundEnvelope()` from `topics.ts` to `error-envelope.ts`. Switch `topics.ts` and `content.ts` to the shared import.
-- [ ] 2.3 Switch both `facilitator-sessions.ts` draft-session 404s to `teamNotFoundEnvelope()` (envelope only, with no other change to that file). Update `facilitator-sessions.test.ts` so that both draft 404s (non-canonical and non-existent `teamId`) assert `code: "TEAM_NOT_FOUND"` and `category: "not_found"`.
-- [ ] 2.5 [SEC] Replace TEAM-006's inline `as const` 429/503 literals with `buildErrorEnvelope`. Add a test that the bodies are byte-identical apart from `correlationId`.
-- [ ] 2.6 Add a structural test that fails if `"Team not found."` appears in backend source outside `error-envelope.ts`. Give it one explicit, commented allowlist entry for `routes/teams.ts` ("removed by task 2.4; see #184 m5"), so CI stays green between this commit and 2.4. Task 2.4's commit deletes the entry.
+- [x] 2.1 Add `rate_limited` and `service_unavailable` to `ErrorCategory` in `routes/error-envelope.ts`.
+- [x] 2.2 Move `teamNotFoundEnvelope()` from `topics.ts` to `error-envelope.ts`. Switch `topics.ts` and `content.ts` to the shared import.
+- [x] 2.3 Switch both `facilitator-sessions.ts` draft-session 404s to `teamNotFoundEnvelope()` (envelope only, with no other change to that file). Update `facilitator-sessions.test.ts` so that both draft 404s (non-canonical and non-existent `teamId`) assert `code: "TEAM_NOT_FOUND"` and `category: "not_found"`.
+- [x] 2.5 [SEC] Replace TEAM-006's inline `as const` 429/503 literals with `buildErrorEnvelope`. Add a test that the bodies are byte-identical apart from `correlationId`.
+- [x] 2.6 Add a structural test that fails if `"Team not found."` appears in backend source outside `error-envelope.ts`. Give it one explicit, commented allowlist entry for `routes/teams.ts` ("removed by task 2.4; see #184 m5"), so CI stays green between this commit and 2.4. Task 2.4's commit deletes the entry.
 
 ## 3. Identifier hygiene on topic writes
 

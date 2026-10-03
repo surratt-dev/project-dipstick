@@ -23,7 +23,7 @@ import type {
   GetAllTopicsResponse,
 } from "@dipstick/shared";
 import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
-import { buildErrorEnvelope } from "./error-envelope.js";
+import { teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
 
 // ---------------------------------------------------------------------------
@@ -562,7 +562,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // reveals nothing about any team's existence.
     if (!isCanonicalUuid(teamId)) {
       await applyTimingFloor(startTime);
-      return noStore(reply).code(404).send(buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND"));
+      return noStore(reply).code(404).send(teamNotFoundEnvelope());
     }
 
     // Task 7.1/7.2 — decision-only shared authorization, same function

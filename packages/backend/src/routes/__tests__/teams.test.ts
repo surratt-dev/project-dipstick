@@ -1740,4 +1740,57 @@ describe("POST /api/v1/teams/:teamId/managers — rate limiting (task 3.10)", ()
     const recoveredRes = await postManagers(app);
     expect(recoveredRes.statusCode).toBeLessThan(300);
   });
+
+  // harden-topic-write-endpoints (#184) task 2.5: TEAM-006's 429 and 503 are
+  // now built by buildErrorEnvelope instead of inline `as const` literals.
+  // The serialized bodies must be byte-identical to the pre-change literals
+  // apart from correlationId. The expected strings below are the old literal
+  // shapes ({ error: { category, code, message, correlationId } }, in that
+  // key order), written out independently of the production constants.
+  describe("#184 task 2.5: bodies are byte-identical to the former inline literals", () => {
+    const CORRELATION = "<correlation-id>";
+    function normalizeCorrelationId(payload: string): string {
+      return payload.replace(/"correlationId":"[^"]+"/, `"correlationId":"${CORRELATION}"`);
+    }
+
+    it("429 TEAM006_BURST_LIMIT_EXCEEDED", async () => {
+      const app = await buildApp({ userId: "actor-byte-identity-429" });
+      for (let i = 0; i < 20; i++) await postManagers(app);
+      const res = await postManagers(app);
+      expect(res.statusCode).toBe(429);
+      const expected = JSON.stringify({
+        error: {
+          category: "rate_limited",
+          code: "TEAM006_BURST_LIMIT_EXCEEDED",
+          message:
+            "You've reached the limit of 20 manager-association requests per 10 minutes. " +
+            "Wait a few minutes and try again. If you're onboarding a large number of teams at once and " +
+            "genuinely need a higher rate, escalate through your organization's standard security/support " +
+            "process to request a scoped, time-limited increase.",
+          correlationId: CORRELATION,
+        },
+      });
+      expect(normalizeCorrelationId(res.payload)).toBe(expected);
+    });
+
+    it("503 TEAM006_RATE_LIMIT_UNAVAILABLE", async () => {
+      const app = await buildApp({ userId: "actor-byte-identity-503" });
+      mockRedisEval.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+      const res = await postManagers(app);
+      expect(res.statusCode).toBe(503);
+      const expected = JSON.stringify({
+        error: {
+          category: "service_unavailable",
+          code: "TEAM006_RATE_LIMIT_UNAVAILABLE",
+          message:
+            "The manager-association rate limiter is temporarily unavailable, so this request " +
+            "has been denied as a precaution rather than let through unlimited. This is a " +
+            "rate-limiting safety control, not a data or account issue — retry shortly, or " +
+            "escalate through your organization's standard security/support process if this persists.",
+          correlationId: CORRELATION,
+        },
+      });
+      expect(normalizeCorrelationId(res.payload)).toBe(expected);
+    });
+  });
 });
