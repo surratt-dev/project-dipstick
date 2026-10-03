@@ -106,7 +106,7 @@ These run in parallel with the implementation and block only the merge.
 
   Make no writes.
 - [ ] 6.2 **[Human]** Record environment, date, operator and pass/fail for each environment in `proposal.md`. If any check fails, file F4 and treat it as blocking. Do not fix data inside this change.
-- [ ] 6.3 **[Human]** File F1 (high priority, next in the Topic Management milestone, with F2 folded in, carrying the required content in `design.md` Open Questions: the managers, member-role, join-link and join-redemption routes named as in-scope, the structural-test pattern carried over, and a security-review tag), F5 (administrator maintenance path for the defaults, or link an existing issue), and F3. Link the issue numbers in `proposal.md` and `design.md` Open Questions. F1 must be linked before merge.
+- [x] 6.3 **[Human]** *(Done 2026-10-02: F1 → #214, F3 → #215, F5 → #216; the security review is requested in #214's body because the repo has no security label.)* File F1 (high priority, next in the Topic Management milestone, with F2 folded in, carrying the required content in `design.md` Open Questions: the managers, member-role, join-link and join-redemption routes named as in-scope, the structural-test pattern carried over, and a security-review tag), F5 (administrator maintenance path for the defaults, or link an existing issue), and F3. Link the issue numbers in `proposal.md` and `design.md` Open Questions. F1 must be linked before merge.
 
 ## 7. Documentation and validation
 

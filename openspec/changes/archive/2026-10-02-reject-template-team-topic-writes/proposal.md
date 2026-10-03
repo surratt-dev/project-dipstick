@@ -137,7 +137,7 @@ number once they exist.
   `GET /teams/eligible-for-session`, carry the structural route test pattern over to session routes,
   and report the sentinel as permanently locked on Topic Management. This closes the realistic
   trigger path and the "editor with failing controls" state, which #188 deliberately leaves alone.
-  F2 is folded into F1. Issue: *not yet filed*.
+  F2 is folded into F1. Issue: #214.
 - **F2: other team-scoped writes against the sentinel** (join links, managers, member role
   changes). Folded into F1. The security design review found a membership-creation chain here
   (`POST /api/v1/teams/:teamId/managers` → `POST /api/teams/:teamId/join-links` →
@@ -147,12 +147,12 @@ number once they exist.
   them.
 - **F3: harden the team-creation copy** to filter `status = 'active'`, and make
   `defaultTopicsNotActive` in `content.ts` filter `dt.status`. Defence in depth for data changed by
-  migration or by hand. Can wait.
+  migration or by hand. Can wait. Issue: #215.
 - **F4 (conditional, blocking if triggered): template data remediation**, only if the environment
   data check finds drift. This change does not fix data.
 - **F5: Application Administrator maintenance path for the default set** (FR-8.1 HARD). A dedicated
   endpoint with its own authorization and audit, never a relaxation of this guard. Link an existing
-  issue if there is one, or file a new one. Issue: *not yet filed*.
+  issue if there is one, or file a new one. Issue: #216 (no existing issue covered it).
 
 ## Impact
 
@@ -178,7 +178,7 @@ number once they exist.
 These are **merge gates**. The implementer does not perform them. The Engineering Manager named on
 the PR is responsible for getting them done before approving the merge.
 
-1. **File F1 and F5** (and F3), and link their issue numbers above and in `design.md` Open Questions
+1. ✅ **Done 2026-10-02:** F1 → #214, F3 → #215, F5 → #216, all in the 03 - Topic Management milestone. **File F1 and F5** (and F3), and link their issue numbers above and in `design.md` Open Questions
    (tasks.md 6.3). F1 must be high priority and sequenced right after #188.
 2. **Name an owner for the environment data check** and record the name here before the check runs.
    "Human operator" does not count as an owner.

@@ -337,8 +337,7 @@ The boundary sentence goes in the owning requirement, which is normative. A one-
 
 ## Open Questions
 
-- Issue numbers for F1, F3 and F5 (and F4 if it is needed) go here, and in `proposal.md`, once a human
-  files them. F1 must be filed before merge. F2 is folded into F1.
+- Issue numbers: **F1 → #214**, **F3 → #215**, **F5 → #216** (filed 2026-10-02, milestone 03 - Topic Management). F4 is filed only if the data check finds drift. F2 is folded into F1. The repo has no security label, so #214 asks for security review in its body.
 - **Required F1 content (security B1, merge-gating).** "F1 is filed" counts only if the issue:
   - lists as in-scope surfaces, in addition to the session lifecycle entry points and
     `GET /teams/eligible-for-session`: `POST /api/v1/teams/:teamId/managers`,
