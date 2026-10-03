@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Redis } from "ioredis";
 import pg from "pg";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type RouteOptions } from "fastify";
 import { DEFAULT_TOPICS_TEAM_ID } from "../../../sessions/default-topics.js";
 
 // ---------------------------------------------------------------------------
@@ -98,7 +98,19 @@ export async function loadModules() {
   const { sessionRoutes } = await import("../../sessions.js");
   const snapshot = await import("../../../sessions/session-topic-snapshot.js");
   const { buildSessionRegistrationSnapshot } = await import("../../../realtime/session-registration-snapshot.js");
-  return { db, facilitatorSessionRoutes, topicRoutes, contentRoutes, sessionRoutes, snapshot, buildSessionRegistrationSnapshot };
+  const { registerRoutes } = await import("../../register-routes.js");
+  const { redis } = await import("../../../redis.js");
+  return {
+    db,
+    facilitatorSessionRoutes,
+    topicRoutes,
+    contentRoutes,
+    sessionRoutes,
+    snapshot,
+    buildSessionRegistrationSnapshot,
+    registerRoutes,
+    redis,
+  };
 }
 
 export type Mods = Awaited<ReturnType<typeof loadModules>>;
@@ -115,6 +127,28 @@ export async function buildApp(mods: Mods, userId: string): Promise<FastifyInsta
   app.register(mods.topicRoutes);
   app.register(mods.contentRoutes);
   app.register(mods.sessionRoutes);
+  await app.ready();
+  return app;
+}
+
+/**
+ * Every HTTP route buildApp() (app.ts) registers, through the same
+ * registerRoutes(), authenticated as userId -- without app.ts's session
+ * store, helmet, auth middleware or WebSocket layer (#188 design.md D4).
+ * onRoute, when given, is registered before any route so it sees all of them.
+ */
+export async function buildFullApp(
+  mods: Mods,
+  userId: string,
+  onRoute?: (route: RouteOptions) => void,
+): Promise<FastifyInstance> {
+  const app = Fastify();
+  app.decorateRequest("session", null);
+  app.addHook("onRequest", async (request) => {
+    (request as unknown as Record<string, unknown>).session = { userId };
+  });
+  if (onRoute) app.addHook("onRoute", onRoute);
+  await mods.registerRoutes(app);
   await app.ready();
   return app;
 }
