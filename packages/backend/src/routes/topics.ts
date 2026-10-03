@@ -201,8 +201,10 @@ async function checkWritableTeam(
   }
 
   // design.md D2: a constant comparison on the existing query's input -- no
-  // extra round trip. rejectNonCanonicalTeamId has already run, so the
-  // canonical spelling is the only one that can reach here.
+  // extra round trip. rejectNonCanonicalTeamId has already run and every
+  // handler lowercases teamId right after it (#184 Decision 9), so this
+  // compare is case-insensitive by construction: DEFAULT_TOPICS_TEAM_ID is
+  // itself lowercase canonical (pinned by a unit test).
   if (ctx.teamId === DEFAULT_TOPICS_TEAM_ID) {
     // Envelope first, so the audit's correlationId matches the response.
     const envelope = teamNotFoundEnvelope();
@@ -527,6 +529,15 @@ async function checkTopicExistsAndActive(
   topicId: string,
   startTime: number,
 ): Promise<{ rejected: boolean }> {
+  // #184 Decision 10: a non-canonical topicId cannot name a topic. Answer
+  // 404 here, at the topic-existence step (so the cascade order is
+  // unchanged), with no query -- never a Postgres 22P02 500.
+  if (!isCanonicalUuid(topicId)) {
+    await applyTimingFloor(startTime);
+    await reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+    return { rejected: true };
+  }
+
   const result = await db.query<{ id: string; status: string }>(
     `SELECT id, status FROM topics WHERE id = $1 AND team_id = $2`,
     [topicId, teamId],
@@ -598,6 +609,15 @@ async function checkTopicExistsAndArchived(
   topicId: string,
   startTime: number,
 ): Promise<{ rejected: boolean }> {
+  // #184 Decision 10: a non-canonical topicId cannot name a topic. Answer
+  // 404 here, at the topic-existence step (so the cascade order is
+  // unchanged), with no query -- never a Postgres 22P02 500.
+  if (!isCanonicalUuid(topicId)) {
+    await applyTimingFloor(startTime);
+    await reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
+    return { rejected: true };
+  }
+
   const result = await db.query<{ id: string; status: string }>(
     `SELECT id, status FROM topics WHERE id = $1 AND team_id = $2`,
     [topicId, teamId],
@@ -849,13 +869,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
   }>("/api/v1/teams/:teamId/topics", async (request, reply) => {
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId } = request.params;
+    const { teamId: rawTeamId } = request.params;
     const endpoint = "POST /api/v1/teams/:teamId/topics";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // 403, checked first. Facilitator (non-member) or application admin
     // (any team, FR-8.2; #176).
@@ -1029,13 +1053,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
   }>("/api/v1/teams/:teamId/topics/:topicId", async (request, reply) => {
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId, topicId } = request.params;
+    const { teamId: rawTeamId, topicId } = request.params;
     const endpoint = "DELETE /api/v1/teams/:teamId/topics/:topicId";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
     const confirmed = request.query.confirm === "true";
 
     // Task 3.1 / Task 3.6 — 403, checked first.
@@ -1251,13 +1279,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
   }>("/api/v1/teams/:teamId/topics/:topicId/restore", async (request, reply) => {
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId, topicId } = request.params;
+    const { teamId: rawTeamId, topicId } = request.params;
     const endpoint = "POST /api/v1/teams/:teamId/topics/:topicId/restore";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // Step 1 -- 403, checked first.
     const authResult = await checkRestoreTopicAuthorization(reply, session.userId, teamId, startTime);
@@ -1430,13 +1462,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
 
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId } = request.params;
+    const { teamId: rawTeamId } = request.params;
     const endpoint = "PUT /api/v1/teams/:teamId/topics/order";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // Step 1 -- 403, checked first.
     const authResult = await checkReorderTopicsAuthorization(reply, session.userId, teamId, startTime);
@@ -1645,13 +1681,17 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
 
     const startTime = Date.now();
     const session = request.session as unknown as SessionData;
-    const { teamId, topicId } = request.params;
+    const { teamId: rawTeamId, topicId } = request.params;
     const endpoint = "PUT /api/v1/teams/:teamId/topics/:topicId/annotation";
 
     // Route boundary: a non-canonical teamId is 404 before any query (M1).
-    if ((await rejectNonCanonicalTeamId(reply, teamId, startTime)).rejected) {
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
       return reply;
     }
+    // #184 Decision 9: lowercase immediately after the canonical check. Every
+    // later use (queries, team lock, template compare, audit, logs, limiter
+    // metadata, response) sees this one spelling.
+    const teamId = rawTeamId.toLowerCase();
 
     // Step 1 -- 403. Deliberately the facilitator-only check,
     // NOT checkStandingFacilitatorOrAdminAuthorization like TOPIC-003/004/005/006:
@@ -1716,12 +1756,8 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     }
     const annotation = validation.annotation;
 
-    // Steps 5/6 -- a non-UUID topicId cannot name a topic: answer 404 here
-    // rather than letting Postgres raise 22P02 (-> 500).
-    if (!isCanonicalUuid(topicId)) {
-      await applyTimingFloor(startTime);
-      return reply.code(404).send(buildErrorEnvelope("not_found", "Topic not found.", "TOPIC_NOT_FOUND"));
-    }
+    // Steps 5/6 -- a non-UUID topicId is answered 404 inside
+    // checkTopicExistsAndActive (#184 Decision 10), never by a 22P02 500.
     const topicCheck = await checkTopicExistsAndActive(reply, teamId, topicId, startTime);
     if (topicCheck.rejected) {
       return reply;

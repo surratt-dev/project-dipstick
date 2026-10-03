@@ -862,3 +862,27 @@ describe("GET /api/v1/teams/:teamId/topics/all — non-canonical teamId (impleme
     expect(mockApplyTimingFloor).toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// harden-topic-write-endpoints (#184) task 3.9, spec "No team-scoped topic
+// route returns 5xx for a malformed path identifier" → "Malformed teamId on
+// the topic read routes". Both read routes answer a non-canonical teamId with
+// 404 TEAM_NOT_FOUND, the timing floor and no-store, before any query.
+// ---------------------------------------------------------------------------
+describe("topic read routes — malformed teamId (#184 task 3.9)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each([
+    ["GET /topics", "/api/v1/teams/not-a-uuid/topics"],
+    ["GET /topics/all", "/api/v1/teams/not-a-uuid/topics/all"],
+  ])("%s: 404 TEAM_NOT_FOUND, never 5xx, no query", async (_label, url) => {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(mockDbQuery).not.toHaveBeenCalled();
+    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+});

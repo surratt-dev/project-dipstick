@@ -466,6 +466,15 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
 
+    // harden-topic-write-endpoints (#184) task 3.9 / Decision 11: the same
+    // route boundary /topics/all already has. A non-canonical teamId is 404
+    // TEAM_NOT_FOUND before any query (it was a 22P02 500), with the timing
+    // floor. A malformed id names no team, so this reveals nothing.
+    if (!isCanonicalUuid(teamId)) {
+      await applyTimingFloor(startTime);
+      return noStore(reply).code(404).send(teamNotFoundEnvelope());
+    }
+
     const grant = await evaluateTeamAccess(session.userId, teamId, request.log);
 
     if (grant === null) {

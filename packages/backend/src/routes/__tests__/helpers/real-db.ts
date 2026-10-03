@@ -367,3 +367,73 @@ export async function withTeamLockGate<T>(
   gate.release();
   return Promise.all(pending);
 }
+
+// ---------------------------------------------------------------------------
+// withTeamLockGateStaged — harden-topic-write-endpoints (#184) tasks 3.6-3.8.
+//
+// Like withTeamLockGate, but fires the requests one at a time: request i+1 is
+// started only after request i is queued on the team lock. Postgres grants a
+// contended advisory lock in queue order, so once the gate commits the
+// requests run in exactly the order given. That lets a test pin WHICH
+// operation ran first and observe that the second waited for it.
+//
+// The gate takes the lock with the production key on the canonical
+// (lowercase) teamId. A request whose path used another letter case only
+// counts as a waiter if it hashes to the same key -- which is the L1 property
+// these tests prove. If it did not, the poll below times out and the test
+// fails rather than passing without overlap.
+// ---------------------------------------------------------------------------
+
+async function teamLockWaiters(mods: Mods, key: number): Promise<number> {
+  const waiting = await mods.db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM pg_locks
+      WHERE locktype = 'advisory' AND granted = false AND objsubid = 1
+        AND objid = ($1::bigint & 4294967295)::oid`,
+    [key],
+  );
+  return waiting.rows[0]?.n ?? 0;
+}
+
+export async function withTeamLockGateStaged<T>(
+  mods: Mods,
+  teamId: string,
+  fires: Array<() => Promise<T>>,
+  opts: { timeoutMs?: number } = {},
+): Promise<T[]> {
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const gate = await mods.db.connect();
+  const pending: Promise<T>[] = [];
+  try {
+    await gate.query("BEGIN");
+    await gate.query(mods.snapshot.LOCK_TEAM_TOPICS_SQL, [teamId]);
+    const { rows } = await gate.query<{ key: number }>(
+      `SELECT ${mods.snapshot.TEAM_TOPICS_LOCK_KEY_SQL} AS key`,
+      [teamId],
+    );
+    const key = rows[0]!.key;
+
+    for (const [index, fire] of fires.entries()) {
+      const p = fire();
+      p.catch(() => undefined);
+      pending.push(p);
+      const deadline = Date.now() + timeoutMs;
+      while ((await teamLockWaiters(mods, key)) < index + 1) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `withTeamLockGateStaged: timed out waiting for request ${index + 1} to queue on the team lock`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    }
+
+    await gate.query("COMMIT");
+  } catch (err) {
+    await gate.query("ROLLBACK").catch(() => undefined);
+    gate.release();
+    await Promise.allSettled(pending);
+    throw err;
+  }
+  gate.release();
+  return Promise.all(pending);
+}
