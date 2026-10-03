@@ -13,6 +13,7 @@ import type { SessionData } from "../auth/session-store.js";
 import { buildErrorEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
 import { lockTeamTopics } from "../sessions/session-topic-snapshot.js";
+import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
 import type {
   ArchiveTopicResponse,
   ArchiveTopicConfirmationRequired,
@@ -41,7 +42,15 @@ import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 //      NOT_A_FACILITATOR / FACILITATOR_IS_TEAM_MEMBER. Admits a non-member
 //      facilitator or an application admin (FR-8.2, #176). Reveals nothing
 //      about any specific team.
-//   2. Team existence (Task 3.2) -- 404. Runs only after step 1 passes.
+//   2. Writable team (checkWritableTeam) -- 404 TEAM_NOT_FOUND. Runs only
+//      after step 1 passes. Answers 404 for a nonexistent team AND for the
+//      __default_topics__ template team (#188, default-topic-provisioning
+//      "template team rejects team-scoped topic writes"), the latter with a
+//      topic.write_denied_template audit row. The same step 2 applies to
+//      every team-scoped topic-write endpoint (TOPIC-003..007). A new
+//      topics-writing route outside /api/v1/teams/:teamId/topics must be
+//      added to EXTRA_IN_SCOPE_ROUTES in
+//      routes/__tests__/topic-write-template-guard-structural.test.ts.
 //   3. Customization lock (Task 3.3) -- 409 TOPIC_CUSTOMIZATION_LOCKED.
 //      Runs only after step 2 passes.
 //   4. Request body validation (Task 5.3) -- 422. Runs only after step 3
@@ -143,24 +152,60 @@ async function rejectNonCanonicalTeamId(
   return { rejected: true };
 }
 
+// Shared context for every topic-write denial helper below (lock gate, lock
+// denial audit, template guard, template denial audit).
+interface TopicWriteDenialContext {
+  actorUserId: string;
+  actorGlobalRole: string;
+  teamId: string;
+  endpoint: string;
+  attemptedOperation: string;
+}
+
 // ---------------------------------------------------------------------------
-// Task 3.2 — team-existence check
+// Task 3.2 — team-existence check, plus the template-team rule (#188)
 //
-// design.md Decision 11: SELECT id FROM teams WHERE id = $1, with NO
-// deactivated_at filter. A deactivated team is treated as existing, matching
-// POST /draft's identical check -- this is a stated decision, not an
+// design.md Decision 11 (#49/#50): SELECT id FROM teams WHERE id = $1, with
+// NO deactivated_at filter. A deactivated team is treated as existing,
+// matching POST /draft's identical check -- this is a stated decision, not an
 // oversight.
+//
+// reject-template-team-topic-writes design.md D1 (owning requirement:
+// default-topic-provisioning "template team rejects team-scoped topic
+// writes"): when the existing row is the __default_topics__ template team,
+// the write is answered with the same 404 TEAM_NOT_FOUND envelope a missing
+// team gets, after a topic.write_denied_template audit attempt and the
+// timing floor. No header is set here, so each endpoint's template 404
+// carries exactly the headers its missing-team 404 carries.
+//
+// The template check lives inside the existence step ON PURPOSE: it must
+// run after authorization (403 first) and must NOT be moved after the
+// customization lock -- the template's protection must not depend on its
+// session history.
 // ---------------------------------------------------------------------------
-async function checkTeamExists(
+async function checkWritableTeam(
+  request: FastifyRequest,
   reply: FastifyReply,
-  teamId: string,
+  ctx: TopicWriteDenialContext,
   startTime: number,
 ): Promise<{ rejected: boolean }> {
-  const result = await db.query<{ id: string }>(`SELECT id FROM teams WHERE id = $1`, [teamId]);
+  const result = await db.query<{ id: string }>(`SELECT id FROM teams WHERE id = $1`, [ctx.teamId]);
 
   if (result.rows.length === 0) {
     await applyTimingFloor(startTime);
     await reply.code(404).send(buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND"));
+    return { rejected: true };
+  }
+
+  // design.md D2: a constant comparison on the existing query's input -- no
+  // extra round trip. rejectNonCanonicalTeamId has already run, so the
+  // canonical spelling is the only one that can reach here.
+  if (ctx.teamId === DEFAULT_TOPICS_TEAM_ID) {
+    // Envelope first, so the audit's correlationId matches the response.
+    const envelope = buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND");
+    await writeTemplateDenialAudit(request, ctx, envelope.error.correlationId);
+    await applyTimingFloor(startTime);
+    await reply.code(404).send(envelope);
     return { rejected: true };
   }
 
@@ -180,13 +225,7 @@ async function checkTeamExists(
 // ---------------------------------------------------------------------------
 async function writeLockDenialAudit(
   request: FastifyRequest,
-  params: {
-    actorUserId: string;
-    actorGlobalRole: string;
-    teamId: string;
-    endpoint: string;
-    attemptedOperation: string;
-  },
+  params: TopicWriteDenialContext,
 ): Promise<void> {
   await db.query(
     `INSERT INTO audit_log
@@ -213,6 +252,70 @@ async function writeLockDenialAudit(
 }
 
 // ---------------------------------------------------------------------------
+// Audit write for a denied template-team write (#188, design.md D3)
+//
+// A separate operation (topic.write_denied_template), not the lock's, so
+// incident review can tell "someone touched the template" from ordinary lock
+// friction. Same column layout and metadata ({ endpoint, attempted_operation }
+// only) as writeLockDenialAudit.
+//
+// Unlike writeLockDenialAudit, an insert failure is caught: a 500 that only
+// the template path can produce would undo the "looks like a missing team"
+// guarantee. The structured event is emitted on BOTH outcomes (with
+// auditRowWritten), so the log is a complete fallback record when the row is
+// lost, and the failure log carries the stable audit_write_failed marker.
+// The raw pg error is never logged (its detail/parameters can echo bound
+// values), and neither is the request body.
+// ---------------------------------------------------------------------------
+async function writeTemplateDenialAudit(
+  request: FastifyRequest,
+  ctx: TopicWriteDenialContext,
+  correlationId: string,
+): Promise<void> {
+  const operation = "topic.write_denied_template";
+  let auditRowWritten = false;
+  try {
+    await db.query(
+      `INSERT INTO audit_log
+         (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        ctx.actorUserId,
+        ctx.actorGlobalRole,
+        request.ip,
+        operation,
+        DEFAULT_TOPICS_TEAM_ID,
+        JSON.stringify({ endpoint: ctx.endpoint, attempted_operation: ctx.attemptedOperation }),
+      ],
+    );
+    auditRowWritten = true;
+  } catch (err) {
+    const dbError = err as { code?: unknown; message?: unknown };
+    request.log.error(
+      {
+        audit_write_failed: true,
+        operation,
+        correlationId,
+        dbErrorCode: dbError.code,
+        dbErrorMessage: dbError.message,
+      },
+      "topic.write_denied_template audit insert failed",
+    );
+  }
+
+  emitAuditEvent(request.log, operation, {
+    actorUserId: ctx.actorUserId,
+    actorGlobalRole: ctx.actorGlobalRole,
+    actorIp: request.ip,
+    teamId: DEFAULT_TOPICS_TEAM_ID,
+    endpoint: ctx.endpoint,
+    attemptedOperation: ctx.attemptedOperation,
+    correlationId,
+    auditRowWritten,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Task 3.3/3.4 — customization lock gate
 //
 // design.md Decision 1: uses the single shared lock-check function
@@ -223,13 +326,7 @@ async function writeLockDenialAudit(
 async function checkCustomizationLockGate(
   request: FastifyRequest,
   reply: FastifyReply,
-  params: {
-    actorUserId: string;
-    actorGlobalRole: string;
-    teamId: string;
-    endpoint: string;
-    attemptedOperation: string;
-  },
+  params: TopicWriteDenialContext,
   startTime: number,
 ): Promise<{ rejected: boolean }> {
   const unlocked = await hasCompletedFirstSession(params.teamId);
@@ -763,8 +860,20 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Task 3.2 / Task 3.6 — 404, checked second.
-    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    // Task 3.2 / Task 3.6 — 404, checked second: a nonexistent team or the
+    // template team (#188, checkWritableTeam).
+    const existsResult = await checkWritableTeam(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.custom_added",
+      },
+      startTime,
+    );
     if (existsResult.rejected) {
       return reply;
     }
@@ -926,8 +1035,20 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Team existence — 404, checked second. Reused unchanged from TOPIC-003.
-    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    // Writable team — 404, checked second: a nonexistent team or the
+    // template team (#188, checkWritableTeam). Shared with TOPIC-003.
+    const existsResult = await checkWritableTeam(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.archived",
+      },
+      startTime,
+    );
     if (existsResult.rejected) {
       return reply;
     }
@@ -1135,8 +1256,20 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Step 2 -- 404, checked second. Reused unchanged from TOPIC-003/004.
-    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    // Step 2 -- 404, checked second: a nonexistent team or the template
+    // team (#188, checkWritableTeam). Shared with TOPIC-003/004.
+    const existsResult = await checkWritableTeam(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.restored",
+      },
+      startTime,
+    );
     if (existsResult.rejected) {
       return reply;
     }
@@ -1302,8 +1435,20 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Step 2 -- 404, checked second.
-    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    // Step 2 -- 404, checked second: a nonexistent team or the template
+    // team (#188, checkWritableTeam).
+    const existsResult = await checkWritableTeam(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.reordered",
+      },
+      startTime,
+    );
     if (existsResult.rejected) {
       return reply;
     }
@@ -1516,8 +1661,20 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
-    // Step 2 -- 404 TEAM_NOT_FOUND.
-    const existsResult = await checkTeamExists(reply, teamId, startTime);
+    // Step 2 -- 404 TEAM_NOT_FOUND: a nonexistent team or the template team
+    // (#188, checkWritableTeam).
+    const existsResult = await checkWritableTeam(
+      request,
+      reply,
+      {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        teamId,
+        endpoint,
+        attemptedOperation: "topic.annotation_updated",
+      },
+      startTime,
+    );
     if (existsResult.rejected) {
       return reply;
     }

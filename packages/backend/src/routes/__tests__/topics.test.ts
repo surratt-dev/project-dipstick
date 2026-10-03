@@ -2625,6 +2625,10 @@ describe("topic write routes — non-canonical teamId (implementation review M1)
     ["hyphenless", "11111111111141118111111111111111"],
     ["braced", "{11111111-1111-4111-8111-111111111111}"],
     ["malformed", "not-a-uuid"],
+    // #188 tasks.md 2.3: the template team's own non-canonical spellings are
+    // rejected here too, before any query -- so no template-denial row.
+    ["hyphenless template", "00000000000000000000000000000001"],
+    ["braced template", "{00000000-0000-0000-0000-000000000001}"],
   ] as const;
   const routes = [
     ["POST add", "POST", (t: string) => `/api/v1/teams/${t}/topics`, { name: "X", prompt: "Y?", voteType: "finger" }],
@@ -2648,6 +2652,250 @@ describe("topic write routes — non-canonical teamId (implementation review M1)
       expect(mockDbQuery).not.toHaveBeenCalled();
       expect(mockDbConnect).not.toHaveBeenCalled();
       expect(mockApplyTimingFloor).toHaveBeenCalled();
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// reject-template-team-topic-writes (#188) — tasks.md 2.1/2.2. Every
+// team-scoped topic-write endpoint answers the __default_topics__ template
+// team with the missing-team 404, after authorization and before the lock,
+// and writes one topic.write_denied_template audit row (design.md D1-D3).
+// The mock call order for non-template teams is unchanged (D2): the template
+// check is a constant comparison after the existing existence query.
+// ---------------------------------------------------------------------------
+const TEMPLATE_TEAM_ID = "00000000-0000-0000-0000-000000000001";
+const TEMPLATE_TOPIC = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+const TEMPLATE_ROUTES = [
+  {
+    label: "TOPIC-003 add",
+    method: "POST",
+    url: `/api/v1/teams/${TEMPLATE_TEAM_ID}/topics`,
+    payload: VALID_BODY as object | undefined,
+    endpoint: "POST /api/v1/teams/:teamId/topics",
+    attemptedOperation: "topic.custom_added",
+    noStore: false,
+  },
+  {
+    label: "TOPIC-004 archive",
+    method: "DELETE",
+    url: `/api/v1/teams/${TEMPLATE_TEAM_ID}/topics/${TEMPLATE_TOPIC}?confirm=true`,
+    payload: undefined,
+    endpoint: "DELETE /api/v1/teams/:teamId/topics/:topicId",
+    attemptedOperation: "topic.archived",
+    noStore: false,
+  },
+  {
+    label: "TOPIC-005 restore",
+    method: "POST",
+    url: `/api/v1/teams/${TEMPLATE_TEAM_ID}/topics/${TEMPLATE_TOPIC}/restore`,
+    payload: {},
+    endpoint: "POST /api/v1/teams/:teamId/topics/:topicId/restore",
+    attemptedOperation: "topic.restored",
+    noStore: false,
+  },
+  {
+    label: "TOPIC-006 reorder",
+    method: "PUT",
+    url: `/api/v1/teams/${TEMPLATE_TEAM_ID}/topics/order`,
+    payload: { orderedTopicIds: [TEMPLATE_TOPIC] },
+    endpoint: "PUT /api/v1/teams/:teamId/topics/order",
+    attemptedOperation: "topic.reordered",
+    noStore: true,
+  },
+  {
+    label: "TOPIC-007 annotation",
+    method: "PUT",
+    url: `/api/v1/teams/${TEMPLATE_TEAM_ID}/topics/${TEMPLATE_TOPIC}/annotation`,
+    payload: { annotation: "x" },
+    endpoint: "PUT /api/v1/teams/:teamId/topics/:topicId/annotation",
+    attemptedOperation: "topic.annotation_updated",
+    noStore: true,
+  },
+] as const;
+
+type TemplateRoute = (typeof TEMPLATE_ROUTES)[number];
+
+/** buildApp plus a spy on request.log.error (the audit-failure log, design.md D3). */
+async function buildAppWithErrorLogSpy(userId: string) {
+  const errorLog = vi.fn();
+  const app = Fastify();
+  app.decorateRequest("session", null);
+  app.addHook("onRequest", async (request) => {
+    (request as unknown as Record<string, unknown>).session = { userId };
+    const log = Object.create(request.log) as typeof request.log;
+    log.error = errorLog as unknown as typeof log.error;
+    request.log = log;
+  });
+  app.register(topicRoutes);
+  await app.ready();
+  return { app, errorLog };
+}
+
+function injectTemplate(app: Awaited<ReturnType<typeof buildApp>>, route: TemplateRoute) {
+  return app.inject({
+    method: route.method,
+    url: route.url,
+    ...(route.payload === undefined ? {} : { payload: route.payload }),
+  });
+}
+
+function templateAuditCalls() {
+  return mockDbQuery.mock.calls.filter(
+    (c) => typeof c[0] === "string" && (c[0] as string).includes("INSERT INTO audit_log"),
+  );
+}
+
+function lockQueryCalls() {
+  return mockDbQuery.mock.calls.filter(
+    (c) => typeof c[0] === "string" && (c[0] as string).includes("FROM sessions"),
+  );
+}
+
+describe("topic write routes — template team rejected as 404 (#188, tasks.md 2.1)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  for (const route of TEMPLATE_ROUTES) {
+    it(`${route.label}: a facilitator gets 404 TEAM_NOT_FOUND, one template-denial audit row and event, no lock check`, async () => {
+      mockAuthQuery("facilitator", false);
+      mockTeamExists(true);
+      mockDenialAuditInsert();
+
+      const { app } = await buildAppWithErrorLogSpy("facilitator-1");
+      const res = await injectTemplate(app, route);
+
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+      expect(lockQueryCalls()).toHaveLength(0);
+      expect(mockDbQuery).toHaveBeenCalledTimes(3);
+      expect(mockDbConnect).not.toHaveBeenCalled();
+
+      const audits = templateAuditCalls();
+      expect(audits).toHaveLength(1);
+      const params = audits[0]![1] as unknown[];
+      expect(params[0]).toBe("facilitator-1");
+      expect(params[1]).toBe("facilitator");
+      expect(params[3]).toBe("topic.write_denied_template");
+      expect(params[4]).toBe(TEMPLATE_TEAM_ID);
+      const metadata = JSON.parse(params[5] as string);
+      expect(metadata).toEqual({ endpoint: route.endpoint, attempted_operation: route.attemptedOperation });
+      expect(metadata).not.toHaveProperty("correlationId");
+
+      // Timing floor applied after the audit insert, before the response.
+      expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+      expect(mockApplyTimingFloor.mock.invocationCallOrder[0]!).toBeGreaterThan(
+        mockDbQuery.mock.invocationCallOrder[2]!,
+      );
+
+      expect(mockEmitAuditEvent).toHaveBeenCalledTimes(1);
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(expect.anything(), "topic.write_denied_template", {
+        actorUserId: "facilitator-1",
+        actorGlobalRole: "facilitator",
+        actorIp: expect.any(String),
+        teamId: TEMPLATE_TEAM_ID,
+        endpoint: route.endpoint,
+        attemptedOperation: route.attemptedOperation,
+        correlationId: body.error.correlationId,
+        auditRowWritten: true,
+      });
+    });
+
+    it(`${route.label}: an engineer gets 403 NOT_A_FACILITATOR with no template audit`, async () => {
+      mockAuthQuery("engineer", false);
+
+      const app = await buildApp("engineer-1");
+      const res = await injectTemplate(app, route);
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe("NOT_A_FACILITATOR");
+      expect(mockDbQuery).toHaveBeenCalledTimes(1);
+      expect(templateAuditCalls()).toHaveLength(0);
+      expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const route of TEMPLATE_ROUTES.filter((r) => r.attemptedOperation !== "topic.annotation_updated")) {
+    it(`${route.label}: an application_admin gets 404 with the template-denial row attributed to application_admin`, async () => {
+      mockAuthQuery("application_admin", false);
+      mockTeamExists(true);
+      mockDenialAuditInsert();
+
+      const app = await buildApp("admin-1");
+      const res = await injectTemplate(app, route);
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
+      expect(lockQueryCalls()).toHaveLength(0);
+      const audits = templateAuditCalls();
+      expect(audits).toHaveLength(1);
+      expect((audits[0]![1] as unknown[])[1]).toBe("application_admin");
+    });
+  }
+
+  it("TOPIC-007 annotation: an application_admin gets 403 with no template audit (FR-8.7)", async () => {
+    mockAuthQuery("application_admin", false);
+
+    const app = await buildApp("admin-1");
+    const res = await injectTemplate(app, TEMPLATE_ROUTES[4]);
+
+    expect(res.statusCode).toBe(403);
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    expect(templateAuditCalls()).toHaveLength(0);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("topic write routes — template audit insert failure (#188, tasks.md 2.2)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  for (const route of [TEMPLATE_ROUTES[0], TEMPLATE_ROUTES[3]]) {
+    it(`${route.label}: a failed audit insert still answers the same 404 (not 500) and leaves a complete log trace`, async () => {
+      mockAuthQuery("facilitator", false);
+      mockTeamExists(true);
+      mockDbQuery.mockRejectedValueOnce(
+        Object.assign(new Error("connection terminated"), { code: "57P01", detail: "secret", parameters: ["x"] }),
+      );
+
+      const { app, errorLog } = await buildAppWithErrorLogSpy("facilitator-1");
+      const res = await injectTemplate(app, route);
+
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+      if (route.noStore) {
+        expect(res.headers["cache-control"]).toBe("no-store");
+      } else {
+        expect(res.headers["cache-control"]).toBeUndefined();
+      }
+      expect(lockQueryCalls()).toHaveLength(0);
+      expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      const [logObj] = errorLog.mock.calls[0]! as [Record<string, unknown>];
+      expect(logObj).toEqual({
+        audit_write_failed: true,
+        operation: "topic.write_denied_template",
+        correlationId: body.error.correlationId,
+        dbErrorCode: "57P01",
+        dbErrorMessage: "connection terminated",
+      });
+      expect(logObj).not.toHaveProperty("err");
+
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "topic.write_denied_template",
+        expect.objectContaining({
+          actorUserId: "facilitator-1",
+          actorGlobalRole: "facilitator",
+          actorIp: expect.any(String),
+          endpoint: route.endpoint,
+          attemptedOperation: route.attemptedOperation,
+          correlationId: body.error.correlationId,
+          auditRowWritten: false,
+        }),
+      );
     });
   }
 });

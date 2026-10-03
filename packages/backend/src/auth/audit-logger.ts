@@ -381,6 +381,16 @@ export type AuditEventName =
   // success path. metadata: { topic_id }.
   | "topic.write_denied_locked"
   | "topic.custom_added"
+  // topic.write_denied_template: reject-template-team-topic-writes (#188),
+  // design.md D3. Fired by any team-scoped topic-write endpoint
+  // (TOPIC-003..007) when the target is the __default_topics__ template team,
+  // which is answered 404 TEAM_NOT_FOUND. A separate operation from
+  // topic.write_denied_locked so incident review can tell a template write
+  // attempt from lock friction. The audit_log row's metadata is { endpoint,
+  // attempted_operation }; the structured-log event additionally carries the
+  // response's correlationId and auditRowWritten (false when the insert
+  // failed and this event is the only record).
+  | "topic.write_denied_template"
   // topic.archived: remove-topic, design.md Decision 7. Fired by
   // DELETE /api/v1/teams/:teamId/topics/:topicId (TOPIC-004) on every
   // successful archive, in the same database transaction as the topics
