@@ -43,13 +43,13 @@ A structured audit event named `topic.write_denied_template` SHALL be emitted th
 
 **No write.** A rejected request SHALL leave every `topics` row of the template unchanged.
 
-**Structural coverage.** An automated test SHALL enumerate the application's registered routes from the Fastify instance itself, never from a hand-written list of known routes. It SHALL select every route whose methods include `POST`, `PUT`, `PATCH`, `DELETE` or a wildcard, and whose path matches `/api/v1/teams/:<any parameter name>/topics` followed by `/` or the end of the path, together with an explicit extra list of in-scope routes outside that prefix. The extra list is empty today. The author of any `topics`-writing route outside the prefix SHALL add it to the extra list in the same change. There SHALL be no exemption list. Excluding an in-scope route from the test requires a change to this requirement. For each selected route, the test SHALL send one request built deterministically:
+**Structural coverage.** An automated test SHALL enumerate the application's registered routes from the Fastify instance itself, never from a hand-written list of known routes. It SHALL select every route whose methods include `POST`, `PUT`, `PATCH`, `DELETE` or a wildcard, and whose path matches `/api/teams/:<any parameter name>/topics` or `/api/v<N>/teams/:<any parameter name>/topics` (versioned or unversioned, matching the existing unversioned join-links convention) followed by `/` or the end of the path, together with an explicit extra list of in-scope routes outside that prefix. The extra list is empty today. The author of any `topics`-writing route outside the prefix SHALL add it to the extra list in the same change. There SHALL be no exemption list. Excluding an in-scope route from the test requires a change to this requirement. For each selected route, the test SHALL send one request built deterministically:
 - the caller is a standing facilitator with no team membership;
 - the first path parameter is `DEFAULT_TOPICS_TEAM_ID`, whatever it is named;
 - every other path parameter is the fixed canonical UUID `ffffffff-ffff-4fff-bfff-ffffffffffff`;
 - the body is `{}`.
 
-The test SHALL assert `404` with `error.code: "TEAM_NOT_FOUND"` and exactly one `topic.write_denied_template` row for that request. Its result SHALL NOT depend on the template's customization-lock state. It SHALL leave every template `topics` row unchanged, restoring any change it detects.
+The test SHALL assert `404` with `error.code: "TEAM_NOT_FOUND"` and exactly one `topic.write_denied_template` row for that request. Its result SHALL NOT depend on the template's customization-lock state. It SHALL assert after every request that every template `topics` row, in every status, is unchanged from a snapshot taken before the first request, and SHALL restore the template in a `finally` by updating the snapshot's rows by id and deleting only added `is_default = false` rows that are not in the snapshot (so it never removes another test file's fixture rows).
 
 This test is how the "SHALL NOT be relaxed" clause below is enforced.
 
@@ -124,6 +124,6 @@ This test is how the "SHALL NOT be relaxed" clause below is enforced.
 - **AND** the new team's topics, in every status, equal the snapshot's `is_default = true` rows on `name`, `prompt`, `vote_type`, `display_order` and `status`
 
 #### Scenario: A newly registered topic-write route is covered
-- **WHEN** the application registers a route with a `POST`, `PUT`, `PATCH`, `DELETE` or wildcard method whose path matches `/api/v1/teams/:<any parameter name>/topics` followed by `/` or the end of the path, or a route on the structural test's extra list
+- **WHEN** the application registers a route with a `POST`, `PUT`, `PATCH`, `DELETE` or wildcard method whose path matches `/api/teams/:<any parameter name>/topics` or `/api/v<N>/teams/:<any parameter name>/topics` followed by `/` or the end of the path, or a route on the structural test's extra list
 - **THEN** the structural route test sends that route the deterministic request described under **Structural coverage**
 - **AND** the test fails unless the response is `404` with `error.code: "TEAM_NOT_FOUND"` and exactly one `topic.write_denied_template` row is written for that request, whatever the template's lock state

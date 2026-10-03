@@ -122,9 +122,9 @@ This endpoint's administrator arm SHALL NOT be shared with `PUT /api/v1/teams/:t
 - **THEN** the topic is created successfully; prior session history with this specific facilitator is not required
 ### Requirement: Add Custom Topic evaluates checks in a fixed order — identity/role, team existence, lock, then body validation
 
-`POST /api/v1/teams/:teamId/topics` SHALL evaluate the following checks in this order, rejecting on the first one that fails and evaluating no later check — nor reporting its outcome — once an earlier one has already failed: (1) identity/role authorization (`403 Forbidden`, `NOT_A_FACILITATOR` or `FACILITATOR_IS_TEAM_MEMBER`; an `application_admin` always passes this check); (2) team existence (`404 Not Found`); (3) the customization lock (`409 Conflict`, `TOPIC_CUSTOMIZATION_LOCKED`); (4) request body validation (`422 Unprocessable Entity`). This ordering is stated once, here, as the canonical sequence; the individual requirements above and below describe each check's own condition and reason code but defer to this requirement for their relative order. The order SHALL be the same for administrators and facilitators.
+`POST /api/v1/teams/:teamId/topics` SHALL evaluate the following checks in this order, rejecting on the first one that fails and evaluating no later check — nor reporting its outcome — once an earlier one has already failed: (1) identity/role authorization (`403 Forbidden`, `NOT_A_FACILITATOR` or `FACILITATOR_IS_TEAM_MEMBER`; an `application_admin` always passes this check); (2) team existence (`404 Not Found`); (2a) the template team — a `teamId` equal to `DEFAULT_TOPICS_TEAM_ID` is answered exactly as a nonexistent team (`404 Not Found`, `TEAM_NOT_FOUND`) (see `default-topic-provisioning`, Requirement: The template team is never written through a team-scoped topic-write endpoint); (3) the customization lock (`409 Conflict`, `TOPIC_CUSTOMIZATION_LOCKED`); (4) request body validation (`422 Unprocessable Entity`). This ordering is stated once, here, as the canonical sequence; the individual requirements above and below describe each check's own condition and reason code but defer to this requirement for their relative order. The order SHALL be the same for administrators and facilitators.
 
-The shipped handler SHALL also apply a constant minimum response-time floor (`applyTimingFloor`) at every one of these early-return points, plus the `201` success path, so that this ordering's status-code-level anti-enumeration guarantee is not reopened through response-latency differences. This includes both `403` branches emitted by the administrator-aware authorization check and the `404` and `409` returns reached by an administrator. A status-code ordering alone is not sufficient for this requirement to be considered met.
+The shipped handler SHALL also apply a constant minimum response-time floor (`applyTimingFloor`) at every one of these early-return points, plus the `201` success path, so that this ordering's status-code-level anti-enumeration guarantee is not reopened through response-latency differences. This includes the template-team `404`, both `403` branches emitted by the administrator-aware authorization check and the `404` and `409` returns reached by an administrator. A status-code ordering alone is not sufficient for this requirement to be considered met.
 
 #### Scenario: A request against a nonexistent team is rejected with 404
 - **WHEN** a standing facilitator who is not an active member of any team submits a request against a `teamId` that does not correspond to any existing team
@@ -169,6 +169,16 @@ The shipped handler SHALL also apply a constant minimum response-time floor (`ap
 #### Scenario: Every early return reachable through the administrator-aware check applies the timing floor
 - **WHEN** an `application_admin` request ends in `404` (nonexistent team) or `409` (locked team), or a request ends in `403 NOT_A_FACILITATOR` (engineer or engineering manager) or `403 FACILITATOR_IS_TEAM_MEMBER` (member-facilitator)
 - **THEN** `applyTimingFloor` has been applied before the response is sent
+
+#### Scenario: The template team is rejected with 404 before the customization lock (tested in both lock states)
+- **WHEN** a standing facilitator or an `application_admin` with an invalid body submits a request against `teamId = DEFAULT_TOPICS_TEAM_ID`, in either lock state
+- **THEN** the response is `404 Not Found` with reason code `TEAM_NOT_FOUND`
+- **AND** the customization lock is not evaluated and no `topic.write_denied_locked` row is written
+- **AND** exactly one `topic.write_denied_template` row is written, with `metadata.attempted_operation = "topic.custom_added"`
+- **AND** the response matches this endpoint's own nonexistent-team `404` (see `default-topic-provisioning`)
+- **AND** the response does not include `error.field`
+- **AND** no topic is created
+
 ### Requirement: Concurrent Add Custom Topic requests against the same team never collide on displayOrder
 
 When two or more requests to add a custom topic to the same team are processed concurrently, the `displayOrder` computation and the topic insert SHALL be serialized per team, using a mechanism that defers the second request's `displayOrder` read until after the first request's insert has committed — not merely a row lock re-checked against a pre-existing snapshot — so that no two topics ever created for the same team are assigned the same `displayOrder`, and neither request SHALL fail with an unhandled server error as a result of the collision.
