@@ -520,8 +520,10 @@ describe.skipIf(!dbUp)("reorder-topics group 5 — PUT /topics/order real Postgr
     const { db } = mods;
     await db.query(`DROP TRIGGER IF EXISTS reorder_test_fail_phase2 ON topics`);
     await db.query(`DROP FUNCTION IF EXISTS reorder_test_fail_phase2()`);
+    // Sentinel rows are removed by actor only: a team_id filter on the
+    // sentinel would delete other files' concurrent template-denial rows (#188).
     await db.query(`DELETE FROM audit_log WHERE team_id = ANY($1::uuid[]) OR actor_user_id = ANY($2::uuid[])`, [
-      [teamId, otherTeamId, SENTINEL_TEAM_ID],
+      [teamId, otherTeamId],
       [facilitatorId, facilitator2Id, adminId],
     ]);
     await db.query(`DELETE FROM sessions WHERE team_id = ANY($1::uuid[])`, [[teamId, otherTeamId]]);
@@ -744,26 +746,22 @@ describe.skipIf(!dbUp)("reorder-topics group 5 — PUT /topics/order real Postgr
     expect(addedRow?.display_order).toBe(add.json().displayOrder);
   });
 
-  it("5.6: the sentinel __default_topics__ team is protected by the customization lock (409)", async () => {
+  it("5.6: a reorder on the __default_topics__ template team is answered 404 TEAM_NOT_FOUND with a template-denial audit row (#188)", async () => {
     await seed([1, 2]);
-    // The sentinel's own topic rows can be touched by other integration files
-    // running in parallel, so this test does not depend on how many there
-    // are: the lock is checked before the body, so any list gets the 409.
-    const sentinelIds = (await activeOrder(SENTINEL_TEAM_ID)).map((row) => row.id).reverse();
+    // Database clock, so the timestamp scope is not affected by host/container skew.
+    const start = (await mods.db.query<{ now: Date }>(`SELECT clock_timestamp() AS now`)).rows[0]!.now;
 
-    const res = await putOrder(
-      facilitatorId,
-      sentinelIds.length > 0 ? sentinelIds : [fixtureId("ffffffff", 1)],
-      SENTINEL_TEAM_ID,
-    );
+    const res = await putOrder(facilitatorId, [fixtureId("ffffffff", 1)], SENTINEL_TEAM_ID);
 
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
-    const reordered = await mods.db.query(
-      `SELECT id FROM audit_log WHERE team_id = $1 AND operation = 'topic.reordered' AND actor_user_id = $2`,
-      [SENTINEL_TEAM_ID, facilitatorId],
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
+    const rows = await mods.db.query<{ operation: string }>(
+      `SELECT operation FROM audit_log
+        WHERE team_id = $1 AND actor_user_id = $2 AND timestamp >= $3
+          AND operation IN ('topic.reordered', 'topic.write_denied_locked', 'topic.write_denied_template')`,
+      [SENTINEL_TEAM_ID, facilitatorId, start],
     );
-    expect(reordered.rows).toHaveLength(0);
+    expect(rows.rows.map((row) => row.operation)).toEqual(["topic.write_denied_template"]);
   });
 
   // ---- 5.7 last-writer-wins ----

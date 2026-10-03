@@ -4,16 +4,7 @@ import cookie from "@fastify/cookie";
 import session from "@fastify/session";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
-import { healthRoutes } from "./routes/health.js";
-import { authRoutes } from "./routes/auth.js";
-import { joinLinkRoutes } from "./routes/join-links.js";
-import { teamRoutes } from "./routes/teams.js";
-import { sessionRoutes } from "./routes/sessions.js";
-import { emViewRoutes } from "./routes/em-views.js";
-import { contentRoutes } from "./routes/content.js";
-import { facilitatorSessionRoutes } from "./routes/facilitator-sessions.js";
-import { actionItemRoutes } from "./routes/action-items.js";
-import { topicRoutes } from "./routes/topics.js";
+import { registerRoutes } from "./routes/register-routes.js";
 import { config, getAllowedOrigins } from "./config.js";
 import { redis } from "./redis.js";
 import { createRedisStore } from "./auth/session-store.js";
@@ -101,17 +92,8 @@ export async function buildApp() {
   // Auth middleware
   await authMiddleware(app);
 
-  // Routes
-  await app.register(healthRoutes);
-  await app.register(authRoutes, { prefix: "/auth" });
-  await app.register(joinLinkRoutes);
-  await app.register(teamRoutes);
-  await app.register(sessionRoutes);
-  await app.register(emViewRoutes);
-  await app.register(contentRoutes);
-  await app.register(facilitatorSessionRoutes);
-  await app.register(actionItemRoutes);
-  await app.register(topicRoutes);
+  // Routes (routes/register-routes.ts, #188 design.md D4)
+  await registerRoutes(app);
 
   return app;
 }
