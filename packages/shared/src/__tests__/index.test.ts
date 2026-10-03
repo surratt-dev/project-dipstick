@@ -325,3 +325,28 @@ describe("Topic annotation rules (runtime)", () => {
     expect(normalizeAnnotation(" \r\n\t ")).toBe("");
   });
 });
+
+// harden-topic-write-endpoints (#184) task 5.2a: the topic-write rate-limit
+// contract. Pinned verbatim from specs/topic-write-rate-limiting/spec.md.
+describe("topic-write rate-limit contract (#184)", () => {
+  it("pins the codes and the spec's exact copy", async () => {
+    const shared = await import("../index.js");
+    expect(shared.TOPIC_WRITE_BURST_LIMIT_EXCEEDED).toBe("TOPIC_WRITE_BURST_LIMIT_EXCEEDED");
+    expect(shared.TOPIC_WRITE_DAILY_LIMIT_EXCEEDED).toBe("TOPIC_WRITE_DAILY_LIMIT_EXCEEDED");
+    expect(shared.TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE).toBe("TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE");
+    expect(shared.TOPIC_WRITE_RATE_LIMIT_MESSAGES.burst).toBe(
+      "You've made a lot of topic changes in a short time. Changes so far are saved. Please wait a few minutes and try again.",
+    );
+    expect(shared.TOPIC_WRITE_RATE_LIMIT_MESSAGES.daily).toBe(
+      "You've reached today's limit for topic changes. Changes so far are saved. You can continue tomorrow.",
+    );
+    expect(shared.TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE_MESSAGE).toBe(
+      "Topic changes are temporarily unavailable. This change wasn't saved; changes you made earlier are kept. Please try again shortly.",
+    );
+  });
+
+  it("the rate-limit messages contain no number", async () => {
+    const { TOPIC_WRITE_RATE_LIMIT_MESSAGES } = await import("../index.js");
+    for (const message of Object.values(TOPIC_WRITE_RATE_LIMIT_MESSAGES)) expect(message).not.toMatch(/\d/);
+  });
+});

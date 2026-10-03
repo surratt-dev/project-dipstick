@@ -114,3 +114,12 @@ export type {
   FacilitatorConnectionStatusPayload,
 } from "./types/realtime.js";
 export { STALE_SIGNAL_CLOSE_CODE, REAUTH_GRACE_EXPIRED_CLOSE_CODE } from "./types/ws-close-codes.js";
+export {
+  TOPIC_WRITE_BURST_LIMIT_EXCEEDED,
+  TOPIC_WRITE_DAILY_LIMIT_EXCEEDED,
+  TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE,
+  TOPIC_WRITE_BURST_WAIT_PHRASE,
+  TOPIC_WRITE_RATE_LIMIT_MESSAGES,
+  TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE_MESSAGE,
+} from "./types/topic-write-rate-limit.js";
+export type { TopicWriteRateLimitCode } from "./types/topic-write-rate-limit.js";
