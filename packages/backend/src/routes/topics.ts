@@ -16,6 +16,7 @@ import type { SessionData } from "../auth/session-store.js";
 import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
 import type { TopicWriteDenialContext } from "./topic-write-context.js";
+import { enforceTopicWriteRateLimit } from "./topic-write-rate-limit.js";
 import { lockTeamTopics } from "../sessions/session-topic-snapshot.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
 import type {
@@ -46,6 +47,13 @@ import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
 //      NOT_A_FACILITATOR / FACILITATOR_IS_TEAM_MEMBER. Admits a non-member
 //      facilitator or an application admin (FR-8.2, #176). Reveals nothing
 //      about any specific team.
+//   1a. Topic-write rate limit (enforceTopicWriteRateLimit, #184) -- 429
+//      TOPIC_WRITE_{BURST,DAILY}_LIMIT_EXCEEDED or fail-closed 503
+//      TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE. One per-actor budget shared by
+//      every topic-write handler (TOPIC-003..007), called explicitly in each
+//      one right after step 1 and before step 2. No DB query, so the 429 says
+//      nothing about the team. (Before step 1, every handler answers a
+//      non-canonical teamId 404 and then lowercases teamId.)
 //   2. Writable team (checkWritableTeam) -- 404 TEAM_NOT_FOUND. Runs only
 //      after step 1 passes. Answers 404 for a nonexistent team AND for the
 //      __default_topics__ template team (#188, default-topic-provisioning
@@ -884,37 +892,30 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.custom_added",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Task 3.2 / Task 3.6 — 404, checked second: a nonexistent team or the
     // template team (#188, checkWritableTeam).
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.custom_added",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
 
     // Task 3.3 / Task 3.6 — 409, checked third.
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.custom_added",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1063,20 +1064,24 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.archived",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Writable team — 404, checked second: a nonexistent team or the
     // template team (#188, checkWritableTeam). Shared with TOPIC-003.
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.archived",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
@@ -1084,18 +1089,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     // Customization lock — 409, checked third. Reused unchanged from
     // TOPIC-003, including its writeLockDenialAudit call (the shared
     // topic.write_denied_locked operation, no new per-endpoint variant).
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.archived",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1288,20 +1282,24 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.restored",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Step 2 -- 404, checked second: a nonexistent team or the template
     // team (#188, checkWritableTeam). Shared with TOPIC-003/004.
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.restored",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
@@ -1309,18 +1307,7 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     // Step 3 -- 409, checked third. Reused unchanged from TOPIC-003/004,
     // including its writeLockDenialAudit call (the shared
     // topic.write_denied_locked operation, no new per-endpoint variant).
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.restored",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1471,37 +1458,30 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.reordered",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Step 2 -- 404, checked second: a nonexistent team or the template
     // team (#188, checkWritableTeam).
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.reordered",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
 
     // Step 3 -- 409, checked third.
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.reordered",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }
@@ -1701,37 +1681,30 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       return reply;
     }
 
+    // #184 Decisions 2-3: the shared topic-write rate limit, after the 403
+    // and before any team lookup -- so a 403-bound caller never consumes
+    // budget, and the 429 (or fail-closed 503) is identical for an existing,
+    // a missing and the template team. Counts this request if admitted.
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.annotation_updated",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
     // Step 2 -- 404 TEAM_NOT_FOUND: a nonexistent team or the template team
     // (#188, checkWritableTeam).
-    const existsResult = await checkWritableTeam(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.annotation_updated",
-      },
-      startTime,
-    );
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
     if (existsResult.rejected) {
       return reply;
     }
 
     // Step 3 -- 409 TOPIC_CUSTOMIZATION_LOCKED.
-    const lockResult = await checkCustomizationLockGate(
-      request,
-      reply,
-      {
-        actorUserId: session.userId,
-        actorGlobalRole: authResult.actorGlobalRole,
-        teamId,
-        endpoint,
-        attemptedOperation: "topic.annotation_updated",
-      },
-      startTime,
-    );
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
     if (lockResult.rejected) {
       return reply;
     }

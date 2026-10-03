@@ -117,7 +117,15 @@ export type Mods = Awaited<ReturnType<typeof loadModules>>;
 export type Db = Mods["db"];
 
 /** A Fastify app with every route plugin this change touches, authenticated as userId. */
-export async function buildApp(mods: Mods, userId: string): Promise<FastifyInstance> {
+export async function buildApp(
+  mods: Mods,
+  userId: string,
+  opts: { keepTopicWriteBudget?: boolean } = {},
+): Promise<FastifyInstance> {
+  // #184 5.4b: a fresh topic-write budget for this actor, so reruns never
+  // inherit one. Tests that pre-seed the actor's windows pass
+  // keepTopicWriteBudget and seed AFTER building the app or before with it.
+  if (!opts.keepTopicWriteBudget) await resetTopicWriteBudget(userId);
   const app = Fastify();
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (request) => {
@@ -141,7 +149,9 @@ export async function buildFullApp(
   mods: Mods,
   userId: string,
   onRoute?: (route: RouteOptions) => void,
+  opts: { keepTopicWriteBudget?: boolean } = {},
 ): Promise<FastifyInstance> {
+  if (!opts.keepTopicWriteBudget) await resetTopicWriteBudget(userId); // #184 5.4b
   const app = Fastify();
   app.decorateRequest("session", null);
   app.addHook("onRequest", async (request) => {
@@ -263,6 +273,7 @@ export class Fixture {
       await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [teamId]);
       await db.query(`DELETE FROM teams WHERE id = $1`, [teamId]);
     }
+    await resetTopicWriteBudget(...this.userIds); // #184 5.4b: no stray limiter keys
     for (const userId of this.userIds) {
       await db.query(`DELETE FROM audit_log WHERE actor_user_id = $1`, [userId]);
       await db.query(`DELETE FROM users WHERE id = $1`, [userId]);
@@ -436,4 +447,22 @@ export async function withTeamLockGateStaged<T>(
   }
   gate.release();
   return Promise.all(pending);
+}
+
+// ---------------------------------------------------------------------------
+// resetTopicWriteBudget — harden-topic-write-endpoints (#184) task 5.4b.
+//
+// Topic writes now go through a Redis-backed per-actor budget whose daily
+// window lives 24 h in the docker compose Redis. Integration files that use
+// fixed actor ids would otherwise accumulate budget across local reruns until
+// unrelated tests see 429s. This deletes all four of the actor's topic-write
+// keys (burst, daily and both breach markers). Keys come from the production
+// key function, so the helper cannot drift from the limiter.
+// ---------------------------------------------------------------------------
+export async function resetTopicWriteBudget(...userIds: string[]): Promise<void> {
+  if (userIds.length === 0) return;
+  const { redis } = await import("../../../redis.js");
+  const { topicWriteRateLimitKeys } = await import("../../topic-write-rate-limit.js");
+  const keys = userIds.flatMap((id) => Object.values(topicWriteRateLimitKeys(id)));
+  await redis.del(...keys);
 }

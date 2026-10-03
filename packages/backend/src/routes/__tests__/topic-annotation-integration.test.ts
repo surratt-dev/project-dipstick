@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { Redis } from "ioredis";
-import pg from "pg";
+import type pg from "pg";
 import Fastify from "fastify";
+import { probeInfra, requireInfraOrThrow, resetTopicWriteBudget } from "./helpers/real-db.js";
 
 // ---------------------------------------------------------------------------
 // Real Postgres coverage for topic-annotation (TOPIC-007, TOPIC-002 reads,
@@ -33,51 +33,13 @@ process.env["OIDC_CLIENT_SECRET"] ??= "dipstick-local-secret";
 process.env["OIDC_REDIRECT_URI"] ??= "http://localhost:3000/auth/callback";
 process.env["NODE_ENV"] ??= "test";
 
-const REDIS_URL = process.env["REDIS_URL"]!;
-const DATABASE_URL = process.env["DATABASE_URL"]!;
-const PROBE_TIMEOUT_MS = 750;
 const SENTINEL_TEAM_ID = "00000000-0000-0000-0000-000000000001";
 
-async function isRedisReachable(): Promise<boolean> {
-  const client = new Redis(REDIS_URL, {
-    lazyConnect: true,
-    connectTimeout: PROBE_TIMEOUT_MS,
-    retryStrategy: () => null,
-    maxRetriesPerRequest: 0,
-  });
-  try {
-    await client.connect();
-    await client.ping();
-    return true;
-  } catch {
-    return false;
-  } finally {
-    client.disconnect();
-  }
-}
-
-async function isPostgresReachable(): Promise<boolean> {
-  const pool = new pg.Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: PROBE_TIMEOUT_MS });
-  try {
-    await pool.query("SELECT 1");
-    return true;
-  } catch {
-    return false;
-  } finally {
-    await pool.end().catch(() => undefined);
-  }
-}
-
-const [redisUp, dbUp] = await Promise.all([isRedisReachable(), isPostgresReachable()]);
-const infraAvailable = redisUp && dbUp;
-
-if (!infraAvailable) {
-  console.warn(
-    `[topic-annotation-integration.test.ts] SKIPPED — Redis (${REDIS_URL}: ${redisUp ? "up" : "unreachable"}) and/or ` +
-      `Postgres (${DATABASE_URL.replace(/:[^:@]+@/, ":****@")}: ${dbUp ? "up" : "unreachable"}) not available. ` +
-      "Run `docker compose up` (repo root) and re-run this file.",
-  );
-}
+// harden-topic-write-endpoints (#184) 5.4a: probe through the shared harness,
+// which checks the same two services and makes this a "real-Redis" file for
+// the limiter-mock structural guard.
+const infraAvailable = await probeInfra();
+requireInfraOrThrow(infraAvailable, "topic-annotation-integration.test.ts");
 
 async function loadModules() {
   const { db } = await import("../../db.js");
@@ -96,7 +58,10 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
     mods = await loadModules();
   });
 
-  function buildApp(userId: string) {
+  async function buildApp(userId: string) {
+    // #184 5.4b: this file uses fixed actor ids, so start every app with the
+    // actor's topic-write budget cleared; reruns never inherit one.
+    await resetTopicWriteBudget(userId);
     const app = Fastify();
     app.decorateRequest("session", null);
     app.addHook("onRequest", async (request) => {
