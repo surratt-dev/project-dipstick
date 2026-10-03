@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: always   
     environment:
       POSTGRES_DB: dipstick
       POSTGRES_USER: dipstick
@@ -15,6 +16,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: always
     ports:
       - "6380:6379"
     healthcheck:
@@ -25,6 +27,7 @@ services:
 
   # DEVELOPMENT ONLY -- do not deploy to production environments
   oidc:
+    restart: always   
     build: ./docker/oidc
     ports:
       # persona-login design.md D11: loopback-only. The generic short-syntax
