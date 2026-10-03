@@ -47,7 +47,7 @@ The application SHALL provide `PUT /api/v1/teams/:teamId/topics/:topicId/annotat
 
 ### Requirement: TOPIC-007 evaluates its checks in a fixed order and applies the timing floor on every exit
 
-An unauthenticated request SHALL be rejected with `401` by the shared authentication layer before this cascade runs, as for every sibling topic endpoint. Malformed JSON and a non-UUID `teamId` SHALL follow the sibling endpoints' (TOPIC-004/005/006) existing behaviour. A `topicId` that is not a UUID SHALL be answered at the topic step with `404 TOPIC_NOT_FOUND`, never by a database error. Within the handler, TOPIC-007 SHALL evaluate in this order, returning on the first failure: (1) identity/role → `403`; (2) team existence → `404 TEAM_NOT_FOUND`; (2a) template team — a `teamId` equal to `DEFAULT_TOPICS_TEAM_ID` is answered exactly as a nonexistent team, `404 TEAM_NOT_FOUND` (see `default-topic-provisioning`, Requirement: The template team is never written through a team-scoped topic-write endpoint); (3) customization lock → `409 TOPIC_CUSTOMIZATION_LOCKED`; (4) request body → `422 INVALID_ANNOTATION` with `field: "annotation"`; (5) topic existence on this team → `404 TOPIC_NOT_FOUND`; (6) topic status → `422 TOPIC_ALREADY_ARCHIVED`. Every non-2xx response from the handler SHALL use the envelope `{ error: { category, code, message, correlationId } }` (plus `field` on `422 INVALID_ANNOTATION`). Every handled response, success or failure, SHALL apply `applyTimingFloor`. Every response, including the identity/role `403`s and an unhandled-error `500`, SHALL carry `Cache-Control: no-store`.
+An unauthenticated request SHALL be rejected with `401` by the shared authentication layer before this cascade runs, as for every sibling topic endpoint. Malformed JSON and a non-UUID `teamId` SHALL follow the sibling endpoints' (TOPIC-004/005/006) existing behaviour. A `topicId` that is not a UUID SHALL be answered at the topic step with `404 TOPIC_NOT_FOUND`, never by a database error. Within the handler, TOPIC-007 SHALL evaluate in this order, returning on the first failure: (1) identity/role → `403`; (1b) topic-write rate limit → `503 TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE` or `429 TOPIC_WRITE_BURST_LIMIT_EXCEEDED` / `TOPIC_WRITE_DAILY_LIMIT_EXCEEDED` (see `topic-write-rate-limiting`); (2) team existence → `404 TEAM_NOT_FOUND`; (2a) template team — a `teamId` equal to `DEFAULT_TOPICS_TEAM_ID` is answered exactly as a nonexistent team, `404 TEAM_NOT_FOUND` (see `default-topic-provisioning`, Requirement: The template team is never written through a team-scoped topic-write endpoint); (3) customization lock → `409 TOPIC_CUSTOMIZATION_LOCKED`; (4) request body → `422 INVALID_ANNOTATION` with `field: "annotation"`; (5) topic existence on this team → `404 TOPIC_NOT_FOUND`; (6) topic status → `422 TOPIC_ALREADY_ARCHIVED`. Every non-2xx response from the handler SHALL use the envelope `{ error: { category, code, message, correlationId } }` (plus `field` on `422 INVALID_ANNOTATION`). Every handled response, success or failure, SHALL apply `applyTimingFloor`. Every response, including the identity/role `403`s and an unhandled-error `500`, SHALL carry `Cache-Control: no-store`.
 
 #### Scenario: A locked team's 409 takes priority over an invalid body
 - **WHEN** a standing facilitator submits an over-length annotation for a team that has not completed its first session
@@ -90,6 +90,15 @@ An unauthenticated request SHALL be rejected with `401` by the shared authentica
 - **WHEN** an `application_admin` submits an annotation against `teamId = DEFAULT_TOPICS_TEAM_ID`
 - **THEN** the response is `403 Forbidden`, because identity/role is evaluated before the template-team step
 - **AND** no `topic.write_denied_template` row is written
+
+#### Scenario: An over-budget actor receives 429 before team existence, template, lock or body checks
+- **WHEN** an authorized actor who is over the topic-write budget submits an annotation request against a nonexistent team, the template team, a locked team, or with an invalid body
+- **THEN** the response is `429 Too Many Requests` with the same body in every case
+- **AND** no `topic.write_denied_template` or `topic.write_denied_locked` row is written
+
+#### Scenario: A caller who fails authorization receives 403, never 429
+- **WHEN** a caller who fails identity/role authorization submits an annotation request, however many requests that caller has made
+- **THEN** the response is `403 Forbidden`
 
 ### Requirement: The first-session customization lock covers annotation
 

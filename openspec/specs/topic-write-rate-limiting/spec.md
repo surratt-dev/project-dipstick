@@ -1,4 +1,10 @@
-## ADDED Requirements
+# topic-write-rate-limiting
+
+## Purpose
+
+Defines the per-actor rate limit shared by the five team-scoped topic-write endpoints (TOPIC-003 add, TOPIC-004 archive, TOPIC-005 restore, TOPIC-006 reorder, TOPIC-007 annotation): its burst and daily sliding-window thresholds and their ritual floor, which requests are counted, where the check sits in each endpoint's cascade so that it never reveals team existence, the 429 breach contract and per-episode audit, the fail-closed 503 when Redis is unavailable or slow, its exclusion from session runtime, and its independence from TEAM-006. Introduced by `harden-topic-write-endpoints` (#184).
+
+## Requirements
 
 ### Requirement: The five topic-write endpoints share one per-actor rate-limit budget
 
