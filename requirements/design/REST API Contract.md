@@ -24,6 +24,19 @@ All protected routes validate a server-side session via an HttpOnly, Secure, Sam
 | `engineering_manager` | A user with an active `engineering_manager` team membership for the relevant team |
 | `application_admin` | A user whose `global_role` is `application_admin` |
 | `session facilitator` | The specific user recorded in `sessions.facilitator_id` for the session in question |
+| `facilitator in their read window` | A `session facilitator` for one of the team's sessions while that session is inside the [facilitator read window](#facilitator-read-window) (below). Read-only outside the live statuses. |
+
+#### Facilitator read window
+
+Where an endpoint below grants read access to a "`facilitator` in their read window" (formerly worded "`facilitator` with an active session for the team"), the facilitator must be the `session facilitator` of at least one session for that team in one of these states. This is path 3 of `evaluateTeamAccess` (`packages/backend/src/auth/team-content-access-helper.ts`; spec `team-content-access`):
+
+| Session state | Window |
+|---|---|
+| `lobby`, `pre_session`, `active`, `wrap_up` | The whole time the session is in that status |
+| `draft` | Until 24 hours after `sessions.created_at`. Expired lazily at read time; there is no job that changes the status |
+| `complete` | Until `sessions.facilitator_access_expires_at`, which SESSION-006 sets to completion time + 30 minutes (the post-session grace window). No client call can change it |
+
+Outside this window the facilitator receives `403`. The `draft` and `complete` windows grant **read** access only. Endpoints that let a facilitator **write** team data use the narrower set of live statuses (`lobby`, `pre_session`, `active`, `wrap_up`); see VOTE-002 (Update Action Item Status, Decision D10). "Active session" used elsewhere in this document, such as SESSION-001's `409 Conflict`, means only those live statuses and is unrelated to this window.
 
 ### Error Response Envelope
 
@@ -546,9 +559,13 @@ Returns the ordered list of active topics for a team, including prompt, vote typ
 
 **Authorization:** One of:
 - Active `participant` member of the team, OR
-- `facilitator` with an active session for the team
+- `facilitator` in their [facilitator read window](#facilitator-read-window) for the team
 
 `engineering_manager` role does not grant access to the topic configuration.
+
+**Corrected (#187, `topic-001-authz-contract-reconcile`).** As built before #187, this endpoint answered `200` to an engineering manager. It now denies engineering managers unconditionally, with no flag or override: a caller is denied if their active membership role on the team **or** their stored global role is `engineering_manager`, on the member path and the facilitator path alike. Each such denial is a `403` with the standard forbidden body and emits the log-only `topic.config_read_denied_role` event. Application Admins are also denied (`403`), with an `admin.session_content_denied` audit row. Topic configuration is also exposed by TOPIC-002, whose admin-read auditing is tracked separately; this note makes no claim that TOPIC-002 is audited.
+
+**Scope:** EM-facing views use TREND-001 / SESSION-007/008; EM flows do not call TOPIC-001.
 
 **Request**
 
@@ -559,6 +576,8 @@ Returns the ordered list of active topics for a team, including prompt, vote typ
 **Response**
 
 `200 OK`
+
+**As built (#187).** The topic entries are returned today as raw snake_case rows (`id`, `name`, `prompt`, `vote_type`, `display_order`, `status`) next to camelCase `teamId` and `isCustomizationLocked`. The camelCase shape below is the target. TOPIC-001 has no consumer yet; the first change that adds a TOPIC-001 consumer SHALL do the remap.
 
 ```typescript
 interface GetActiveTopicsResponse {
@@ -573,9 +592,9 @@ interface GetActiveTopicsResponse {
     isDefault: boolean;
     firstSessionDescription: string | null;  // Extended description for first-session mode
     // teamAnnotation: NOT returned; deferred until a consumer exists (see the TOPIC-001 follow-up).
-    // topic-annotation design.md Decision 8: this endpoint currently admits engineering managers,
-    // so EMs must be denied here before it may ever return the team's definition. In-session
-    // display reads SESSION-005/012's currentTopic.topicAnnotation (the snapshot), never this endpoint.
+    // topic-annotation design.md Decision 8: engineering managers are now denied on this endpoint
+    // (#187), but the annotation stays unselected until a consumer needs it. In-session display
+    // reads SESSION-005/012's currentTopic.topicAnnotation (the snapshot), never this endpoint.
     createdAt: string;
     updatedAt: string;
   }>;
@@ -587,10 +606,11 @@ interface GetActiveTopicsResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Authenticated user has no authorized relationship with this team |
-| `404 Not Found` | Team does not exist |
+| `403 Forbidden` | Caller is not an active participant member or an eligible session facilitator for this team; includes the team's engineering managers and Application Admins |
+| `404 Not Found` | `teamId` is not a canonical UUID (`TEAM_NOT_FOUND`), returned before any query; a well-formed id for a nonexistent team returns 403 |
 
 **Notes**
+- **`teamAnnotation` release note (#187).** When `teamAnnotation` ships on this endpoint, its release notes must say that engineering managers cannot read the team's definitions (#187).
 - Only topics with `status = 'active'` are returned. Archived topics are served by `TOPIC-002`.
 - Topics are ordered by `display_order` ascending.
 - `isCustomizationLocked` is computed as `COUNT(*) = 0` from completed sessions for this team.
@@ -1093,7 +1113,7 @@ interface CreateSessionResponse {
 **Notes**
 - This operation must be atomic in PostgreSQL (single transaction): INSERT `sessions`, bulk INSERT `session_topics` (one per active team topic, snapshotting `topic_name`, `topic_prompt`, `vote_type` at this moment in time), compute `is_first_session` and `session_number` within the same transaction.
 - **Corrected by `session-topics-snapshot-at-creation` (#175, 2026-10-01): the topic snapshot is taken at room open, not at session creation.** As implemented, an existing team's session is created in `draft` (`POST /api/v1/teams/:teamId/sessions/draft`) with no `session_topics` rows; the snapshot is written when the room opens (SESSION-001a below), so draft-window topic edits reach the session. A new team's first session (`POST /api/v1/teams`) is created directly in `lobby`, so its creation is its room open and the snapshot is written in that request's transaction. "Room open" is the moment a session's status first becomes `lobby`; `sessions.room_opened_at` records it.
-- **Path id shape (#175 implementation review).** `POST /api/v1/teams/:teamId/sessions/draft`, `GET /api/v1/teams/:teamId/topics/all`, and the topic write routes (TOPIC-003/004/005/006/007) accept only the canonical 8-4-4-4-12 UUID form of `teamId`. Any other spelling (no hyphens, braces, other groupings), and any malformed value, answers `404` ("Team not found.") before any query, including the authorization query. Postgres would resolve some of those spellings to a real team, so this keeps the authorized id and the queried id the same string.
+- **Path id shape (#175 implementation review).** `POST /api/v1/teams/:teamId/sessions/draft`, `GET /api/v1/teams/:teamId/topics` (TOPIC-001), `GET /api/v1/teams/:teamId/topics/all`, and the topic write routes (TOPIC-003/004/005/006/007) accept only the canonical 8-4-4-4-12 UUID form of `teamId`. Any other spelling (no hyphens, braces, other groupings), and any malformed value, answers `404` ("Team not found.") before any query, including the authorization query. Postgres would resolve some of those spellings to a real team, so this keeps the authorized id and the queried id the same string.
 - PostgreSQL writes happen before Redis initialization, per the persistence layer mapping (Section 1, "Session Created"). If Redis initialization fails after PostgreSQL commits, the session is still valid; Redis state is re-initialized on the facilitator's first WebSocket connection.
 - `join_token` is a cryptographically secure, URL-safe random string with at least 128 bits of entropy.
 - `session_number` is computed as `COUNT(*) + 1` from `sessions WHERE team_id = :teamId AND status = 'complete'`.
@@ -1504,7 +1524,7 @@ Returns a paginated list of completed sessions for a team, ordered most-recent-f
 
 **Authorization:** One of:
 - Active team member (`participant` or `engineering_manager`), OR
-- `facilitator` with an active session for the team (per ADR-007: facilitator history access is session-scoped)
+- `facilitator` in their [facilitator read window](#facilitator-read-window) for the team (per ADR-007: facilitator history access is session-scoped)
 
 **Request**
 
@@ -1548,7 +1568,7 @@ interface GetSessionHistoryResponse {
 - Only sessions with `status = 'complete'` are returned. In-progress or abandoned sessions are excluded.
 - Full session detail (individual votes) is served by `SESSION-008`.
 - The EM view returns the same list-level response; the restriction to aggregates-only applies to `SESSION-008`.
-- Per ADR-007, a facilitator's access to historical data requires an active session for the team. A facilitator without an active session for this team receives `403`.
+- Per ADR-007, a facilitator's access to historical data is session-scoped: it requires the facilitator to be in their [facilitator read window](#facilitator-read-window) for the team. That includes a `draft` session under 24 hours old and the 30-minute post-session grace window. Outside the window the facilitator receives `403`.
 
 ---
 
@@ -2381,7 +2401,7 @@ Returns all finalized action items for a team across all completed sessions, wit
 **Authorization:**
 - `engineer` / `participant`: active team member — sees their own team's backlog only
 - `engineering_manager`: active team manager — sees the managed team's backlog (read-only)
-- `facilitator`: only during an active session for the team (per ADR-007)
+- `facilitator`: only while in their [facilitator read window](#facilitator-read-window) for the team (per ADR-007)
 
 **Request**
 
@@ -2448,7 +2468,7 @@ Returns the full record and chronological status-change history for a single act
 
 **Auth:** Protected.
 
-**Authorization:** Same as `ACTION-004`: active team member, team EM, or facilitator with active session for the team. Access validated via `action_items.team_id`.
+**Authorization:** Same as `ACTION-004`: active team member, team EM, or `facilitator` in their [facilitator read window](#facilitator-read-window) for the team. Access validated via `action_items.team_id`.
 
 **Request**
 
@@ -2525,7 +2545,7 @@ Returns aggregated trend data for all team topics across recent sessions, includ
 **Authorization:**
 - Active `participant` team member
 - `engineering_manager` for this team (aggregate data only — no individual vote attribution)
-- `facilitator` with an active session for this team (per ADR-007)
+- `facilitator` in their [facilitator read window](#facilitator-read-window) for this team (per ADR-007)
 
 **Request**
 
@@ -3027,7 +3047,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TEAM-003 | Own team | Teams with active session | Managed teams | All | 403 on inaccessible teams |
 | TEAM-005 | No | Yes (non-member teams) | No | Yes | |
 | TEAM-006 | No | Yes | No | Yes | |
-| TOPIC-001 | Own team (read) | Teams with active session | No | Yes | |
+| TOPIC-001 | Own team (read) | Teams in read window ([def](#facilitator-read-window)) | No (403, #187; membership or global role) | No (403 + audit; reads via TOPIC-002) | EM denied unconditionally; no override |
 | TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins |
 | TOPIC-003 | No | Yes (non-member teams, post-lock) | No | Yes | Facilitator (non-member) or admin (any team, per FR-8.2); code: `checkAddCustomTopicAuthorization`, delegating to `checkStandingFacilitatorOrAdminAuthorization`; customization lock enforced |
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced (FR-8.2) |
@@ -3036,7 +3056,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | SESSION-002 | If participant | If facilitator | No | Yes | Live sessions only |
 | SESSION-003 | Yes (team member, participant role) | No | No | Yes | EM role blocked |
 | SESSION-004 to SESSION-006 | No | Session facilitator only | No | Yes | |
-| SESSION-007 | Own team | Teams with active session | Managed teams | All | ADR-007 |
+| SESSION-007 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams | All | ADR-007 |
 | SESSION-008 | Own team (full votes) | Facilitated teams (full votes) | Managed teams (aggregates only) | All | EM filter enforced server-side |
 | SESSION-009 to SESSION-011 | No | Session facilitator / any facilitator (011) | No | Yes | |
 | VOTE-001 | Session participant | Session facilitator | No | Yes | |
@@ -3044,9 +3064,9 @@ This table consolidates the server-side authorization rules. All checks are perf
 | VOTE-003 | Session participant | Session facilitator | Aggregates only | Yes | Pre-reveal: 403 |
 | VOTE-004 | No | Yes (active session) | No | Yes | |
 | ACTION-001 to ACTION-003 | No | Session facilitator | No | Yes | Wrap-up only for 001-003 |
-| ACTION-004 | Own team | Teams with active session | Managed teams | All | No draft items |
-| ACTION-005 | Own team | Teams with active session | Managed teams | All | |
-| TREND-001 to TREND-002 | Own team | Teams with active session | Managed teams (aggregates) | All | |
+| ACTION-004 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams | All | No draft items |
+| ACTION-005 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams | All | |
+| TREND-001 to TREND-002 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams (aggregates) | All | |
 | TREND-003 (GET) | Yes | Yes | Yes | Yes | Read only |
 | TREND-003b (PUT) | No | No | No | Yes | Write: admin only |
 | TREND-004 | No | Eligible facilitators | No | Yes | |

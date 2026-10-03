@@ -76,6 +76,9 @@ export async function evaluateTeamAccess(
   // consistent snapshot — no TOCTOU gap between the global_role check and the
   // membership_role check.
   //
+  // That holds for this helper only: TOPIC-001 deliberately does a second
+  // membership read (readActiveMembershipRole, #187 Decision 1) after it.
+  //
   // No ORM-level query cache is used. node-postgres (pg) does not cache
   // queries. This is a live database read on every invocation.
   // -------------------------------------------------------------------------
@@ -243,4 +246,32 @@ export async function evaluateTeamAccess(
   // No path matched — caller has no access to this team's content.
   // Return null (not false, not a boolean).
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// readActiveMembershipRole(userId, teamId) — topic-001-authz-contract-reconcile
+// (#187), design.md Decision 1 (Option B)
+//
+// A READ, not a policy. Returns the raw team_memberships.role of the caller's
+// active membership on the team, or null when there is none. Added for
+// TOPIC-001, which must see an 'engineering_manager' membership even when
+// evaluateTeamAccess degraded the grant to role: 'participant' (Decision E
+// above). Exported from this module so the removed_at IS NULL predicate stays
+// in one file (access-control Decision 8) and content.ts runs no SQL against
+// team_memberships.
+//
+// Do NOT add admission logic here: the caller decides what the role means.
+// A rejected query propagates to the caller unchanged (fail closed).
+// Live read, no cache (#187 Decision 3).
+// ---------------------------------------------------------------------------
+export async function readActiveMembershipRole(
+  userId: string,
+  teamId: string,
+): Promise<string | null> {
+  const result = await db.query<{ role: string }>(
+    `SELECT role FROM team_memberships
+     WHERE user_id = $1 AND team_id = $2 AND removed_at IS NULL`,
+    [userId, teamId],
+  );
+  return result.rows[0]?.role ?? null;
 }

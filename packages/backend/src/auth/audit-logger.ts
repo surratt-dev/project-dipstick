@@ -157,6 +157,18 @@ export type AuditEventName =
   // team.manager_association_rate_approaching above. metadata: { userId,
   // teamId, globalRole, membershipRole }.
   | "team.access_grant_mismatch"
+  // topic.config_read_denied_role: topic-001-authz-contract-reconcile (#187),
+  // design.md Decision 6. Fired by TOPIC-001 (GET /api/v1/teams/:teamId/topics,
+  // content.ts) whenever isTopicConfigReadAdmitted denies a member or
+  // facilitator grant (an engineering manager by membership role or global
+  // role, or a member whose live membership read is no longer 'participant'),
+  // immediately before the timing floor and the 403. Log-only, no audit_log
+  // DB row: this is a read on an endpoint that can be polled, so it follows
+  // team.access_grant_mismatch's log-only-given-call-volume reasoning above.
+  // metadata: { userId, teamId, grantPath, globalRole, membershipRole,
+  // reason: "membership_em" | "global_em" | "not_admitted" }. NEVER topic
+  // names, topic ids, annotation text, or the lock flag.
+  | "topic.config_read_denied_role"
   // team.role_change_denied: restrict-team-005-em-promotion, design.md
   // Decision F. Fired by TEAM-005 (PATCH .../members/:userId/role) when an
   // otherwise-authorized actor (passed checkAssignRolesAuthorization)

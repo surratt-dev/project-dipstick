@@ -141,11 +141,11 @@ async function insertSentinelSession(db: Db, facilitatorId: string): Promise<str
   return id;
 }
 
-async function insertSentinelMembership(db: Db, userId: string): Promise<string> {
+async function insertSentinelMembership(db: Db, userId: string, role = "participant"): Promise<string> {
   return (
     await db.query<{ id: string }>(
-      `INSERT INTO team_memberships (team_id, user_id) VALUES ($1, $2) RETURNING id`,
-      [SENTINEL_TEAM_ID, userId],
+      `INSERT INTO team_memberships (team_id, user_id, role) VALUES ($1, $2, $3) RETURNING id`,
+      [SENTINEL_TEAM_ID, userId, role],
     )
   ).rows[0]!.id;
 }
@@ -345,6 +345,26 @@ describe.skipIf(!infraUp)("template team rejects team-scoped topic writes — re
       expect(all.json()).toMatchObject({ canAddTopics: true, isCustomizationLocked: false });
     } finally {
       if (sessionId) await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
+      await db.query(`DELETE FROM team_memberships WHERE id = $1`, [membershipId]);
+    }
+  });
+
+  // topic-001-authz-contract-reconcile (#187) task 4.8: the template id has no
+  // special case for either EM signal. An EM membership and a global EM with a
+  // participant membership are both denied TOPIC-001 on the template.
+  it.each([
+    { label: "an EM membership", globalRole: "engineering_manager", membershipRole: "engineering_manager" },
+    { label: "a global EM with a participant membership", globalRole: "engineering_manager", membershipRole: "participant" },
+  ])("4.8 (#187): TOPIC-001 on the template is 403 for $label", async ({ globalRole, membershipRole }) => {
+    const { db } = mods;
+    const em = await fx.user(globalRole);
+    const membershipId = await insertSentinelMembership(db, em, membershipRole);
+    try {
+      const res = await (await appFor(em)).inject({ method: "GET", url: `/api/v1/teams/${SENTINEL_TEAM_ID}/topics` });
+      expect(res.statusCode).toBe(403);
+      expect(res.body).not.toContain("isCustomizationLocked");
+      expect(res.json().topics).toBeUndefined();
+    } finally {
       await db.query(`DELETE FROM team_memberships WHERE id = $1`, [membershipId]);
     }
   });
