@@ -15,6 +15,7 @@ import type { SessionData } from "../auth/session-store.js";
 // construction (#188 architect implementation review S4; shared since #184 m5).
 import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
+import type { TopicWriteDenialContext } from "./topic-write-context.js";
 import { lockTeamTopics } from "../sessions/session-topic-snapshot.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
 import type {
@@ -153,16 +154,6 @@ async function rejectNonCanonicalTeamId(
   await applyTimingFloor(startTime);
   await reply.code(404).send(teamNotFoundEnvelope());
   return { rejected: true };
-}
-
-// Shared context for every topic-write denial helper below (lock gate, lock
-// denial audit, template guard, template denial audit).
-interface TopicWriteDenialContext {
-  actorUserId: string;
-  actorGlobalRole: string;
-  teamId: string;
-  endpoint: string;
-  attemptedOperation: string;
 }
 
 // ---------------------------------------------------------------------------
