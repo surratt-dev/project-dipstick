@@ -223,7 +223,7 @@
 - [x] AC8: A role change applied during an active session does not retroactively invalidate votes already locked in. A lock-in request submitted after the role change is rejected.
 
 ## Out of Scope
-- Facilitator designation (`users.global_role = 'facilitator'`) — deferred; see "Designate a Facilitator — Deferral" stub.
+- Facilitator designation (`users.global_role = 'facilitator'`). Out of scope for this UC. **Decided 2026-10-03:** designation happens through the IdP role claim, the same as `engineering_manager` and `application_admin`, with no in-app endpoint (#235). See "Designate a Facilitator — Deferral", Decision section.
 - `TEAM-006` (`POST /api/v1/teams/:teamId/managers`) — not called as part of this change. **Corrected (Edit 3, restrict-team-005-em-promotion):** TEAM-005 is sufficient only for demotion and for role changes that were never promotions; establishing a new Engineering Manager relationship requires TEAM-006. TEAM-005 is no longer "sufficient for all `membership_role` writes."
 - Modification of `users.global_role` for any role — this change writes only to `team_memberships.role`.
 - Removing a user from a team — separate use case.
