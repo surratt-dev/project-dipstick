@@ -68,19 +68,19 @@ These depend only on section 1 and give fast mocked feedback before the real-DB 
 
 All files in this section use `helpers/real-db.ts` (`Fixture`, `probeInfra` / `requireInfraOrThrow`). **Never call `fx.track(SENTINEL_TEAM_ID)`**: `Fixture.cleanup()` deletes a tracked team's topics, sessions and team row. Sentinel sessions and sentinel membership rows are inserted and deleted by id in each test's own `try/finally`.
 
-- [ ] 4.1 **One table-driven parity suite.** Rows: the five endpoints × {locked, unlocked} × {facilitator; admin for 003 to 006}, using the harmless bodies from D5. Use a `try/finally` to insert and remove the `complete` sentinel session for the unlocked rows. Send each row against the template and against a canonical nonexistent `teamId`, then assert:
+- [x] 4.1 **One table-driven parity suite.** Rows: the five endpoints × {locked, unlocked} × {facilitator; admin for 003 to 006}, using the harmless bodies from D5. Use a `try/finally` to insert and remove the `complete` sentinel session for the unlocked rows. Send each row against the template and against a canonical nonexistent `teamId`, then assert:
   - the status, the body (apart from `correlationId`), and the header names and values (apart from `date`) are equal;
   - exactly one `topic.write_denied_template` row exists, scoped by a distinct fixture actor per row, `timestamp >=` row start and `metadata->>'endpoint'`, with exact `metadata` and no extra keys, `team_id = DEFAULT_TOPICS_TEAM_ID`, `actor_global_role` equal to the row's role (`facilitator` or `application_admin`) on every row, and `actor_ip` not null (BA B1);
   - no lock-denial row and no success row exist, and no audit row exists for the nonexistent-team request.
-- [ ] 4.2 **403, membership and real-team rows** (a few extra cases in the same file):
+- [x] 4.2 **403, membership and real-team rows** (a few extra cases in the same file):
   - an engineer gets 403 `NOT_A_FACILITATOR` on every endpoint (BA M3), and an admin on TOPIC-007 gets 403, with no template-denial row in either case;
   - with a sentinel membership row for another user, a facilitator gets 404 on every endpoint (003 to 007);
   - with a sentinel membership row for the caller, a facilitator gets 403 `FACILITATOR_IS_TEAM_MEMBER` on every endpoint (003 to 007) **and no template-denial row is written** (BA B4), and an admin gets 404 on 003 to 006;
   - on an unlocked real team, archiving and then restoring a default topic gives 200/200 with `topic.archived` and `topic.restored` rows.
 
   Clean up membership rows by id in `try/finally`.
-- [ ] 4.3 **Reads** (TOPIC-002 and `/topics/all` on the template). TOPIC-002 returns the same rows and order. `/topics/all` returns 200 with `canAddTopics: true`, and `isCustomizationLocked` follows the lock.
-- [ ] 4.4 **Team-creation regression (BA S6, engineer M1)**, in its own integration file, built with the 3.1 builder (or `teamRoutes` + `facilitatorSessionRoutes`) and the session hook.
+- [x] 4.3 **Reads** (TOPIC-002 and `/topics/all` on the template). TOPIC-002 returns the same rows and order. `/topics/all` returns 200 with `canAddTopics: true`, and `isCustomizationLocked` follows the lock.
+- [x] 4.4 **Team-creation regression (BA S6, engineer M1)**, in its own integration file, built with the 3.1 builder (or `teamRoutes` + `facilitatorSessionRoutes`) and the session hook.
   - With a completed sentinel session in place, take `snapshotTemplate` (3.2).
   - Send *valid* writes to 003 to 007 and assert each returns `404 TEAM_NOT_FOUND`.
   - Call `assertTemplateUnchanged`. This catches an add regression, which the copy would never pass on.
@@ -89,7 +89,7 @@ All files in this section use `helpers/real-db.ts` (`Fixture`, `probeInfra` / `r
 
 ## 5. Full-suite check
 
-- [ ] 5.1 Run the full backend suite (unit lane and real-DB lane with `REQUIRE_DB` set). Both must pass. The old 5.1 grep moved to 0.1.
+- [x] 5.1 Run the full backend suite (unit lane and real-DB lane with `REQUIRE_DB` set). Both must pass. The old 5.1 grep moved to 0.1.
 
 ## 6. Pre-merge human actions (MERGE GATES: the implementer does not perform these)
 
@@ -108,8 +108,8 @@ These run in parallel with the implementation and block only the merge.
 
 ## 7. Documentation and validation
 
-- [ ] 7.1 Add a *Rationale* under FR-8.1 in `requirements/BRD.md`, in the style of the FR-8.7 note: "the team-scoped topic-write endpoints (TOPIC-003 to TOPIC-007) are not the Application Administrator maintenance path and reject the template team. Until a dedicated maintenance endpoint exists (F5), the default set is maintained through database migrations only, and the 'maintainable by an Application Administrator' clause is not yet met through the UI." Cite `default-topic-provisioning` and #188. This task has no code dependency and can be done at any point.
-- [ ] 7.2 Run `openspec validate reject-template-team-topic-writes --strict` and the full backend test suite. Both must pass.
+- [x] 7.1 Add a *Rationale* under FR-8.1 in `requirements/BRD.md`, in the style of the FR-8.7 note: "the team-scoped topic-write endpoints (TOPIC-003 to TOPIC-007) are not the Application Administrator maintenance path and reject the template team. Until a dedicated maintenance endpoint exists (F5), the default set is maintained through database migrations only, and the 'maintainable by an Application Administrator' clause is not yet met through the UI." Cite `default-topic-provisioning` and #188. This task has no code dependency and can be done at any point.
+- [x] 7.2 Run `openspec validate reject-template-team-topic-writes --strict` and the full backend test suite. Both must pass.
 
 ## Task review disposition
 

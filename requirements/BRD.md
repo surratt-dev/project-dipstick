@@ -320,6 +320,8 @@ Trend outlier detection (flagging the team's aggregate score against a rolling h
 
 **FR-8.1** [HARD] The application shall ship with a default set of health check topics applied to all new teams. This default set shall be defined and maintainable by an Application Administrator.
 
+*Rationale (added by `reject-template-team-topic-writes`, #188; owning requirement: `default-topic-provisioning`):* the team-scoped topic-write endpoints (TOPIC-003 to TOPIC-007) are not the Application Administrator maintenance path and reject the template team. Until a dedicated maintenance endpoint exists (F5), the default set is maintained through database migrations only, and the "maintainable by an Application Administrator" clause is not yet met through the UI.
+
 **FR-8.2** [HARD] After a team's first session, the facilitator or Application Administrator shall be able to add, remove, or reorder topics for that team.
 
 **FR-8.3** [HARD] When a topic is removed from a team's active topic list, all historical voting data for that topic shall be retained and accessible in session history and trend views. Removal from the active list does not purge historical records.

@@ -520,8 +520,10 @@ describe.skipIf(!dbUp)("reorder-topics group 5 — PUT /topics/order real Postgr
     const { db } = mods;
     await db.query(`DROP TRIGGER IF EXISTS reorder_test_fail_phase2 ON topics`);
     await db.query(`DROP FUNCTION IF EXISTS reorder_test_fail_phase2()`);
+    // Sentinel rows are removed by actor only: a team_id filter on the
+    // sentinel would delete other files' concurrent template-denial rows (#188).
     await db.query(`DELETE FROM audit_log WHERE team_id = ANY($1::uuid[]) OR actor_user_id = ANY($2::uuid[])`, [
-      [teamId, otherTeamId, SENTINEL_TEAM_ID],
+      [teamId, otherTeamId],
       [facilitatorId, facilitator2Id, adminId],
     ]);
     await db.query(`DELETE FROM sessions WHERE team_id = ANY($1::uuid[])`, [[teamId, otherTeamId]]);
