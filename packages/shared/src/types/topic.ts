@@ -17,9 +17,9 @@ export interface Topic {
   archivedAt: Date | null;
   // topic-annotation (design.md Decision 8). Optional so no existing fixture
   // breaks. TOPIC-001 (GET /api/v1/teams/:teamId/topics) deliberately does
-  // NOT return these: it has no consumer, and its authorization currently
-  // admits engineering managers. No response may be typed as Topic[] to
-  // carry them without that decision being revisited (and EMs denied first).
+  // NOT return these: it has no consumer. EMs are denied there (#187), but
+  // the annotation is still not returned until a consumer exists. No response
+  // may be typed as Topic[] to carry them without that decision being revisited.
   teamAnnotation?: string | null;
   annotationUpdatedBy?: ArchivedByProvenance | null;
   annotationUpdatedAt?: Date | null;

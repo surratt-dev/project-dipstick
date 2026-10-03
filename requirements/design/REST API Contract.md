@@ -550,6 +550,10 @@ Returns the ordered list of active topics for a team, including prompt, vote typ
 
 `engineering_manager` role does not grant access to the topic configuration.
 
+**Corrected (#187, `topic-001-authz-contract-reconcile`).** As built before #187, this endpoint answered `200` to an engineering manager. It now denies engineering managers unconditionally, with no flag or override: a caller is denied if their active membership role on the team **or** their stored global role is `engineering_manager`, on the member path and the facilitator path alike. Each such denial is a `403` with the standard forbidden body and emits the log-only `topic.config_read_denied_role` event. Application Admins are also denied (`403`), with an `admin.session_content_denied` audit row. Topic configuration is also exposed by TOPIC-002, whose admin-read auditing is tracked separately; this note makes no claim that TOPIC-002 is audited.
+
+**Scope:** EM-facing views use TREND-001 / SESSION-007/008; EM flows do not call TOPIC-001.
+
 **Request**
 
 | Location | Name | Type | Required | Description |
@@ -559,6 +563,8 @@ Returns the ordered list of active topics for a team, including prompt, vote typ
 **Response**
 
 `200 OK`
+
+**As built (#187).** The topic entries are returned today as raw snake_case rows (`id`, `name`, `prompt`, `vote_type`, `display_order`, `status`) next to camelCase `teamId` and `isCustomizationLocked`. The camelCase shape below is the target. TOPIC-001 has no consumer yet; the first change that adds a TOPIC-001 consumer SHALL do the remap.
 
 ```typescript
 interface GetActiveTopicsResponse {
@@ -573,9 +579,9 @@ interface GetActiveTopicsResponse {
     isDefault: boolean;
     firstSessionDescription: string | null;  // Extended description for first-session mode
     // teamAnnotation: NOT returned; deferred until a consumer exists (see the TOPIC-001 follow-up).
-    // topic-annotation design.md Decision 8: this endpoint currently admits engineering managers,
-    // so EMs must be denied here before it may ever return the team's definition. In-session
-    // display reads SESSION-005/012's currentTopic.topicAnnotation (the snapshot), never this endpoint.
+    // topic-annotation design.md Decision 8: engineering managers are now denied on this endpoint
+    // (#187), but the annotation stays unselected until a consumer needs it. In-session display
+    // reads SESSION-005/012's currentTopic.topicAnnotation (the snapshot), never this endpoint.
     createdAt: string;
     updatedAt: string;
   }>;
@@ -587,10 +593,11 @@ interface GetActiveTopicsResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Authenticated user has no authorized relationship with this team |
-| `404 Not Found` | Team does not exist |
+| `403 Forbidden` | Caller is not an active participant member or an eligible session facilitator for this team; includes the team's engineering managers and Application Admins |
+| `404 Not Found` | `teamId` is not a canonical UUID (`TEAM_NOT_FOUND`), returned before any query; a well-formed id for a nonexistent team returns 403 |
 
 **Notes**
+- **`teamAnnotation` release note (#187).** When `teamAnnotation` ships on this endpoint, its release notes must say that engineering managers cannot read the team's definitions (#187).
 - Only topics with `status = 'active'` are returned. Archived topics are served by `TOPIC-002`.
 - Topics are ordered by `display_order` ascending.
 - `isCustomizationLocked` is computed as `COUNT(*) = 0` from completed sessions for this team.
@@ -1093,7 +1100,7 @@ interface CreateSessionResponse {
 **Notes**
 - This operation must be atomic in PostgreSQL (single transaction): INSERT `sessions`, bulk INSERT `session_topics` (one per active team topic, snapshotting `topic_name`, `topic_prompt`, `vote_type` at this moment in time), compute `is_first_session` and `session_number` within the same transaction.
 - **Corrected by `session-topics-snapshot-at-creation` (#175, 2026-10-01): the topic snapshot is taken at room open, not at session creation.** As implemented, an existing team's session is created in `draft` (`POST /api/v1/teams/:teamId/sessions/draft`) with no `session_topics` rows; the snapshot is written when the room opens (SESSION-001a below), so draft-window topic edits reach the session. A new team's first session (`POST /api/v1/teams`) is created directly in `lobby`, so its creation is its room open and the snapshot is written in that request's transaction. "Room open" is the moment a session's status first becomes `lobby`; `sessions.room_opened_at` records it.
-- **Path id shape (#175 implementation review).** `POST /api/v1/teams/:teamId/sessions/draft`, `GET /api/v1/teams/:teamId/topics/all`, and the topic write routes (TOPIC-003/004/005/006/007) accept only the canonical 8-4-4-4-12 UUID form of `teamId`. Any other spelling (no hyphens, braces, other groupings), and any malformed value, answers `404` ("Team not found.") before any query, including the authorization query. Postgres would resolve some of those spellings to a real team, so this keeps the authorized id and the queried id the same string.
+- **Path id shape (#175 implementation review).** `POST /api/v1/teams/:teamId/sessions/draft`, `GET /api/v1/teams/:teamId/topics` (TOPIC-001), `GET /api/v1/teams/:teamId/topics/all`, and the topic write routes (TOPIC-003/004/005/006/007) accept only the canonical 8-4-4-4-12 UUID form of `teamId`. Any other spelling (no hyphens, braces, other groupings), and any malformed value, answers `404` ("Team not found.") before any query, including the authorization query. Postgres would resolve some of those spellings to a real team, so this keeps the authorized id and the queried id the same string.
 - PostgreSQL writes happen before Redis initialization, per the persistence layer mapping (Section 1, "Session Created"). If Redis initialization fails after PostgreSQL commits, the session is still valid; Redis state is re-initialized on the facilitator's first WebSocket connection.
 - `join_token` is a cryptographically secure, URL-safe random string with at least 128 bits of entropy.
 - `session_number` is computed as `COUNT(*) + 1` from `sessions WHERE team_id = :teamId AND status = 'complete'`.
@@ -3027,7 +3034,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TEAM-003 | Own team | Teams with active session | Managed teams | All | 403 on inaccessible teams |
 | TEAM-005 | No | Yes (non-member teams) | No | Yes | |
 | TEAM-006 | No | Yes | No | Yes | |
-| TOPIC-001 | Own team (read) | Teams with active session | No | Yes | |
+| TOPIC-001 | Own team (read) | Teams with active session | No (403, #187; membership or global role) | No (403 + audit; reads via TOPIC-002) | EM denied unconditionally; no override |
 | TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins |
 | TOPIC-003 | No | Yes (non-member teams, post-lock) | No | Yes | Facilitator (non-member) or admin (any team, per FR-8.2); code: `checkAddCustomTopicAuthorization`, delegating to `checkStandingFacilitatorOrAdminAuthorization`; customization lock enforced |
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced (FR-8.2) |

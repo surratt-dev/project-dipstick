@@ -1,7 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
-import { evaluateTeamAccess } from "../auth/team-content-access-helper.js";
+import {
+  evaluateTeamAccess,
+  readActiveMembershipRole,
+} from "../auth/team-content-access-helper.js";
 import { checkStandingFacilitatorOrAdminAuthorization } from "../auth/standing-facilitator-access-helper.js";
 import {
   serializeForMemberParticipant,
@@ -122,6 +125,52 @@ function denyAccess(reply: FastifyReply): FastifyReply {
       correlationId: crypto.randomUUID(),
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// TOPIC-001 admission predicate — topic-001-authz-contract-reconcile (#187),
+// design.md Decision 2. Implements the team-content-access requirement
+// "The active-topics endpoint admits only non-manager participant members and
+// eligible session facilitators".
+//
+// Allow-list, pure and synchronous: its only inputs are its two parameters.
+// No I/O, no env, no config — no flag, no override. The handler does the
+// membership read (readActiveMembershipRole) and passes the result in.
+//
+// OR semantics (Decision 3): the caller is an EM if their live membership role
+// OR their stored global role is 'engineering_manager'. This deliberately
+// diverges from Decision E (restrict-team-005-em-promotion) on this endpoint
+// only, so it is NOT exported for reuse.
+//
+// - member: admitted only on equality with 'participant' for both the grant
+//   role and the live membership role. null, an EM membership, or any future
+//   membership role denies.
+// - facilitator: the grant is earned by sessions.facilitator_id, not global
+//   role, so only a drifted global EM is denied; liveMembershipRole is ignored.
+// - admin: unreachable (the handler denies admins first); false keeps the
+//   switch exhaustive without relying on order.
+// ---------------------------------------------------------------------------
+function isTopicConfigReadAdmitted(
+  grant: TeamAccessGrant,
+  liveMembershipRole: string | null,
+): boolean {
+  switch (grant.path) {
+    case "member":
+      return (
+        grant.role === "participant" &&
+        liveMembershipRole === "participant" &&
+        grant.actorGlobalRole !== "engineering_manager"
+      );
+    case "facilitator":
+      return grant.actorGlobalRole !== "engineering_manager";
+    case "admin":
+      return false;
+    default: {
+      const _exhaustive: never = grant;
+      void _exhaustive;
+      return false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +536,38 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       return denyAdminContentAccess(request, reply, teamId, "GET /api/v1/teams/:teamId/topics");
     }
 
+    // topic-001-authz-contract-reconcile (#187), design.md Decisions 1 and 2:
+    // engineering managers are denied by membership role OR global role. The
+    // grant alone cannot show an EM membership that Decision E degraded to
+    // role: 'participant' (path 2'), so member grants get a second, live
+    // membership read. Not caught: a rejection is a 500, never an admit.
+    const liveRole =
+      grant.path === "member"
+        ? await readActiveMembershipRole(session.userId, teamId)
+        : null;
+
+    if (!isTopicConfigReadAdmitted(grant, liveRole)) {
+      // Diagnosis only, derived after the predicate has denied; never feeds
+      // admission. Membership wins when both signals are EM (Decision 6).
+      const reason =
+        liveRole === "engineering_manager"
+          ? "membership_em"
+          : grant.actorGlobalRole === "engineering_manager"
+            ? "global_em"
+            : "not_admitted";
+      // Log-only (audit-logger.ts). No topic data: neither query below runs.
+      emitAuditEvent(request.log, "topic.config_read_denied_role", {
+        userId: session.userId,
+        teamId,
+        grantPath: grant.path,
+        globalRole: grant.actorGlobalRole,
+        membershipRole: liveRole,
+        reason,
+      });
+      await applyTimingFloor(startTime);
+      return denyAccess(reply);
+    }
+
     const result = await db.query<{
       id: string;
       name: string;
@@ -497,10 +578,9 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     }>(
       // topic-annotation design.md Decision 8: team_annotation and its
       // provenance are DELIBERATELY not selected here. TOPIC-001 has no
-      // consumer of the value, in-session display reads only the session
-      // payload's snapshot, and this endpoint currently admits engineering
-      // managers. Adding the annotation requires denying engineering
-      // managers on this endpoint first.
+      // consumer of the value, and in-session display reads only the session
+      // payload's snapshot. Engineering managers are now denied above (#187),
+      // but the annotation stays unselected until a consumer exists.
       `SELECT id, name, prompt, vote_type, display_order, status
        FROM topics
        WHERE team_id = $1 AND status = 'active'
@@ -512,7 +592,8 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // Task 2.1: isCustomizationLocked is computed via the single shared
     // lock-check function -- the same one TOPIC-003's write-side gate calls
     // (topics.ts) -- never an independently inlined query here. Present on
-    // every successful response regardless of caller role (Task 2.2).
+    // every 200 for an admitted caller (Task 2.2); EMs and admins never reach
+    // this point (#187).
     const isCustomizationLocked = !(await hasCompletedFirstSession(teamId));
 
     await applyTimingFloor(startTime);

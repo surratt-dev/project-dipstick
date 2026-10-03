@@ -29,7 +29,10 @@ vi.mock("../../config.js", () => ({
   },
 }));
 
-import { evaluateTeamAccess } from "../team-content-access-helper.js";
+import {
+  evaluateTeamAccess,
+  readActiveMembershipRole,
+} from "../team-content-access-helper.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -319,5 +322,44 @@ describe("evaluateTeamAccess", () => {
     expect(grant).toBeNull();
     expect(grant).not.toBe(false);
     expect(grant).not.toBe(undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readActiveMembershipRole — topic-001-authz-contract-reconcile (#187) task 2.2
+// A read, not a policy: returns the raw role or null, and never swallows a
+// failed query (TOPIC-001 relies on the rejection to fail closed as a 500).
+// ---------------------------------------------------------------------------
+
+describe("readActiveMembershipRole", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns the raw role for an active membership row", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ role: "engineering_manager" }] });
+
+    const role = await readActiveMembershipRole(USER_ID, TEAM_ID);
+
+    expect(role).toBe("engineering_manager");
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    const [sql, params] = mockDbQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toMatch(/FROM team_memberships/);
+    expect(sql).toMatch(/removed_at IS NULL/);
+    expect(params).toEqual([USER_ID, TEAM_ID]);
+  });
+
+  it("returns null when there is no active membership row", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const role = await readActiveMembershipRole(USER_ID, TEAM_ID);
+
+    expect(role).toBeNull();
+  });
+
+  it("propagates a rejected query instead of swallowing it", async () => {
+    mockDbQuery.mockRejectedValueOnce(new Error("connection lost"));
+
+    await expect(readActiveMembershipRole(USER_ID, TEAM_ID)).rejects.toThrow(
+      "connection lost",
+    );
   });
 });

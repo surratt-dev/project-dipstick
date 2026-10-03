@@ -511,12 +511,11 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
       }
     });
 
-    // Security implementation review S1. TOPIC-001 still answers 200 to an
-    // engineering manager (handoffs/new-issue-topic-001-em-and-casing.md),
-    // which is the reason TOPIC-001 must never return the team's definition
-    // until EMs are denied there. If this fails because the fields were
-    // added, deny EMs on TOPIC-001 first -- do not relax this test.
-    it("TOPIC-001 called by an engineering manager returns no annotation fields (security S1)", async () => {
+    // Security implementation review S1. TOPIC-001 now denies engineering
+    // managers (#187, topic-001-authz-contract-reconcile), so this is a 403.
+    // The no-leak assertions stay as a canary: if TOPIC-001 ever selects the
+    // team's definition, an EM must still never see it -- do not relax them.
+    it("TOPIC-001 called by an engineering manager is 403 and leaks no annotation (security S1)", async () => {
       const { db } = mods;
       try {
         await setup(db);
@@ -533,15 +532,46 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
 
         const app = await buildApp(EM);
         const res = await app.inject({ method: "GET", url: `/api/v1/teams/${TEAM}/topics` });
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode).toBe(403);
         expect(res.body).not.toContain("Sensitive team wording");
-        const topics = res.json().topics as Array<Record<string, unknown>>;
-        expect(topics.some((topic) => topic["id"] === TOPIC_A || topic["topicId"] === TOPIC_A)).toBe(true);
-        for (const topic of topics) {
-          for (const key of ["teamAnnotation", "team_annotation", "annotationUpdatedBy", "annotationUpdatedAt"]) {
-            expect(topic).not.toHaveProperty(key);
-          }
-        }
+        expect(res.body).not.toContain("isCustomizationLocked");
+        expect(res.body).not.toContain(`Topic ${TOPIC_A.slice(-4)}`);
+      } finally {
+        await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [TEAM]);
+        await cleanup(db, [TEAM], [F, ENGINEER, ADMIN, EM]);
+      }
+    });
+
+    // topic-001-authz-contract-reconcile (#187) task 4.7: the two EM states
+    // the helper's grant alone does not mark as EM. Path 2': a global engineer
+    // with an EM membership (Decision E degrades the grant to participant).
+    // And a global EM with a participant membership. Both are 403 against a
+    // real database, with nothing of the annotated topic in the body.
+    it.each([
+      { label: "a global engineer with an EM membership (path 2')", globalRole: "engineer", membershipRole: "engineering_manager" },
+      { label: "a global EM with a participant membership", globalRole: "engineering_manager", membershipRole: "participant" },
+    ])("TOPIC-001 called by $label is 403 and leaks nothing (#187)", async ({ globalRole, membershipRole }) => {
+      const { db } = mods;
+      try {
+        await setup(db);
+        await insertUser(db, EM, "Emma Manager", globalRole);
+        await db.query(
+          `UPDATE topics SET team_annotation = 'Sensitive team wording', annotation_updated_by = $2, annotation_updated_at = NOW()
+            WHERE id = $1`,
+          [TOPIC_A, F],
+        );
+        await db.query(`INSERT INTO team_memberships (team_id, user_id, role) VALUES ($1, $2, $3)`, [
+          TEAM,
+          EM,
+          membershipRole,
+        ]);
+
+        const app = await buildApp(EM);
+        const res = await app.inject({ method: "GET", url: `/api/v1/teams/${TEAM}/topics` });
+        expect(res.statusCode).toBe(403);
+        expect(res.body).not.toContain("Sensitive team wording");
+        expect(res.body).not.toContain("isCustomizationLocked");
+        expect(res.body).not.toContain(`Topic ${TOPIC_A.slice(-4)}`);
       } finally {
         await db.query(`DELETE FROM team_memberships WHERE team_id = $1`, [TEAM]);
         await cleanup(db, [TEAM], [F, ENGINEER, ADMIN, EM]);
