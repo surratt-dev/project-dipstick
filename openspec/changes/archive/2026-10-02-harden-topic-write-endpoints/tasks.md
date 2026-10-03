@@ -119,3 +119,15 @@ Reviews: `tasks-review-architect.md` (Ingrid, R1–R4, S1–S5) and `tasks-revie
 | BA C9 | Accepted, added to 6.1 and 6.3. |
 | BA §4: three items from the #184 follow-up comment (403 denial audit, bidi/zero-width in topic text, `teamId` URL encoding) | **Not taken into tasks.** None is in #184's four acceptance criteria or required by a spec scenario, and the Executive asked us to hold scope. Added to design.md's proposed follow-up issues (8–10) and to 1.1 as (h)–(j). The URL-encoding fix is a one-liner, but no scenario requires it and the canonical-UUID boundary already rejects a malformed `teamId`, so it goes with the others. |
 | BA §5 smaller notes | Accepted: 1.2 says where to record the result; 2.4 tests `POST /:teamId/managers`; 5.6 defines a topic-write route; 7.2 says the spec wins over stale §7 text. |
+
+---
+
+## Archive note (2026-10-02, Marcus Delgado, BA)
+
+Archived with three tasks intentionally open; all three are outward-facing and the implementing agent is not allowed to do them:
+
+- **1.1**: maintainer to file the eleven follow-up GitHub issues (a)–(k) and link them from design.md Non-Goals and #184.
+- **7.5**: the PR description must call out the `teams.ts` / `facilitator-sessions.ts` 404 category and code changes.
+- **7.6**: merge gate. Confirm the 1.1 issues are filed and linked before merge.
+
+Delta specs were synced to `openspec/specs/` in commit 7c2b186 and were not applied again at archive time.
