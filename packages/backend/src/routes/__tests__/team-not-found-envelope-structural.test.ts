@@ -15,10 +15,6 @@ const OWNER = "routes/error-envelope.ts";
 
 const ALLOWLIST: ReadonlySet<string> = new Set([
   OWNER,
-  // Temporary: removed by task 2.4; see #184 m5. teams.ts still hand-builds
-  // its three team-not-found 404s until 2.4's revertible commit swaps them to
-  // teamNotFoundEnvelope(). That commit deletes this entry.
-  "routes/teams.ts",
 ]);
 
 describe('"Team not found." appears only in routes/error-envelope.ts (#184 m5)', () => {

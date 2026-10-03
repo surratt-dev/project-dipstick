@@ -123,6 +123,22 @@ function makeMockClient(queryResponses: Array<{ rows: unknown[] }> = []) {
 describe("GET /api/v1/teams/:teamId/members", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // #184 m5 task 2.4 (deliberate API change): a team that does not exist is
+  // the shared teamNotFoundEnvelope() -- category not_found (was
+  // invalid_request) with code TEAM_NOT_FOUND (was absent). Check order is
+  // unchanged: the actor/membership check still runs first.
+  it("returns 404 not_found / TEAM_NOT_FOUND for a team that does not exist", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // team lookup: none
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1/members" });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("returns 403 when actor is not a team member and not application_admin", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineer", is_member: false }],
@@ -842,6 +858,22 @@ describe("PATCH /api/v1/teams/:teamId/members/:userId/role — TEAM-005 promotio
 describe("GET /api/v1/teams/:teamId", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // #184 m5 task 2.4 (deliberate API change): a team that does not exist is
+  // the shared teamNotFoundEnvelope() -- category not_found (was
+  // invalid_request) with code TEAM_NOT_FOUND (was absent). Check order is
+  // unchanged: the actor/membership check still runs first.
+  it("returns 404 not_found / TEAM_NOT_FOUND for a team that does not exist", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin", is_member: false }] });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // team lookup: none
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/team-1" });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("returns 403 when actor is not a team member and not application_admin", async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ global_role: "engineer", is_member: false }],
@@ -1094,6 +1126,9 @@ describe("POST /api/v1/teams/:teamId/managers", () => {
     expect(res.statusCode).toBe(404);
     // Must NOT return 409 for this condition
     expect(res.statusCode).not.toBe(409);
+    // #184 m5 task 2.4: the shared teamNotFoundEnvelope(); this route was
+    // already not_found and now also carries the code.
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
   });
 
   // Task 3.2 — 409 for global_role precondition failure

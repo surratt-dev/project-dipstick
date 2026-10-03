@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
-import { buildErrorEnvelope } from "./error-envelope.js";
+import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import {
   recordAndCountSlidingWindow,
   retryAfterSeconds,
@@ -370,13 +370,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     );
 
     if (teamResult.rows.length === 0) {
-      return reply.code(404).send({
-        error: {
-          category: "invalid_request" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     const teamName = (teamResult.rows[0] as { name: string }).name;
@@ -521,13 +515,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     );
 
     if (teamResult.rows.length === 0) {
-      return reply.code(404).send({
-        error: {
-          category: "invalid_request" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     const teamName = (teamResult.rows[0] as { name: string }).name;
@@ -1136,13 +1124,7 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     );
 
     if (teamResult.rows.length === 0) {
-      return reply.code(404).send({
-        error: {
-          category: "not_found" as const,
-          message: "Team not found.",
-          correlationId: crypto.randomUUID(),
-        },
-      });
+      return reply.code(404).send(teamNotFoundEnvelope());
     }
 
     // -----------------------------------------------------------------------
