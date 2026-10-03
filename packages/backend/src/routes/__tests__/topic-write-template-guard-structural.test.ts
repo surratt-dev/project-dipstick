@@ -35,7 +35,10 @@ import { snapshotTemplate, assertTemplateUnchanged, restoreTemplate } from "./he
 const infraUp = await probeInfra();
 requireInfraOrThrow(infraUp, "topic-write-template-guard-structural.test.ts");
 
-const TEAM_TOPICS_PREFIX = /^\/api\/v1\/teams\/:[^/]+\/topics(\/|$)/;
+// Versioned (/api/v1/teams/...) and unversioned (/api/teams/..., the
+// join-links convention) prefixes, with any name for the team param
+// (security implementation review S-1).
+const TEAM_TOPICS_PREFIX = /^\/api(\/v\d+)?\/teams\/:[^/]+\/topics(\/|$)/;
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE", "ALL", "*"]);
 const OTHER_PARAM_VALUE = "ffffffff-ffff-4fff-bfff-ffffffffffff";
 
@@ -76,7 +79,14 @@ function inScope(routes: RouteOptions[]): string[] {
   return [...selected].sort();
 }
 
-/** First path parameter = the template team, every other one = OTHER_PARAM_VALUE. */
+/**
+ * First path parameter = the template team, every other one = OTHER_PARAM_VALUE.
+ * Assumes plain `:name` segments. A regex-constrained param (`:id(^\\d+)`) or
+ * a `*` wildcard segment would produce a URL the router answers 404 without
+ * reaching the handler, so the audit-row assertion fails -- the test fails
+ * closed. If that happens, extend this function rather than exempting the
+ * route (security implementation review S-4).
+ */
 function templateUrl(url: string): string {
   let first = true;
   return url.replace(/:[^/]+/g, () => {

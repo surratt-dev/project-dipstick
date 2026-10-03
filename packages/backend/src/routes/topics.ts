@@ -130,6 +130,13 @@ async function checkStandingFacilitatorAuthorization(
   return { rejected: false, actorGlobalRole: grant.globalRole };
 }
 
+// The single TEAM_NOT_FOUND envelope every topic-write 404 sends, so the
+// template-team 404 matches the missing-team 404 by construction (#188
+// architect implementation review S4).
+function teamNotFoundEnvelope() {
+  return buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND");
+}
+
 // ---------------------------------------------------------------------------
 // Route-boundary teamId check (session-topics-snapshot-at-creation
 // implementation review M1/MF1). Runs first in every handler, before the
@@ -148,7 +155,7 @@ async function rejectNonCanonicalTeamId(
     return { rejected: false };
   }
   await applyTimingFloor(startTime);
-  await reply.code(404).send(buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND"));
+  await reply.code(404).send(teamNotFoundEnvelope());
   return { rejected: true };
 }
 
@@ -193,7 +200,7 @@ async function checkWritableTeam(
 
   if (result.rows.length === 0) {
     await applyTimingFloor(startTime);
-    await reply.code(404).send(buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND"));
+    await reply.code(404).send(teamNotFoundEnvelope());
     return { rejected: true };
   }
 
@@ -202,7 +209,7 @@ async function checkWritableTeam(
   // canonical spelling is the only one that can reach here.
   if (ctx.teamId === DEFAULT_TOPICS_TEAM_ID) {
     // Envelope first, so the audit's correlationId matches the response.
-    const envelope = buildErrorEnvelope("not_found", "Team not found.", "TEAM_NOT_FOUND");
+    const envelope = teamNotFoundEnvelope();
     await writeTemplateDenialAudit(request, ctx, envelope.error.correlationId);
     await applyTimingFloor(startTime);
     await reply.code(404).send(envelope);
@@ -290,6 +297,12 @@ async function writeTemplateDenialAudit(
     );
     auditRowWritten = true;
   } catch (err) {
+    // dbErrorMessage can echo a bound value (for example "invalid input
+    // syntax for type inet: ..."). Every value bound above is already in the
+    // structured event (actor id, role, IP, the constant team id, endpoint and
+    // operation strings), so nothing new can leak. Do not add a
+    // user-controlled field (request body, topic name, annotation text) to
+    // this insert without revisiting that (security implementation review S-3).
     const dbError = err as { code?: unknown; message?: unknown };
     request.log.error(
       {

@@ -134,3 +134,18 @@ These run in parallel with the implementation and block only the merge.
 - M5: added as a PR-description line in 0.1.
 
 **Rejected:** none.
+
+## Implementation review disposition
+
+**Architect (Ingrid Sollenberger).**
+- B1 (self-test races the parallel snapshot users): **fixed** with option (a). The snapshot helpers take an optional `PoolClient`. The self-test snapshots, mutates, restores and asserts inside one transaction and rolls it back, so it never commits a mutation.
+- S1 (residual flake risk): **recorded here as a known residual.** The structural test and the team-creation regression can still fail `assertTemplateUnchanged` if `default-topic-provisioning-integration.test.ts` (atomic `is_default` swap) or `topic-annotation-integration.test.ts` (direct template annotation) mutates the template inside their window. Once B1 is fixed this can cause a flake, never corruption. **On the first such flake, serialize the template-touching files** (move them into one file, or share an advisory lock between the swap and the snapshot helper). Do not loosen the assertion.
+- S2: **accepted**, note added to `design.md` D5 "Restore".
+- S3: **accepted**, the fields the restore skips are listed in `restoreTemplate`'s doc comment.
+- S4: **accepted**, `teamNotFoundEnvelope()` in `topics.ts` is used by the non-canonical, missing-team and template 404s.
+
+**Security (Tomás Ferreira).**
+- S-1: **accepted**, the structural prefix is now `^/api(/v\d+)?/teams/:[^/]+/topics(/|$)`.
+- S-2 (serialize template-touching files now): **declined for this change**, same residual as architect S1 above. Serializing needs a vitest config change or an edit to the provisioning suite, and three consecutive full real-DB runs showed no flake. Apply the remedy above on the first flake.
+- S-3: **accepted**, comment on `dbErrorMessage` in `writeTemplateDenialAudit`.
+- S-4: **accepted**, comment on `templateUrl` in the structural test.

@@ -248,7 +248,17 @@ extra tests.
   snapshot; reset `status`, `archived_*`, `team_annotation` and `annotation_updated_*`; restore
   `display_order` with the same negate-then-set two-step TOPIC-006 uses (`topics.ts` l.1397), since
   a direct update can trip `topics_team_active_order`. Then delete the sentinel session, the new
-  team's lobby session, its topics, memberships and the team row. The harness registers
+  team's lobby session, its topics, memberships and the team row.
+  *Implementation note (architect implementation review S2):* the restore deletes only template rows
+  that are **not** in the snapshot **and** have `is_default = false`, and it updates rows by snapshot
+  id only. `default-topic-provisioning-integration.test.ts` swaps the template's `is_default = true`
+  rows for fresh ids in parallel, so a delete of every non-snapshot row could remove its rows and
+  empty the template. TOPIC-003 inserts only `is_default = false`, so those are the only rows a
+  guard regression can add; `assertTemplateUnchanged` still compares every row in every status, so
+  detection is not weakened. The restore does not touch `name`, `prompt`, `vote_type`, `is_default`
+  or `first_session_description`, because no topic-write endpoint changes them today (see the
+  helper's doc comment). The helper's real-DB self-test runs in one transaction and rolls back
+  (architect B1), so the parallel snapshot users can never capture its mutation. The harness registers
   `teamRoutes` and `facilitatorSessionRoutes` (or uses `registerRoutes`) with the session hook,
   which `topics-integration.test.ts` does not do today, so the regression lives in its own file.
   A regression then fails only this test and does not break other tests.

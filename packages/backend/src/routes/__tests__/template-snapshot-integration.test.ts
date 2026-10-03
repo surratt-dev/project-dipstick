@@ -24,26 +24,34 @@ describe.skipIf(!infraUp)("template snapshot helper (#188 tasks.md 3.2)", () => 
     await mods?.redis.quit();
   });
 
+  // Runs entirely inside one transaction that is rolled back (architect
+  // implementation review B1): the mutation is never committed, so the
+  // structural and team-creation tests, which snapshot and restore the
+  // template in parallel files, can never capture or write it back.
   it("restoreTemplate undoes an annotation change, a display_order change and an added custom row", async () => {
     const { db } = mods;
-    const snap = await snapshotTemplate(db);
-    const target = [...snap.values()].find((row) => row.status === "active");
-    expect(target).toBeDefined();
-
+    const client = await db.connect();
     try {
-      await db.query(`UPDATE topics SET team_annotation = 'self-test', display_order = 987654 WHERE id = $1`, [
+      await client.query("BEGIN");
+      const snap = await snapshotTemplate(client);
+      const target = [...snap.values()].find((row) => row.status === "active");
+      expect(target).toBeDefined();
+
+      await client.query(`UPDATE topics SET team_annotation = 'self-test', display_order = 987654 WHERE id = $1`, [
         target!.id,
       ]);
-      await db.query(
+      await client.query(
         `INSERT INTO topics (team_id, name, prompt, vote_type, display_order, is_default)
          VALUES ($1, 'Snapshot self-test', 'Removed by restoreTemplate?', 'finger', 987655, false)`,
         [SENTINEL_TEAM_ID],
       );
-      await expect(assertTemplateUnchanged(db, snap)).rejects.toThrow();
-    } finally {
-      await restoreTemplate(db, snap);
-    }
+      await expect(assertTemplateUnchanged(client, snap)).rejects.toThrow();
 
-    await assertTemplateUnchanged(db, snap);
+      await restoreTemplate(db, snap, client);
+      await assertTemplateUnchanged(client, snap);
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
   });
 });
