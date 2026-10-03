@@ -95,6 +95,8 @@ All files in this section use `helpers/real-db.ts` (`Fixture`, `probeInfra` / `r
 
 These run in parallel with the implementation and block only the merge.
 
+> **Archive note (2026-10-02):** This change was archived with 6.1, 6.2 and 6.3 intentionally still open. They are human-only merge gates and must be completed before the PR for #188 merges.
+
 - [ ] 6.1 **[Human, named owner]** Name the data check owner in `proposal.md`, then run read-only queries in dev, staging and prod against the pass criteria in `proposal.md` "Pre-merge human actions":
   - zero `complete` sentinel sessions (record the count in any status);
   - every sentinel topic has `is_default = true` and `active`, with no annotation;
