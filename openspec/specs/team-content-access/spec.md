@@ -29,19 +29,23 @@ A `team_memberships` row with `role = 'engineering_manager'` does NOT, by itself
 
 **Path 2 — Engineering Manager by explicit association:** The user has `users.global_role = 'engineering_manager'` AND an active `team_memberships` row with `role = 'engineering_manager'` for the requested team. Grant type: `{ path: 'member', role: 'engineering_manager', teamId }`. This is the TEAM-006 path; the dual-check on both `users.global_role` and `team_memberships.role` MUST be performed, and — as of this change — is the ONLY path by which the helper may return a grant with `role: 'engineering_manager'`. Both fields MUST be read live from the database on every call, from the same query used to evaluate Path 1; the helper MUST NOT perform two separate database reads for what is structurally one authorization question.
 
-**Path 3 — Active session facilitator:** The user has an active session row for the requested team:
+**Path 3 — Active session facilitator:** The user is the session facilitator of a session for the requested team that is inside the facilitator read window:
 ```sql
 sessions.facilitator_id = $current_user
 AND sessions.team_id = $requested_team
 AND (
-  sessions.status IN ('draft', 'lobby', 'pre_session', 'active', 'wrap_up')
+  sessions.status IN ('lobby', 'pre_session', 'active', 'wrap_up')
+  OR (
+    sessions.status = 'draft'
+    AND sessions.created_at + INTERVAL '24 hours' > NOW()
+  )
   OR (
     sessions.status = 'complete'
     AND sessions.facilitator_access_expires_at > NOW()
   )
 )
 ```
-Grant type: `{ path: 'facilitator', sessionId, teamId, sessionStatus }`.
+`draft` is admitted only within 24 hours of creation (see Requirement: Facilitator pre-session preparation access via draft session status). `complete` is admitted only until `facilitator_access_expires_at`, the 30-minute post-session grace window, and read-only. The REST API Contract defines this window once as the "Facilitator read window", and every facilitator read endpoint refers to it. Grant type: `{ path: 'facilitator', sessionId, teamId, sessionStatus }`.
 
 **Application Admin path:** A user with `users.global_role = 'application_admin'` who has no `team_memberships` row for the requested team MUST NOT be granted access to session content endpoints. They SHALL be granted access only to administrative data endpoints (see Requirement: Application Admin access is limited to administrative data).
 

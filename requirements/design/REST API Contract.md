@@ -24,6 +24,19 @@ All protected routes validate a server-side session via an HttpOnly, Secure, Sam
 | `engineering_manager` | A user with an active `engineering_manager` team membership for the relevant team |
 | `application_admin` | A user whose `global_role` is `application_admin` |
 | `session facilitator` | The specific user recorded in `sessions.facilitator_id` for the session in question |
+| `facilitator in their read window` | A `session facilitator` for one of the team's sessions while that session is inside the [facilitator read window](#facilitator-read-window) (below). Read-only outside the live statuses. |
+
+#### Facilitator read window
+
+Where an endpoint below grants read access to a "`facilitator` in their read window" (formerly worded "`facilitator` with an active session for the team"), the facilitator must be the `session facilitator` of at least one session for that team in one of these states. This is path 3 of `evaluateTeamAccess` (`packages/backend/src/auth/team-content-access-helper.ts`; spec `team-content-access`):
+
+| Session state | Window |
+|---|---|
+| `lobby`, `pre_session`, `active`, `wrap_up` | The whole time the session is in that status |
+| `draft` | Until 24 hours after `sessions.created_at`. Expired lazily at read time; there is no job that changes the status |
+| `complete` | Until `sessions.facilitator_access_expires_at`, which SESSION-006 sets to completion time + 30 minutes (the post-session grace window). No client call can change it |
+
+Outside this window the facilitator receives `403`. The `draft` and `complete` windows grant **read** access only. Endpoints that let a facilitator **write** team data use the narrower set of live statuses (`lobby`, `pre_session`, `active`, `wrap_up`); see VOTE-002 (Update Action Item Status, Decision D10). "Active session" used elsewhere in this document, such as SESSION-001's `409 Conflict`, means only those live statuses and is unrelated to this window.
 
 ### Error Response Envelope
 
@@ -546,7 +559,7 @@ Returns the ordered list of active topics for a team, including prompt, vote typ
 
 **Authorization:** One of:
 - Active `participant` member of the team, OR
-- `facilitator` with an active session for the team
+- `facilitator` in their [facilitator read window](#facilitator-read-window) for the team
 
 `engineering_manager` role does not grant access to the topic configuration.
 
@@ -1511,7 +1524,7 @@ Returns a paginated list of completed sessions for a team, ordered most-recent-f
 
 **Authorization:** One of:
 - Active team member (`participant` or `engineering_manager`), OR
-- `facilitator` with an active session for the team (per ADR-007: facilitator history access is session-scoped)
+- `facilitator` in their [facilitator read window](#facilitator-read-window) for the team (per ADR-007: facilitator history access is session-scoped)
 
 **Request**
 
@@ -1555,7 +1568,7 @@ interface GetSessionHistoryResponse {
 - Only sessions with `status = 'complete'` are returned. In-progress or abandoned sessions are excluded.
 - Full session detail (individual votes) is served by `SESSION-008`.
 - The EM view returns the same list-level response; the restriction to aggregates-only applies to `SESSION-008`.
-- Per ADR-007, a facilitator's access to historical data requires an active session for the team. A facilitator without an active session for this team receives `403`.
+- Per ADR-007, a facilitator's access to historical data is session-scoped: it requires the facilitator to be in their [facilitator read window](#facilitator-read-window) for the team. That includes a `draft` session under 24 hours old and the 30-minute post-session grace window. Outside the window the facilitator receives `403`.
 
 ---
 
@@ -2388,7 +2401,7 @@ Returns all finalized action items for a team across all completed sessions, wit
 **Authorization:**
 - `engineer` / `participant`: active team member — sees their own team's backlog only
 - `engineering_manager`: active team manager — sees the managed team's backlog (read-only)
-- `facilitator`: only during an active session for the team (per ADR-007)
+- `facilitator`: only while in their [facilitator read window](#facilitator-read-window) for the team (per ADR-007)
 
 **Request**
 
@@ -2455,7 +2468,7 @@ Returns the full record and chronological status-change history for a single act
 
 **Auth:** Protected.
 
-**Authorization:** Same as `ACTION-004`: active team member, team EM, or facilitator with active session for the team. Access validated via `action_items.team_id`.
+**Authorization:** Same as `ACTION-004`: active team member, team EM, or `facilitator` in their [facilitator read window](#facilitator-read-window) for the team. Access validated via `action_items.team_id`.
 
 **Request**
 
@@ -2532,7 +2545,7 @@ Returns aggregated trend data for all team topics across recent sessions, includ
 **Authorization:**
 - Active `participant` team member
 - `engineering_manager` for this team (aggregate data only — no individual vote attribution)
-- `facilitator` with an active session for this team (per ADR-007)
+- `facilitator` in their [facilitator read window](#facilitator-read-window) for this team (per ADR-007)
 
 **Request**
 
@@ -3034,7 +3047,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TEAM-003 | Own team | Teams with active session | Managed teams | All | 403 on inaccessible teams |
 | TEAM-005 | No | Yes (non-member teams) | No | Yes | |
 | TEAM-006 | No | Yes | No | Yes | |
-| TOPIC-001 | Own team (read) | Teams with active session | No (403, #187; membership or global role) | No (403 + audit; reads via TOPIC-002) | EM denied unconditionally; no override |
+| TOPIC-001 | Own team (read) | Teams in read window ([def](#facilitator-read-window)) | No (403, #187; membership or global role) | No (403 + audit; reads via TOPIC-002) | EM denied unconditionally; no override |
 | TOPIC-002 | No | Yes (non-member teams) | No | Yes (read-only for annotation fields) | Read; `canEditAnnotations` false for admins |
 | TOPIC-003 | No | Yes (non-member teams, post-lock) | No | Yes | Facilitator (non-member) or admin (any team, per FR-8.2); code: `checkAddCustomTopicAuthorization`, delegating to `checkStandingFacilitatorOrAdminAuthorization`; customization lock enforced |
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced (FR-8.2) |
@@ -3043,7 +3056,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | SESSION-002 | If participant | If facilitator | No | Yes | Live sessions only |
 | SESSION-003 | Yes (team member, participant role) | No | No | Yes | EM role blocked |
 | SESSION-004 to SESSION-006 | No | Session facilitator only | No | Yes | |
-| SESSION-007 | Own team | Teams with active session | Managed teams | All | ADR-007 |
+| SESSION-007 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams | All | ADR-007 |
 | SESSION-008 | Own team (full votes) | Facilitated teams (full votes) | Managed teams (aggregates only) | All | EM filter enforced server-side |
 | SESSION-009 to SESSION-011 | No | Session facilitator / any facilitator (011) | No | Yes | |
 | VOTE-001 | Session participant | Session facilitator | No | Yes | |
@@ -3051,9 +3064,9 @@ This table consolidates the server-side authorization rules. All checks are perf
 | VOTE-003 | Session participant | Session facilitator | Aggregates only | Yes | Pre-reveal: 403 |
 | VOTE-004 | No | Yes (active session) | No | Yes | |
 | ACTION-001 to ACTION-003 | No | Session facilitator | No | Yes | Wrap-up only for 001-003 |
-| ACTION-004 | Own team | Teams with active session | Managed teams | All | No draft items |
-| ACTION-005 | Own team | Teams with active session | Managed teams | All | |
-| TREND-001 to TREND-002 | Own team | Teams with active session | Managed teams (aggregates) | All | |
+| ACTION-004 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams | All | No draft items |
+| ACTION-005 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams | All | |
+| TREND-001 to TREND-002 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams (aggregates) | All | |
 | TREND-003 (GET) | Yes | Yes | Yes | Yes | Read only |
 | TREND-003b (PUT) | No | No | No | Yes | Write: admin only |
 | TREND-004 | No | Eligible facilitators | No | Yes | |
