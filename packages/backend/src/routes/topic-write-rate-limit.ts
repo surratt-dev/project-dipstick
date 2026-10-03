@@ -7,6 +7,9 @@ import {
   TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE_MESSAGE,
 } from "@dipstick/shared";
 import { emitAuditEvent } from "../auth/audit-logger.js";
+// withTimeout is the generic bounded-wait helper. Despite its name,
+// AuditWriteTimeoutError here just means "the timer won": on this path it is
+// the limiter's Redis call that timed out (architect implementation review N2).
 import { AuditWriteTimeoutError, withTimeout } from "../auth/audit-write-timeout.js";
 import { writeFailOpenAuditRow } from "../auth/fail-open-audit-write.js";
 import {

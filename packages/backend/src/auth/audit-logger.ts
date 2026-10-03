@@ -435,7 +435,10 @@ export type AuditEventName =
   // no open episode), synchronously before the 429, through the fail-open
   // audit path (AUDIT_WRITE_TIMEOUT_MS; auth.audit_write_failed on failure).
   // metadata: { limit: "burst" | "daily", windows, observedCount, endpoint,
-  // team_verified: false } -- team_id is the lowercase path value, never
+  // team_verified: false }. `limit` and `observedCount` describe the REPORTED
+  // window (the longer wait), which is not necessarily the window whose
+  // episode this row opens -- that is `windows` (architect implementation
+  // review N3, security N1). team_id is the lowercase path value, never
   // checked against teams. No migration: audit_log.operation is unconstrained
   // TEXT and team_id has no FK (migrations/8_audit_log.sql).
   //

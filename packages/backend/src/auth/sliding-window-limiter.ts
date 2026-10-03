@@ -53,6 +53,10 @@ export interface SlidingWindowResult {
   oldestEntryMs: number;
 }
 
+// Moved byte-for-byte from teams.ts (#184 task 4.1), so it keeps the global
+// crypto.randomUUID() rather than this module's imported randomUUID. Leave it:
+// "tidying" it would break the byte-identity claim the TEAM-006 review relies
+// on (architect implementation review N1).
 export async function recordAndCountSlidingWindow(
   key: string,
   nowMs: number,
@@ -207,8 +211,12 @@ export interface DualWindowResult {
 export async function admitConditionalDualWindow(
   keys: DualWindowKeys,
   limits: DualWindowLimits,
-  nowMs: number = Date.now(),
+  nowMsInput: number = Date.now(),
 ): Promise<DualWindowResult> {
+  // PX in the script rejects a fractional TTL; an integer clock keeps a
+  // fractional caller value from turning every write into a fail-closed 503
+  // (security implementation review N2).
+  const nowMs = Math.floor(nowMsInput);
   const member = `${nowMs}-${randomUUID()}`;
   const r = (await redis.eval(
     CONDITIONAL_DUAL_WINDOW_LUA,

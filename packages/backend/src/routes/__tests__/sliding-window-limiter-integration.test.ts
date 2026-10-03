@@ -143,13 +143,51 @@ describe.skipIf(!infraUp)("CONDITIONAL_DUAL_WINDOW_LUA — real Redis (#184 task
     expect(breach).toMatchObject({ admitted: false, burstEpisodeNew: true });
     expect(await redis.exists(keys.burstMarker)).toBe(1);
 
-    await new Promise((r) => setTimeout(r, 450));
+    // Poll for the TTL expiry instead of sleeping a fixed margin (architect
+    // implementation review S2): robust on a slow shared CI Redis.
+    const deadline = Date.now() + 5_000;
+    while ((await redis.exists(keys.burstMarker)) === 1 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
     expect(await redis.exists(keys.burstMarker)).toBe(0);
 
     const admitted = await limiter.admitConditionalDualWindow(keys, LIMITS, Date.now());
     expect(admitted.admitted).toBe(true);
     const nextBreach = await limiter.admitConditionalDualWindow(keys, LIMITS, Date.now());
     expect(nextBreach).toMatchObject({ admitted: false, burstEpisodeNew: true, burstSuppressed: 0 });
+  });
+
+  it("a call that finds the window with room DELETEs a stale marker, so the next breach opens a new episode (injected nowMs)", async () => {
+    // Architect implementation review S2: the explicit DEL path, not TTL
+    // expiry. A marker with a long TTL simulates app-server clock skew; the
+    // injected nowMs puts the window's entries out of range, so it has room.
+    const keys = freshKeys();
+    const t0 = 1_800_000_000_000;
+    await seed(keys.burst, Array.from({ length: 120 }, () => t0));
+    const first = await limiter.admitConditionalDualWindow(keys, LIMITS, t0 + 1);
+    expect(first).toMatchObject({ admitted: false, burstEpisodeNew: true });
+    await redis.pexpire(keys.burstMarker, 60 * 60 * 1000); // outlives the window
+    expect(await redis.exists(keys.burstMarker)).toBe(1);
+
+    // After the window: every seeded entry is trimmed, so the window has room.
+    const later = t0 + TEN_MIN + 1;
+    const admitted = await limiter.admitConditionalDualWindow(keys, LIMITS, later);
+    expect(admitted.admitted).toBe(true);
+    expect(await redis.exists(keys.burstMarker)).toBe(0);
+
+    // Refill to the limit at `later` and breach again: a NEW episode, not a
+    // suppressed 429 counted against the stale marker.
+    await seed(keys.burst, Array.from({ length: 119 }, () => later));
+    const breach = await limiter.admitConditionalDualWindow(keys, LIMITS, later + 1);
+    expect(breach).toMatchObject({ admitted: false, burstEpisodeNew: true, burstSuppressed: 0 });
+  });
+
+  it("a fractional nowMs is floored, so the marker TTL stays an integer (security review N2)", async () => {
+    const keys = freshKeys();
+    const now = Date.now() + 0.5;
+    await seed(keys.burst, Array.from({ length: 120 }, () => Math.floor(now) - 1_000));
+    const r = await limiter.admitConditionalDualWindow(keys, LIMITS, now);
+    expect(r).toMatchObject({ admitted: false, burstEpisodeNew: true });
   });
 
   it("the oldest scores give a Retry-After of at least 1 s at the window edge, and the exact wait elsewhere", async () => {

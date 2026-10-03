@@ -67,3 +67,14 @@ describe("topicWriteErrorMessage (#184 6.2)", () => {
     expect(topicWriteErrorMessage(mockFetchResponse(null, 422), {}, FALLBACK)).toBe(FALLBACK);
   });
 });
+
+describe("isTopicWritePause (#184, architect review N4)", () => {
+  it("is a 429, or a 503 carrying the limiter's own code -- not any 503", async () => {
+    const { isTopicWritePause } = await import("../topicWriteRateLimit.js");
+    expect(isTopicWritePause(429, null)).toBe(true);
+    expect(isTopicWritePause(503, { error: { code: "TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE" } })).toBe(true);
+    expect(isTopicWritePause(503, { error: { code: "SOMETHING_ELSE", message: "Bad gateway" } })).toBe(false);
+    expect(isTopicWritePause(503, null)).toBe(false);
+    expect(isTopicWritePause(500, null)).toBe(false);
+  });
+});

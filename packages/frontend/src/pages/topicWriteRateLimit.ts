@@ -2,6 +2,7 @@ import {
   TOPIC_WRITE_BURST_LIMIT_EXCEEDED,
   TOPIC_WRITE_BURST_WAIT_PHRASE,
   TOPIC_WRITE_RATE_LIMIT_MESSAGES,
+  TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE,
 } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -65,7 +66,11 @@ export function topicWriteErrorMessage(
   return typeof body?.error?.message === "string" ? body.error.message : fallback;
 }
 
-/** 429 or 503 from the topic-write limiter: a pause, not a failure. */
-export function isTopicWritePause(status: number): boolean {
-  return status === 429 || status === 503;
+/**
+ * A 429, or a 503 that the topic-write limiter itself sent (by error.code):
+ * a pause, not a failure. A 503 from a proxy or gateway is not treated as one
+ * (architect implementation review N4).
+ */
+export function isTopicWritePause(status: number, body: ErrorBodyLike | null | undefined): boolean {
+  return status === 429 || (status === 503 && body?.error?.code === TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE);
 }

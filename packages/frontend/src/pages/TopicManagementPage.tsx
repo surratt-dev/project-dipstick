@@ -784,7 +784,7 @@ export function TopicManagementPage() {
           // #184 6.2: rate-limit copy for a 429 (by error.code), the
           // server's message otherwise.
           const message = topicWriteErrorMessage(res, body, "Unable to archive this topic.");
-          if (confirm && escalation && isTopicWritePause(res.status)) {
+          if (confirm && escalation && isTopicWritePause(res.status, body)) {
             // #184 6.5: a pause keeps the escalated confirmation, its list
             // and its Archive anyway button. Nothing is retried.
             setRemoveState({ ...escalation, error: message });
@@ -1398,7 +1398,7 @@ export function TopicManagementPage() {
       // #184 6.2: a 429/503 from the topic-write limiter is a pause. The form
       // stays open with every field, the message goes in its error area, and
       // nothing is retried or refetched.
-      if (isTopicWritePause(res.status)) {
+      if (isTopicWritePause(res.status, body)) {
         returnAddFormToEditing({ formError: topicWriteErrorMessage(res, body, body.error.message) });
         return;
       }
