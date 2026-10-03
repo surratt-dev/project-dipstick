@@ -466,3 +466,55 @@ export async function resetTopicWriteBudget(...userIds: string[]): Promise<void>
   const keys = userIds.flatMap((id) => Object.values(topicWriteRateLimitKeys(id)));
   await redis.del(...keys);
 }
+
+/**
+ * Pre-seeds an actor's topic-write windows with ZADD (#184 Decision 13: route
+ * tests pre-seed instead of sending hundreds of requests). Each score is one
+ * counted request at that time (ms). Sets the window TTLs as an admit would.
+ */
+export async function seedTopicWriteWindows(
+  userId: string,
+  windows: { burst?: number[]; daily?: number[] },
+): Promise<void> {
+  const { redis } = await import("../../../redis.js");
+  const { topicWriteRateLimitKeys, TOPIC_WRITE_LIMITS } = await import("../../topic-write-rate-limit.js");
+  const keys = topicWriteRateLimitKeys(userId);
+  const pipeline = redis.pipeline();
+  for (const [key, scores, ttl] of [
+    [keys.burst, windows.burst ?? [], TOPIC_WRITE_LIMITS.burst.windowMs],
+    [keys.daily, windows.daily ?? [], TOPIC_WRITE_LIMITS.daily.windowMs],
+  ] as const) {
+    if (scores.length === 0) continue;
+    scores.forEach((score, i) => pipeline.zadd(key, score, `seed-${score}-${i}-${randomUUID()}`));
+    pipeline.pexpire(key, ttl);
+  }
+  await pipeline.exec();
+}
+
+/** An actor over both limits: `n` entries (default the limit) one second ago in both windows. */
+export async function seedOverBudget(userId: string, opts: { burst?: number; daily?: number } = {}): Promise<void> {
+  const { TOPIC_WRITE_LIMITS } = await import("../../topic-write-rate-limit.js");
+  const at = Date.now() - 1_000;
+  const burst = opts.burst ?? TOPIC_WRITE_LIMITS.burst.limit;
+  const daily = opts.daily ?? Math.max(burst, 0);
+  await seedTopicWriteWindows(userId, {
+    burst: Array.from({ length: burst }, () => at),
+    daily: Array.from({ length: daily }, () => at),
+  });
+}
+
+/** ZCARD and PTTL of an actor's two topic-write windows, plus whether each breach marker exists. */
+export async function topicWriteWindowState(userId: string) {
+  const { redis } = await import("../../../redis.js");
+  const { topicWriteRateLimitKeys } = await import("../../topic-write-rate-limit.js");
+  const keys = topicWriteRateLimitKeys(userId);
+  const [burst, daily, burstTtl, dailyTtl, burstMarker, dailyMarker] = await Promise.all([
+    redis.zcard(keys.burst),
+    redis.zcard(keys.daily),
+    redis.pttl(keys.burst),
+    redis.pttl(keys.daily),
+    redis.exists(keys.burstMarker),
+    redis.exists(keys.dailyMarker),
+  ]);
+  return { burst, daily, burstTtl, dailyTtl, burstMarker: burstMarker === 1, dailyMarker: dailyMarker === 1 };
+}

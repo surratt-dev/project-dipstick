@@ -87,7 +87,7 @@ export function topicWriteRateLimitKeys(userId: string): DualWindowKeys {
 
 type Window = "burst" | "daily";
 
-interface Breach {
+export interface TopicWriteBreach {
   limit: Window;
   code: typeof TOPIC_WRITE_BURST_LIMIT_EXCEEDED | typeof TOPIC_WRITE_DAILY_LIMIT_EXCEEDED;
   message: string;
@@ -103,7 +103,7 @@ interface Breach {
  * wait (daily on a tie); Retry-After is that wait. Lua returns mechanism
  * only; this is the policy.
  */
-function classifyBreach(result: DualWindowResult, nowMs: number): Breach {
+export function classifyTopicWriteBreach(result: DualWindowResult, nowMs: number): TopicWriteBreach {
   const { burst, daily } = TOPIC_WRITE_LIMITS;
   const burstWait =
     result.burstCount >= burst.limit
@@ -140,6 +140,36 @@ function classifyBreach(result: DualWindowResult, nowMs: number): Breach {
   };
 }
 
+export type TopicWriteBudgetDecision =
+  | { admitted: true; result: DualWindowResult }
+  | { admitted: false; result: DualWindowResult; breach: TopicWriteBreach };
+
+/**
+ * The limiter decision itself, with no HTTP, timeout or timing floor: one
+ * atomic EVAL against the actor's windows (recording the request if
+ * admitted) plus the Decision 7a classification of a breach. Rejects if
+ * Redis errors. enforceTopicWriteRateLimit() is the only production caller;
+ * counting tests call this directly with an injected nowMs (Decision 13).
+ */
+export async function checkTopicWriteBudget(
+  userId: string,
+  nowMs: number = Date.now(),
+): Promise<TopicWriteBudgetDecision> {
+  const result = await admitConditionalDualWindow(
+    topicWriteRateLimitKeys(userId),
+    {
+      burstLimit: TOPIC_WRITE_LIMITS.burst.limit,
+      burstWindowMs: TOPIC_WRITE_LIMITS.burst.windowMs,
+      dailyLimit: TOPIC_WRITE_LIMITS.daily.limit,
+      dailyWindowMs: TOPIC_WRITE_LIMITS.daily.windowMs,
+    },
+    nowMs,
+  );
+  return result.admitted
+    ? { admitted: true, result }
+    : { admitted: false, result, breach: classifyTopicWriteBreach(result, nowMs) };
+}
+
 /**
  * Admits the request against the actor's topic-write budget, or sends the
  * 429/503 itself (timing floor, no-store, and -- on the first 429 of a breach
@@ -164,21 +194,9 @@ export async function enforceTopicWriteRateLimit(
     endpoint: ctx.endpoint,
   };
 
-  let result: DualWindowResult;
+  let decision: TopicWriteBudgetDecision;
   try {
-    result = await withTimeout(
-      admitConditionalDualWindow(
-        topicWriteRateLimitKeys(ctx.actorUserId),
-        {
-          burstLimit: TOPIC_WRITE_LIMITS.burst.limit,
-          burstWindowMs: TOPIC_WRITE_LIMITS.burst.windowMs,
-          dailyLimit: TOPIC_WRITE_LIMITS.daily.limit,
-          dailyWindowMs: TOPIC_WRITE_LIMITS.daily.windowMs,
-        },
-        nowMs,
-      ),
-      TOPIC_WRITE_RATE_LIMIT_REDIS_TIMEOUT_MS,
-    );
+    decision = await withTimeout(checkTopicWriteBudget(ctx.actorUserId, nowMs), TOPIC_WRITE_RATE_LIMIT_REDIS_TIMEOUT_MS);
   } catch (err) {
     // Fail closed (Decision 6). No DB write of any kind on this path. The raw
     // Redis error is not logged: only whether it timed out.
@@ -201,11 +219,11 @@ export async function enforceTopicWriteRateLimit(
     return "rejected";
   }
 
-  if (result.admitted) {
+  if (decision.admitted) {
     return "allowed";
   }
 
-  const breach = classifyBreach(result, nowMs);
+  const { breach } = decision;
   const envelope = buildErrorEnvelope("rate_limited", breach.message, breach.code);
 
   // Decision 7 / security C1: one durable row per breach episode, written

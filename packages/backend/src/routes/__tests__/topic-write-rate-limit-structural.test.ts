@@ -51,3 +51,34 @@ describe("unit tests importing topics.ts mock the topic-write limiter (#184 5.4a
     expect(missing).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 5.7 / Decision 8 / spec "The topic-write limiter never applies to
+// session runtime": an ALLOW-LIST of importers. The topic-write limiter
+// helper may be imported (outside tests) only by routes/topics.ts; the shared
+// sliding-window mechanism only by that helper and routes/teams.ts (TEAM-006).
+// Nothing in facilitator-sessions.ts, sessions, voting or WebSocket code may
+// import either. Kept alongside the behavioural session test in
+// topic-write-rate-limit-session-integration.test.ts: an import scan cannot
+// see re-exports or computed dynamic import(), and the behavioural test
+// cannot see a path it does not drive (security F-e). Neither may be dropped.
+// ---------------------------------------------------------------------------
+describe("topic-write limiter import graph is an allow-list (#184 5.7)", () => {
+  const production = allBackendSources().filter((f) => !isTestPath(f.rel));
+
+  function importersOf(target: string): string[] {
+    return production.filter((f) => importsModule(f, target)).map((f) => f.rel).sort();
+  }
+
+  it("routes/topic-write-rate-limit.ts is imported only by routes/topics.ts", () => {
+    expect(importersOf("routes/topic-write-rate-limit.ts")).toEqual(["routes/topics.ts"]);
+  });
+
+  it("auth/sliding-window-limiter.ts is imported only by the topic-write helper and routes/teams.ts", () => {
+    expect(importersOf("auth/sliding-window-limiter.ts")).toEqual(["routes/teams.ts", "routes/topic-write-rate-limit.ts"]);
+  });
+
+  it("the scan sees real imports (the allow-list is not vacuous)", () => {
+    expect(importersOf("routes/error-envelope.ts")).toContain("routes/facilitator-sessions.ts");
+  });
+});
