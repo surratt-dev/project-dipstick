@@ -1,10 +1,14 @@
 import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { db } from "../db.js";
-import { redis } from "../redis.js";
 import { config } from "../config.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
 import { buildErrorEnvelope } from "./error-envelope.js";
+import {
+  recordAndCountSlidingWindow,
+  retryAfterSeconds,
+  type SlidingWindowResult,
+} from "../auth/sliding-window-limiter.js";
 import type {
   TeamMember,
   LegacyTeamMembersResponse,
@@ -72,61 +76,6 @@ function team006BurstKey(actorUserId: string): string {
 
 function team006DailyKey(actorUserId: string): string {
   return `dipstick:ratelimit:team-manager:daily:${actorUserId}`;
-}
-
-// Atomically: drop entries older than the window, record this request, and
-// return the resulting count plus the oldest surviving entry's timestamp
-// (used to compute a precise Retry-After). PEXPIRE bounds how long an idle
-// key lingers in Redis once an actor stops making requests.
-const SLIDING_WINDOW_LUA = `
-local key = KEYS[1]
-local now = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local member = ARGV[3]
-redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
-redis.call('ZADD', key, now, member)
-redis.call('PEXPIRE', key, window)
-local count = redis.call('ZCARD', key)
-local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-local oldestScore = now
-if oldest[2] then
-  oldestScore = oldest[2]
-end
-return {count, oldestScore}
-`;
-
-interface SlidingWindowResult {
-  count: number;
-  oldestEntryMs: number;
-}
-
-async function recordAndCountSlidingWindow(
-  key: string,
-  nowMs: number,
-  windowMs: number,
-): Promise<SlidingWindowResult> {
-  const member = `${nowMs}-${crypto.randomUUID()}`;
-  const result = (await redis.eval(
-    SLIDING_WINDOW_LUA,
-    1,
-    key,
-    nowMs,
-    windowMs,
-    member,
-  )) as [number | string, number | string];
-
-  return {
-    count: Number(result[0]),
-    oldestEntryMs: Number(result[1]),
-  };
-}
-
-function retryAfterSeconds(
-  window: SlidingWindowResult,
-  nowMs: number,
-  windowMs: number,
-): number {
-  return Math.max(1, Math.ceil((window.oldestEntryMs + windowMs - nowMs) / 1000));
 }
 
 type Team006RateLimitCode =
