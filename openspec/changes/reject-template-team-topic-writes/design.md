@@ -176,8 +176,8 @@ opens an eager `ioredis` client, so `afterAll` calls `redis.quit()` and `db` cle
 integration files do. A mocked harness can't drive a generic request loop.
 
 **Selection.** An `onRoute` hook registered before `registerRoutes` collects every route. A route
-is in scope when its `url` matches `^/api/v1/teams/:[^/]+/topics(/|$)` (any name for the first
-param) and its method set, after normalizing `routeOptions.method` to an array, contains `POST`,
+is in scope when its `url` matches `^/api(/v\d+)?/teams/:[^/]+/topics(/|$)` (versioned or unversioned,
+per security implementation review S-1, and any name for the first param) and its method set, after normalizing `routeOptions.method` to an array, contains `POST`,
 `PUT`, `PATCH`, `DELETE`, or a wildcard (`ALL`/`*`). It adds an explicit `EXTRA_IN_SCOPE_ROUTES`
 list (empty today) for `topics`-writing routes outside that prefix. The author of such a route adds
 it there in the same PR, and code review enforces this. There is no exemption list. It asserts
