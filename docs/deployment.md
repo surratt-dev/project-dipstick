@@ -145,6 +145,8 @@ curl http://localhost:3000/health/ready
 
 A `200` response means PostgreSQL and Redis are both reachable.
 
+**Topic writes fail closed on Redis.** The five Topic Management write endpoints (add, archive, restore, reorder, team definition) answer `503 TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE` when Redis is unreachable or slower than 500 ms, because their per-actor rate limit cannot be checked (`harden-topic-write-endpoints`, #184). Session runtime (room open, start, voting, WebSocket) is unaffected. Limiter keys live under `dipstick:ratelimit:topic-write:` and expire on their own; the `topic.write_rate_limit_check_failed` and `topic.write_rate_limit_exceeded` events are log-only (a breach episode's first 429 also writes a `topic.write_rate_limited` `audit_log` row).
+
 ### Logging
 
 Audit events are emitted via `emitAuditEvent` (`packages/backend/src/auth/audit-logger.ts`) at the `info` level, with the child logger's level explicitly overridden so application-wide log-level changes (e.g. raising Fastify's logger to `warn`) cannot suppress them. **This override does not protect against transport-level filtering.** If you configure a pino transport (a log shipper, a `pino-*` destination, anything set via `transport` in Fastify's `logger` option) that applies its own level filter below `info`, audit events will be silently dropped downstream of this logger, with no indication in the application that anything was lost.
