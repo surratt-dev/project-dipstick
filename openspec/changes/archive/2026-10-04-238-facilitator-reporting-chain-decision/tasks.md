@@ -174,7 +174,7 @@
   **Check:** `git diff --name-only origin/main...HEAD; git status --porcelain` lists nothing else.
 - [x] 4.2 No `specs/` directory in this change (design D2).
   **Check:** `test ! -d "$P/specs"`.
-- [ ] 4.3 Archive as a documents-only change, last repository action. `openspec` can't run, so:
+- [x] 4.3 Archive as a documents-only change, last repository action. `openspec` can't run, so:
   add a decision-log row "Archived by manual `git mv`; openspec validate not run (CLI unavailable;
   no deltas by design, D2)", then
   `git mv "$P" openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision`.
