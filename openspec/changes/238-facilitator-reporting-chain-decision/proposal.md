@@ -1,9 +1,11 @@
 # Proposal: 238-facilitator-reporting-chain-decision (#238)
 
 *Framed by Devon Calloway (Internal Champion). Builds on `exploration-notes.md` (revised after the
-Facilitator and BA explore reviews) and the binding `decision-log.md`, rows 1–11. Nothing in the
+Facilitator and BA explore reviews) and the binding `decision-log.md`, rows 1–18. Nothing in the
 decision log is reopened here. Revised after the propose reviews (`propose-review-ba.md`,
-`propose-review-exec.md`); see "Review disposition" at the end of the main body.*
+`propose-review-exec.md`); see "Review disposition" at the end of the main body. Appendices B and C
+revised after the design reviews (`design-review-engineer.md`, `design-review-security.md`) and
+decision-log rows 13–18; see `design.md`, "Design review disposition".*
 
 ## Why
 
@@ -23,7 +25,7 @@ quietly breaks their real job, because their EM content access falls into the du
 path (`team-content-access-helper.ts`).
 
 #235 parked the question as its Follow-up 2, with a VP condition that it be decided before the
-first team goes live. The user has now decided it (decision-log rows 1–4, 8–11):
+first team goes live. The user has now decided it (decision-log rows 1–4, 8–11, 13–18):
 
 - **No reporting-chain model.** The app does not learn the org chart.
 - **A narrow conflict rule instead.** If the IdP sends a user both `engineering_manager` and
@@ -49,8 +51,8 @@ This change adds **documents only**. No application code, migrations, specs unde
    modelled on 01b's deferral doc. It contains:
    - **Three-sentence summary** at the top, before the traceability header: what the rule is, why,
      and what it doesn't catch (skip-level managers and managers sent only `facilitator`).
-   - **Status and owners.** Decided 2026-10-04 by the user (product owner), decision-log rows 1–4
-     and 8–11. Follow-on owner: the Business Analyst. VP of Engineering acknowledgment: "Persona
+   - **Status and owners.** Decided 2026-10-04 by the user (product owner), decision-log rows 1–4,
+     8–11 and 13–18. Follow-on owner: the Business Analyst. VP of Engineering acknowledgment: "Persona
      review (Executive Stakeholder) approved with conditions, see #NNN; human VP of Engineering
      acknowledgment *pending* (owner: the user, as product owner)." The persona review is input to the VP,
      not the VP's sign-off. #238 does not close until the human acknowledgment is recorded.
@@ -66,19 +68,25 @@ This change adds **documents only**. No application code, migrations, specs unde
      everyone else (nothing, ever). It covers the audit-content rule (allowlisted role names
      only, never raw claim values) and the S4 disposition (a dedicated conflict row, not
      `outrankedRoles` on `role_claim_mapped`).
-   - **Sessions** (row 11). Drafts owned by a now-conflicted user stay blocked at room-open and are
-     recreated by another facilitator; the notice names them. No reassignment feature. Sessions
-     already past room-open stay with their facilitator via `sessions.facilitator_id`, per #235
-     Decision 12. This is a stated decision, not an emergent property, so later hardening does
-     not "fix" it.
+   - **Sessions** (rows 11, 14–18; `design.md` D5). Drafts owned by a now-conflicted user stay
+     blocked at room-open; the notice names them. They can't be recreated in the app (the team's
+     single open-session slot is held by the draft), so another facilitator **takes the draft
+     over** (#MMM, separate issue, no launch gate). Until #MMM ships, a stranded draft is cleared
+     by a documented, audited operator step. Draft-based team-content access also requires a live
+     `facilitator` role (row 18). Sessions already past room-open stay with their facilitator via
+     `sessions.facilitator_id`, per #235 Decision 12, and the record lists what that covers
+     (control, live events, per-voter attribution, action items and trends, 30 minutes after
+     completion, no limit while non-terminal). These are stated decisions, not emergent
+     properties, so later hardening does not "fix" them.
    - **Rejected options:** (a) a reporting-chain model (manager-of relationships beyond TEAM-006,
      or an org-chart sync), (b) keeping #235 precedence for the pair, (c) failing the sign-in,
      (d) audit and log only with no user notice.
    - **Residual gaps** 1–6 (manager sent only `facilitator`; skip-level managers and above; missing
      or stale EM memberships; informal authority; the BA-owned "peer is not in the reporting
      chain" interpretation; the interim window), with the deployment-docs warning confirmed as the
-     standing control. Gap 2 (skip-level managers) is controlled by the docs warning only; the
-     pre-launch IdP attestation covers the both-roles pair at launch, not gaps 1 or 2.
+     standing control. Gaps 1 and 2 are **accepted risk** (decision-log row 13, the user): the
+     docs warning is their only control, and the pre-launch IdP attestation covers the both-roles
+     pair at launch, not gaps 1 or 2.
    - **Audit-write failure line:** a failed conflict-row insert fails the sign-in as any
      transactional audit-write failure does (#235 `auth-error-handling`). This is not rejected
      option (c), which is about the conflict itself.
@@ -104,18 +112,21 @@ This change adds **documents only**. No application code, migrations, specs unde
 5. **Appendix B (below): draft body for the follow-up implementation issue**, to be filed by the
    orchestrator at the end of this pipeline. It carries the first-team-launch gate, the minimum
    acceptance criteria, the pre-launch items and the normative scenarios.
+6. **Appendix C (below): draft body for the separate draft-takeover issue (#MMM)** (rows 14–17),
+   filed by the orchestrator alongside #NNN. No launch gate.
 
 ## Constraints that must be preserved
 
 - **The no-manager rule stays structural.** Nothing in the decision, the notice or the docs offers a
-  setting, toggle or override. The only deployment-configured item in the follow-up is the
-  *contact text* in the notice, which is display text, not behaviour.
+  setting, toggle or override. The only deployment-configured item the notice uses is the
+  existing admin contact (`APPLICATION_ADMIN_CONTACT_EMAIL`), which is display text, not
+  behaviour.
 - **Facilitator from another team stays a hard block.** The conflict rule adds to the membership
   check and does not replace it.
 - **The app never writes `global_role`.** The IdP stays the single writer (01b Decision). The
   conflict rule only changes how a claim is *read*.
-- **Raw claim values never reach an audit row or a log line.** The conflict record carries
-  allowlisted role names only.
+- **Raw role-claim values never reach an audit row or a log line.** The conflict record carries
+  allowlisted role names only, as a code constant. (`oidcSubject` stays, as in every auth row.)
 - **The app disappears during the ritual.** The user notice never renders on a live-session route,
   including the re-authentication return path. Teammates, participants and other facilitators are
   never told about one person's role misconfiguration.
@@ -144,7 +155,7 @@ the archived `2026-09-29-join-link-use-case-sync` (also no spec delta). Rational
   follow-up issue.
 - Editing #235's files. Appendix A is applied by whichever of #235 and #238 merges second.
 - A reporting-chain or org-structure model (rejected).
-- Draft reassignment (row 11: recreate instead).
+- Draft reassignment in #NNN. Draft takeover is its own issue, #MMM (rows 14–16).
 - An in-app "who is conflicted" view. An audit-log query and a docs troubleshooting entry cover it.
 - A launch-checklist document (row 10).
 
@@ -161,7 +172,8 @@ the archived `2026-09-29-join-link-use-case-sync` (also no spec delta). Rational
   - AC 2 is met by the record plus the filed follow-up issue whose body contains Appendix B's
     minimum ACs.
 - **Human actions outside this change:**
-  - File the follow-up issue (orchestrator).
+  - File the follow-up issue #NNN (Appendix B) and the draft-takeover issue #MMM (Appendix C)
+    (orchestrator).
   - Human VP of Engineering acknowledgment on the record's Status line (owner: the user, as product
     owner). The Executive Stakeholder persona review does not substitute for it.
   - GitHub comments on #235 and #238 pointing to the record.
@@ -172,15 +184,16 @@ the archived `2026-09-29-join-link-use-case-sync` (also no spec delta). Rational
 1. **Human VP of Engineering acknowledgment** on the 01c Status line (owner: the user, as product owner).
    The Executive Stakeholder persona review approved with conditions; that is not the real VP's
    sign-off. #238 doesn't close without the human acknowledgment.
-2. **Broader line-management attestation (new question for the user, not drafted into #NNN).**
-   Should the pre-launch IdP attestation also confirm that no `facilitator` holder line-manages
-   anyone on a team using the app? Row 10 decided only "no one holds both roles". The broader
-   version would be the only pre-launch control touching residual gaps 1 and 2. Ask before adding.
-3. **`openspec validate --strict` not run.** The CLI isn't available in this environment. The artifacts
-   follow the archived-change structure by hand.
+2. **`openspec validate --strict` not run.** The CLI isn't available in this environment, and the
+   validator would likely flag a change with no deltas anyway (`design.md` D2). The artifacts
+   follow the archived-change structure by hand; archive as documents-only.
 
 *Closed since exploration:*
-- Live-session rule and draft handling (row 11).
+- Broader line-management attestation (former Open item 2): **no**, row 10 attestation only
+  (row 13). Residual gaps 1–2 are accepted risk.
+- Stranded-draft unblock path: draft takeover in #MMM, interim audited operator step (rows 14–17).
+- Draft read grant after re-resolution: live-role check added to #NNN (row 18).
+- Live-session rule and draft handling (row 11; drafts amended by rows 14–17).
 - Launch-checklist location (row 10).
 - Launch gate (row 8).
 - User notice (row 9).
@@ -191,6 +204,10 @@ Propose-stage reviews: `propose-review-ba.md` (BA) and `propose-review-exec.md` 
 Stakeholder persona). BA R1–R4 trace to decision-log rows 10 and 11 or to #235's design; I checked
 R4 against #235 `design.md` (`shouldRecordRoleClaimMapped` returns `false` for a new user) and it
 holds.
+
+Design-stage reviews (Engineer, Security) are dispositioned point by point in `design.md`,
+"Design review disposition". The rows below that changed this proposal are summarised at the end
+of the table.
 
 | Point | Disposition | Rationale / where |
 |---|---|---|
@@ -213,6 +230,11 @@ holds.
 | Exec rec. 1: three-sentence summary at top of 01c | Accepted | What Changes item 1 and task 1.1; design D1 section order. |
 | Exec rec. 2: fold Priya walk-through into #NNN PR review, timebox it | Accepted | Matches row 10, which names only two pre-launch items. Design D4 updated. |
 | Exec rec. 3: accepts residual gaps with attestation + docs warning as standing control | Modified | Agreed on substance, but per BA R1 the attestation covers the pair at launch, not the residual gaps. The docs warning alone is their standing control. |
+| *Design stage* — Eng F1 / Sec S1: "recreate" blocked by the unique index | Accepted; user decided rows 14–17 | Sessions bullet; Appendix B (copy, room-open, operator step, pre-launch); new Appendix C (#MMM). |
+| *Design stage* — Sec S2: draft read grant | Accepted; user decided row 18 | Appendix B Scope and new AC 12. Exceeds the Exec scope freeze by one AC; the user's decision overrides it. |
+| *Design stage* — Eng F2–F9, M1–M6; Sec S3–S6 | Accepted | Appendix A.3 and Appendix B text; folded into existing ACs. See `design.md` disposition. |
+| *Design stage* — row 13: broader attestation | Closed (No) | Open item 2 removed; gaps 1–2 recorded as accepted risk. |
+| *Design stage* — Facilitator Q3 (exploration §4): live-session rule | Confirmed by Security (Claim A), with S2 and S3 attached | Sessions bullet; `design.md` D5. |
 
 ---
 
@@ -246,9 +268,14 @@ Append to the Decision cell of row 7:
 ### A.3 Deployment-docs warning and the #235 text it is pinned to (applied by #NNN, not now)
 
 The VP made the warning a character-for-character SHALL (#235 `first-access` spec, "Deployment
-documentation describes the role claim"), quoting #235 `proposal.md` Constraints. So the docs,
-the quoted proposal text and the spec must all change in the **same** PR that implements the rule.
-Changing the markdown alone fails #235's checklist scenario.
+documentation describes the role claim"), quoting #235 `proposal.md` Constraints. So the docs and
+the spec must change in the **same** PR that implements the rule. Changing the markdown alone fails
+#235's checklist scenario.
+
+**Single source (`design.md` D3).** By the time #NNN lands, #235 is archived. #NNN does **not**
+edit the archived `proposal.md`. Its delta MODIFIES the requirement "Deployment documentation
+describes the role claim" so the warning text below is inlined in the spec, and the scenario
+compares `docs/deployment.md` to the spec.
 
 **Before** (in `docs/deployment.md` and #235 `proposal.md` Constraints, identical):
 
@@ -264,6 +291,10 @@ residual gaps. "Keep those memberships accurate" is kept, because residual gaps 
 it. `<conflict audit operation>` is the operation name chosen in #NNN.
 
 In the **same** PR, also amend:
+- The #235 `first-access` spec, "Deployment documentation describes the role claim": inline the
+  warning (above), and add to its "exactly these items" list the conflict troubleshooting entry
+  (including the operator draft-clearing step) and the mention that the conflict event is suitable
+  for an operator alert. Without this, the new docs content breaks "exactly".
 - The #235 `first-access` spec, "Multi-valued role claims resolve by fixed precedence": the
   rule paragraph, the "Known consequence (accepted)" paragraph, and the scenario "Facilitator
   outranks engineering manager". See Appendix B's normative scenarios.
@@ -275,20 +306,31 @@ In the **same** PR, also amend:
 
 ---
 
+
 ## Appendix B — Draft body for the follow-up implementation issue
 
 *Filed by the orchestrator at the end of this pipeline. Suggested title:*
 **Resolve `engineering_manager` + `facilitator` role-claim conflict to engineering manager (notice + audit)**
 
-> **Blocked by:** #235. **Gates:** first-team launch, like #237. No team goes live until this
-> issue is closed (#238 decision-log row 8).
+> **Blocked by:** #235 **merged and archived**, so its precedence requirement exists in
+> `openspec/specs/` and this issue's delta can MODIFY it (#238 design D2). This includes #235
+> Decision 11 / D9 (`enableNonRepudiationChecks`, ID-token signature verification): the conflict
+> row is only evidence if the claim is verified, so this issue must not ship ahead of D9 if #235 is
+> ever split.
+> **Gates:** first-team launch, like #237. No team goes live until this issue is closed (#238
+> decision-log row 8).
+> **Related:** #MMM (draft takeover, no launch gate) is the in-app unblock path for drafts this
+> rule strands (#238 rows 14–17). Until #MMM ships, this issue's documented operator step is the
+> unblock path.
 > **Decision record:** `requirements/use cases/01c - Facilitator Reporting Chain - Decision.md` (#238).
 > **Track:** full. Role resolution is an authorization boundary and touches the no-manager rule.
-> **Schedule:** start the day #235 merges, in parallel with #237, so this adds no serial time to
-> first-team launch. If it threatens the launch date, raise it with the VP of Engineering before
+> **Schedule:** start the day #235 is archived, in parallel with #237, so this adds no serial time
+> to first-team launch. If it threatens the launch date, raise it with the VP of Engineering before
 > anyone trims ACs or proposes waiving the gate. The gate stays (#238 row 8).
-> **Scope freeze:** scope is frozen at the minimum ACs below. No reassignment flow, no in-app
-> "who is conflicted" view, no admin toggle and no alerting configuration is added during apply.
+> **Scope freeze:** scope is frozen at the minimum ACs below. No reassignment or takeover flow (that
+> is #MMM), no in-app "who is conflicted" view, no admin toggle and no alerting configuration is
+> added during apply. AC 12 was added after the freeze by the user's decision (#238 row 18), which
+> overrides the freeze for that AC only.
 >
 > ### Why
 > Under #235's precedence, a user the IdP sends both `engineering_manager` and `facilitator`
@@ -304,7 +346,8 @@ In the **same** PR, also amend:
 > `engineering_manager` > `senior_engineer` > `engineer`) to what remains. Whenever both were
 > present, record a role conflict, whatever role was finally applied. Detection happens after
 > allowlist filtering, ignores duplicates, and uses exact matching (no case-folding). Only an
-> array claim can produce a conflict.
+> array claim can produce a conflict. #235 D3's `outrankedRoles` is computed from the
+> **pre-discard** allowlisted set, so the log still shows that `facilitator` was sent.
 >
 > | Allowlisted claim elements | Applied role | Conflict? |
 > |---|---|---|
@@ -330,27 +373,47 @@ In the **same** PR, also amend:
 >   transaction (no `auth.role_claim_mapped` row, per #235 D5), and the conflict row's
 >   `previousRole` is `null`.
 > - **WHEN** the role claim is `["application_admin","facilitator","engineering_manager"]` **THEN**
->   `users.global_role` is `'application_admin'`, the D3 outranked warning **and** one conflict
->   row are both emitted, and the notice uses admin-specific copy.
+>   `users.global_role` is `'application_admin'`, the D3 outranked warning (with `outrankedRoles`
+>   `["facilitator","engineering_manager"]`) **and** one conflict row are both emitted, and the
+>   notice uses admin-specific copy.
 > - **WHEN** the conflict-row insert fails **THEN** the sign-in fails and neither row persists.
 >   This is #235's transactional-audit rule (`auth-error-handling`, `AuditWriteError`), not rejected
 >   option (c), which is about the conflict itself.
 > - **WHEN** the role claim is the string `"engineering_manager facilitator"` **THEN** no conflict
 >   is recorded.
+> - **WHEN** a draft's `facilitator_id` user no longer has live `global_role = 'facilitator'`
+>   **THEN** the draft grants them no team-content access (#238 row 18).
 >
 > ### Scope
-> - `account-resolver`: conflict detection; return a conflict flag on `ResolvedUser`.
-> - `routes/auth.ts`: a new conflict audit operation (name is this issue's call, e.g.
->   `auth.role_claim_conflict`) inside the same `withAuditTransaction` as the role UPSERT, plus a
->   post-commit structured log event. Register the operation in `audit-logger.ts`. Metadata is
->   limited to `{ oidcSubject, appliedRole, conflictingRoles: ["engineering_manager","facilitator"],
->   previousRole, correlationId }`. No raw claim values, no non-allowlisted elements or their
->   counts (#235 Security S4 and Constraints). The post-commit structured log event carries exactly
->   the same field set as the audit-row metadata. One row per sign-in while the conflict persists.
->   Docs name the event as suitable for an operator alert; the app configures none (#235 Decision 9).
+> - **Resolver.** `mapRoleClaimToGlobalRole` returns `{ role, roleConflict }`; `ResolvedUser`
+>   gains `roleConflict: boolean`.
+> - **Audit row.** A new conflict audit operation (name is this issue's call, e.g.
+>   `auth.role_claim_conflict`). The INSERT goes in `writeAccountResolutionAuditRow`
+>   (`auth/account-resolution-audit.ts`, #235 D5), after the `first_access_created` or
+>   `role_claim_mapped` INSERT, inside the same `withAuditTransaction` as the role UPSERT. Columns:
+>   `actor_global_role` = applied role, `team_id` NULL, `target_user_id` NULL. Metadata is limited
+>   to `{ oidcSubject, appliedRole, conflictingRoles, previousRole, correlationId }`.
+>   `conflictingRoles` is the code constant `["engineering_manager","facilitator"]`, never built
+>   from the claim array. **No raw role-claim values**, no non-allowlisted elements or their counts
+>   (#235 Security S4 and Constraints); `oidcSubject` stays, as in every auth row. The post-commit
+>   `emitAuditEvent` stays in `routes/auth.ts` and carries exactly the same field set. One row per
+>   sign-in while the conflict persists. Register the operation in `AuditEventName`
+>   (`audit-logger.ts`) with a comment block in the house style, and add it to the transactional
+>   `auth.*` list in the `docs/deployment.md` Logging section. Docs name the event as suitable for
+>   an operator alert; the app configures none (#235 Decision 9).
+> - **Notice state (server-side).** At callback, after `regenerate()`, set
+>   `roleConflict: { applied: "engineering_manager" | "application_admin" }` on the Redis session
+>   blob (`SessionData`). This is a sign-in event fact that grants nothing, so it doesn't break the
+>   `AuthSession` rule against caching authorization signals in the blob; say so in a code comment.
+>   The flag is never taken from the client (no query parameter, no local storage).
+>   - `GET /auth/role-conflict-notice` returns `null` or `{ adminCase, strandedDrafts: [{ sessionId,
+>     teamName, createdAt }], contactEmail | null }`, typed in `packages/shared`. It is separate from
+>     `/auth/session`; if it fails, the notice is skipped and the failure logged, nothing else.
+>   - `POST /auth/role-conflict-notice/dismiss` clears the field (server-side, so another tab
+>     doesn't show it again).
 > - **User notice** (terms used by the ACs):
->   - *Live-session route:* the lobby, pre-session, active, reveal and wrap-up routes. This issue
->     lists their paths.
+>   - *Live-session route:* any path matching `/session/*` or `/team/:teamId/session/*` (the
+>     draft host included). Implemented as one exported `isLiveSessionPath(pathname)`.
 >   - *Sign-in:* a completed OIDC callback that runs account resolution. A mid-session re-auth
 >     counts; the notice is deferred to the next non-session page.
 >   - Placement: the first page rendered after sign-in that is **not** a live-session route. The
@@ -366,44 +429,72 @@ In the **same** PR, also amend:
 >     - Includes a sentence telling the user that if they have recently become a manager, this is
 >       expected.
 >     - Never blames the user.
->     - Contact text is deployment-configured display text, rendered verbatim as plain text (not
->       HTML), with a generic fallback when none is configured.
->   - Lists every session with `state = 'draft'` and `facilitator_id` = the user, with no cap,
->     showing team name and scheduled date (not created date), and asks them to arrange another
->     facilitator.
+>     - Contact: the existing `APPLICATION_ADMIN_CONTACT_EMAIL` (`applicationAdminContactEmail`),
+>       rendered as a plain-text React node, with a generic fallback when unset. No new setting. If
+>       the copy review needs free text, add one optional, length-capped env var rendered the same
+>       way, and record that on this issue.
+>   - Lists every session with `status = 'draft'` and `facilitator_id` = the user, with no cap,
+>     showing team name and created date (labelled "created"). Asks them to contact the
+>     administrator so another facilitator can run it. The copy doesn't promise a mechanism
+>     (takeover via #MMM, or the operator step until then).
 >   - Admin case: copy states that administrator access is unaffected and that the
 >     Facilitator/Engineering Manager assignment still needs fixing.
 >   - Copy review by the Facilitator role (Priya Nair) is a checkbox on this issue, with name and
 >     date.
-> - **Room-open:** the existing live-`global_role` check before draft → lobby stays. When the
->   user carries the conflict flag, the 403 gets conflict-specific copy (for example, "You can't
->   open this session because your account is now set up as an Engineering Manager. Another
->   facilitator will need to run it."). No workaround and no reassignment: the draft is
->   recreated by another facilitator (#238 row 11).
+> - **Room-open:** the existing live-`global_role` check before draft → lobby stays, and it alone
+>   decides the 403. When `session.roleConflict` is set on the current app session, the 403 gets
+>   conflict-specific copy (for example, "You can't open this session because your account is now
+>   set up as an Engineering Manager. Another facilitator will need to run it."). The copy is
+>   chosen from the session blob, never from `audit_log`. Two browsers with different sign-ins may
+>   show different copy; that is accepted. Optionally add `roleConflict: true` to the
+>   `session.advance_denied_role` metadata so a refused room-open joins to its cause.
+> - **Stranded drafts — interim operator step** (#238 row 17, until #MMM ships). Documented in the
+>   `docs/deployment.md` troubleshooting entry and used by the pre-launch draft check. In one
+>   transaction:
+>   - `UPDATE sessions SET status = 'abandoned', abandoned_at = now() WHERE id = $1 AND status =
+>     'draft' RETURNING team_id, facilitator_id` (roll back unless exactly one row);
+>   - one `audit_log` row: operation e.g. `session.draft_abandoned_by_operator` (registered in
+>     `AuditEventName`), `actor_user_id` = the operator's own `users.id`, `actor_global_role` =
+>     their role, `team_id` and `target_user_id` from the RETURNING row, metadata
+>     `{ sessionId, reason: "role_conflict" | "role_revoked", ticket }`. No raw role-claim values.
+>
+>   Then another facilitator creates a new draft. Record each use on the relevant issue.
+> - **Draft read access (#238 row 18).** `evaluateTeamAccess` Path 3(b)
+>   (`team-content-access-helper.ts`) also requires live `global_role = 'facilitator'`. Paths for
+>   sessions past room-open are unchanged.
 > - **Sessions already past room-open** stay with their facilitator via `sessions.facilitator_id`
 >   (#235 Decision 12, #238 row 11). The conflict rule never interrupts them. Add a test so a later
 >   hardening change can't "fix" it.
 > - Session-creation entry points stay hidden for a resolved EM, as for any EM.
-> - **Specs and docs:** apply #238 proposal Appendix A.3. This covers the #235 `first-access`
->   precedence requirement, `auth-error-handling`, the verbatim warning in proposal and docs, the
+> - **Specs and docs:** apply #238 proposal Appendix A.3 (warning inlined in the #235
+>   `first-access` spec; its "exactly these items" list amended). This covers the #235
+>   `first-access` precedence requirement, `auth-error-handling`, the verbatim docs warning, the
 >   precedence bullet, and the docs troubleshooting entry:
 >   - the event name;
 >   - "one row per sign-in, so count distinct users, not rows";
 >   - how to confirm a fix (the next sign-in shows `role_claim_mapped` with no conflict row);
->   - the "remove Facilitator from people who manage people" rule.
-> - **Local dev:** a simulator persona that sends both roles.
+>   - the "remove Facilitator from people who manage people" rule;
+>   - the interim operator step above;
+>   - a read-only query for non-terminal sessions whose `facilitator_id` has a conflict row.
+> - **Local dev:** a simulator persona that sends both roles (`docker/oidc/accounts.js`,
+>   `DEV_LOGIN_OPTIONS`). Update persona-count assertions (for example `interactions.test.js`).
+> - **Rollback:** rolling back this issue returns the pair to `facilitator` at the next sign-in.
+>   Conflict rows stay in `audit_log`, and the room-open copy reverts to the generic message.
 >
 > ### Minimum acceptance criteria
 > 1. Every row of the rule table is a passing resolver test.
 > 2. Duplicate elements produce one conflict. A string claim never produces a conflict.
 > 3. On a **returning** sign-in, one `auth.role_claim_mapped` row and one conflict row are written
->    in the same transaction. A failed conflict insert fails the sign-in and neither row persists.
->    No code path applies `engineering_manager` because of the pair without writing the conflict row.
-> 4. Conflict-row metadata is limited to the fixed fields, and the structured-log field set equals
->    the metadata set. A test asserts that a non-allowlisted element (for example `superuser`) and
->    its count are absent from the audit row and the structured log.
-> 5. With `application_admin` present, the D3 warn and the conflict row both fire. Without admin,
->    D3 does not fire for the pair.
+>    in the same transaction, via `writeAccountResolutionAuditRow` in the real-Postgres integration
+>    test. A failed conflict insert fails the sign-in and neither row persists. No code path applies
+>    `engineering_manager` because of the pair without writing the conflict row.
+> 4. Conflict-row metadata is limited to the fixed fields, `conflictingRoles` equals the constant,
+>    and the structured-log field set equals the metadata set. A test asserts that a
+>    non-allowlisted element (`superuser`) and its count, the case variant `Facilitator`, and the
+>    string-claim form are absent from the audit row and the structured log.
+> 5. With `application_admin` present, the D3 warn (`outrankedRoles` exactly
+>    `["facilitator","engineering_manager"]`) and the conflict row both fire. Without admin, D3
+>    does not fire for the pair.
 > 6. On **first access** with a conflicting claim, one `auth.first_access_created` row and one
 >    conflict row are written in the same transaction, and the conflict row's `previousRole` is
 >    `null`.
@@ -411,22 +502,31 @@ In the **same** PR, also amend:
 >    - renders on the landing page **and** on one other non-session route reached first after
 >      sign-in;
 >    - is dismissible and doesn't block navigation (no modal or overlay);
->    - does **not** render on any session route, including the re-auth return path (extend
->      `reauthRequiredHostParity`);
->    - reappears on the next conflicted sign-in after dismissal;
+>    - does **not** render on any live-session route: `isLiveSessionPath` is unit-tested against
+>      every `App.tsx` route, and a dedicated test mounts the app shell at a `returnTo` live path,
+>      asserts the notice is absent, then navigates to `/` and asserts it renders;
+>    - after dismissal, stays hidden in another tab and reappears on the next conflicted sign-in;
 >    - is absent for a non-conflicted sign-in;
 >    - uses admin-specific copy in the admin case;
->    - lists every stranded draft (team name, scheduled date);
->    - renders the generic contact fallback when no contact text is configured, and the configured
->      text verbatim as plain text when it is.
-> 8. The room-open 403 response contains the conflict-specific message **only** when the user's
->    last sign-in recorded a conflict, and the generic 403 copy otherwise. The draft stays blocked.
+>    - lists every stranded draft (team name, created date);
+>    - renders the generic contact fallback when no contact is configured, and the configured
+>      contact verbatim as plain text when it is;
+>    - is skipped, without affecting `/auth/session`, when the notice endpoint fails.
+> 8. The room-open 403 response contains the conflict-specific message **only** when the current
+>    app session's sign-in recorded a conflict, and the generic 403 copy otherwise. The draft stays
+>    blocked. An integration test runs the documented operator step verbatim: the draft becomes
+>    `abandoned` with one audit row, and another facilitator's `POST …/sessions/draft` for that
+>    team then succeeds.
 > 9. #238 Appendix A.3 is applied. The #235 `first-access` and `auth-error-handling` specs and the
 >    verbatim docs SHALL are amended consistently, and the docs checklist scenario passes against the
 >    new warning text.
 > 10. A session already past room-open continues under its facilitator after that facilitator's
 >     role resolves to `engineering_manager`.
 > 11. The simulator has a persona that sends both roles.
+> 12. A draft's creator whose live `global_role` is no longer `facilitator` gets no draft-based
+>     team-content access (action items, trends); a draft creator who is still a facilitator
+>     keeps it. Sessions past room-open are unaffected. (#238 row 18; added after the scope freeze
+>     by the user's decision.)
 >
 > ### PR review (not a pre-launch step; Facilitator review suggestion 11)
 > - [ ] **Notice copy reviewed** by the Facilitator role (Priya Nair). Record name and date.
@@ -438,12 +538,103 @@ In the **same** PR, also amend:
 > - [ ] **IdP attestation.** The IdP administrator confirms in writing (recorded on this issue,
 >   with name and date) that, at the time of attestation,
 >   no user is assigned both `engineering_manager` and `facilitator` in the IdP.
->   (#238 decision-log row 10.)
-> - [ ] **One-time read-only draft check.** After this issue is deployed and after the IdP
->   attestation above, the deploying operator runs one read-only query: sessions in `draft` whose
->   `facilitator_id` belongs to a user who (a) has `global_role = 'engineering_manager'`, or
->   (b) has any `<conflict audit operation>` row, or (c) appears on the IdP administrator's list of
->   users who held both roles at any time since #235 was deployed. A human arranges for another
->   facilitator to recreate each hit (row 11; no reassignment). Sessions past room-open are out of
->   scope (row 11, #235 Decision 12). Record the operator, date, environment, query and result on
->   this issue. This is not shipped code. (#238 decision-log row 10.)
+>   (#238 decision-log row 10. Row 13: no broader line-management attestation.)
+> - [ ] **One-time draft check: a read-only query, then one audited write per hit.** After this
+>   issue is deployed and after the IdP attestation above, the deploying operator runs one
+>   read-only query: sessions with `status = 'draft'` whose `facilitator_id` belongs to a user who
+>   (a) has `global_role = 'engineering_manager'`, or (b) has any `<conflict audit operation>` row,
+>   or (c) appears on the IdP administrator's list of users who held both roles at any time since
+>   #235 was deployed. Clause (a) also catches facilitators legitimately promoted to manager; those
+>   are real hits, not false positives (row 11 treats them the same). For each hit: if #MMM has
+>   shipped, another facilitator takes the draft over in the app; otherwise the operator runs the
+>   documented operator step (Scope). Sessions past room-open are out of scope (row 11, #235
+>   Decision 12). Record the operator, date, environment, query, hits and the action per hit on
+>   this issue. This is not shipped code. (#238 decision-log rows 10 and 17.)
+
+---
+
+## Appendix C — Draft body for the draft-takeover issue (#MMM)
+
+*Filed by the orchestrator alongside #NNN (#238 decision-log rows 14–17). Suggested title:*
+**Let a facilitator take over another facilitator's draft session**
+
+> **Decided by:** #238 decision-log rows 14–17 (the user). Context:
+> `requirements/use cases/01c - Facilitator Reporting Chain - Decision.md`, "Sessions".
+> **Gates:** none. This issue does not gate first-team launch (row 17). Until it ships, #NNN's
+> pre-launch draft check covers drafts that exist at launch, and a draft stranded after launch is
+> cleared by #NNN's documented, audited operator step.
+> **Related:** #NNN (conflict rule) references this issue as the unblock path for stranded drafts.
+> **Blocked by:** nothing in #238. It touches the same routes as #NNN; coordinate merge order.
+> **Track:** for the pipeline to classify. It changes who may advance a session, which is an
+> authorization boundary.
+>
+> ### Why
+> A draft session holds its team's single open-session slot (`sessions_team_active_unique`
+> includes `draft`), only its creator can advance it, and nothing in the app abandons it (the
+> 24-hour expiry is read-time only). If the creator can't or won't open the room (for example,
+> #238's conflict rule now resolves them to `engineering_manager`, or a #235 Decision 12
+> revocation), the team is wedged until someone edits the database. Another facilitator
+> creating a new draft gets `409 session_already_exists`.
+>
+> ### Decided (do not reopen)
+> - **Any draft** can be taken over, not only stranded ones (row 15).
+> - **Who:** another facilitator who passes the usual checks: live `users.global_role =
+>   'facilitator'` and no active membership on the draft's team (FR-2.2). The draft's own
+>   facilitator can't take it over (row 14).
+> - **Confirmation prompt** before the takeover is performed (row 14).
+> - **Audit event** for every takeover (row 14), with no raw role-claim values.
+> - **No reassignment** by the owner or an admin: the taker initiates (row 11 and row 14).
+> - **No launch gate** (row 17).
+>
+> ### Behaviour (proposed; confirm in this issue's design review)
+> - Takeover updates `facilitator_id` on the **existing** draft row, in one transaction with its
+>   audit row (fail closed: a failed audit insert means no takeover). The session id, team and
+>   topics are unchanged.
+> - **Unique index:** unaffected. The row keeps `status = 'draft'` and stays the team's one
+>   non-terminal session, so no abandon step and no new row are needed.
+> - **Previous owner:** is no longer the `facilitator_id`, so they can no longer advance the draft
+>   and lose draft-based team-content access (Path 3(b)). Their #NNN conflict notice no longer
+>   lists it.
+> - **New owner:** can advance it subject to the existing room-open checks, including the live-role
+>   check.
+> - **Audit content:** one row, operation e.g. `session.draft_taken_over`; `actor_user_id` = taker,
+>   `actor_global_role` = `facilitator`, `team_id` = draft's team, `target_user_id` = previous
+>   facilitator; metadata `{ sessionId, previousFacilitatorId, correlationId }`. The structured log
+>   carries the same field set. Register it in `AuditEventName` and the docs Logging list.
+>
+> ### Open questions (for this issue's design review; not decided by #238)
+> 1. **Notify the previous owner?** Row 15 lets a peer take over a colleague's active draft, not
+>    only a stranded one, so this matters more than it would for stranded drafts alone. Options:
+>    no notice, an in-app notice at their next sign-in, or out-of-band.
+> 2. **Entry point.** Where the offer appears: on the `409 session_already_exists` response when
+>    creating a draft (the natural point of discovery), a team page, or both.
+> 3. **Confirmation copy.** Does the prompt name the current owner? What does it say about their
+>    preparation being handed over?
+> 4. **24-hour draft window.** Draft access expires 24 hours after `created_at`. Does takeover reset
+>    the window for the taker (and if so, how, given `created_at` should stay the creation time),
+>    or does the taker inherit what remains? An expired draft can still be taken over (row 15:
+>    any draft) and advanced, but the taker would have no pre-room team-content access.
+> 5. **Interim operator step after this ships.** Retire #NNN's operator step from the docs, or keep
+>    it as a fallback (for example when no other facilitator is available)?
+> 6. **Denied-attempt auditing.** Audit refused takeovers (wrong role, team member), as
+>    `session.advance_denied_role` does for room-open, or log only?
+>
+> ### Acceptance criteria
+> 1. A facilitator with live `global_role = 'facilitator'` and no active membership on the team
+>    can take over a draft whose `facilitator_id` is another user. Afterwards `facilitator_id` is
+>    the taker, no new session row exists, and no 409 occurs.
+> 2. Takeover is refused, with no change and no takeover audit row, when the caller's live role is
+>    not `facilitator` (including a user #NNN resolves to `engineering_manager`), when the caller
+>    has an active membership on the team, when the caller already owns the draft, or when the
+>    session is not `draft`.
+> 3. The UI requires an explicit confirmation before calling the takeover endpoint. The server
+>    never takes over implicitly (for example, as a side effect of creating a draft).
+> 4. Exactly one audit row is written in the same transaction as the update; if the insert fails,
+>    the takeover doesn't happen. Metadata is the fixed field set, contains no raw role-claim
+>    values, and the structured log carries the same field set.
+> 5. After a takeover, the previous owner can't advance the draft and has no draft-based
+>    team-content access; the taker can advance it subject to the existing room-open checks.
+> 6. Two concurrent takeovers of the same draft: exactly one succeeds, the other gets a conflict
+>    response, and one audit row is written.
+> 7. `docs/deployment.md` describes takeover, and the troubleshooting entry for stranded drafts is
+>    updated per open question 5.

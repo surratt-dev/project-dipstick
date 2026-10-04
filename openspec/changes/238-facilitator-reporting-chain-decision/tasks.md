@@ -7,7 +7,7 @@
 ## 1. Decision record (`01c`)
 
 - [ ] 1.1 Create `RECORD` with the section order from design D1. The Status block:
-  - Decided 2026-10-04 by the user (product owner), decision-log rows 1–4 and 8–11.
+  - Decided 2026-10-04 by the user (product owner), decision-log rows 1–4, 8–11 and 13–18.
   - Follow-on owner: the Business Analyst.
   - VP of Engineering acknowledgment: "Persona review (Executive Stakeholder) approved with
     conditions, see #NNN; human VP of Engineering acknowledgment *pending* (owner: the user, as product
@@ -35,21 +35,31 @@
 
   Leave the exact copy to #NNN.
   **Check:** `grep -n 'raw claim' "$RECORD"`, `grep -n 'S4' "$RECORD"` and `grep -n 'Nothing' "$RECORD"` each return a hit.
-- [ ] 1.5 Write the Sessions section (row 11):
-  - drafts stay blocked at room-open and are recreated by another facilitator;
-  - the notice names them;
-  - there is no reassignment feature;
-  - opened sessions stay with `sessions.facilitator_id` per #235 Decision 12.
+- [ ] 1.5 Write the Sessions section (rows 11, 14–18; design D5):
+  - drafts stay blocked at room-open; the notice names them;
+  - they can't be recreated in the app (the draft holds the team's single open-session slot), so
+    another facilitator takes the draft over (#MMM, separate issue, no launch gate);
+  - until #MMM ships, a stranded draft is cleared by a documented, audited operator step (#NNN);
+  - draft-based team-content access requires a live `facilitator` role (row 18);
+  - there is no reassignment feature in #NNN;
+  - opened sessions stay with `sessions.facilitator_id` per #235 Decision 12, and the section lists
+    what that covers: control, live events, per-voter attribution, action items and trends, 30
+    minutes after completion, no limit while non-terminal (Security S3).
 
-  State this as a decision.
-  **Check:** `grep -n 'facilitator_id' "$RECORD"` and `grep -n 'Decision 12' "$RECORD"` return hits.
-  `grep -in 'reassign' "$RECORD"` appears only in a "no reassignment" statement.
+  State these as decisions.
+  **Check:** `grep -n 'facilitator_id' "$RECORD"`, `grep -n 'Decision 12' "$RECORD"`,
+  `grep -n 'take.* over\|takeover' "$RECORD"`, `grep -n '#MMM' "$RECORD"` and
+  `grep -n '30 minutes' "$RECORD"` return hits. `grep -in 'recreat' "$RECORD"` returns only the
+  statement that drafts can't be recreated in the app. `grep -in 'reassign' "$RECORD"` appears
+  only in a "no reassignment" statement.
 - [ ] 1.6 Write Rejected (a) to (d), with the reporting-chain model first, and Residual gaps 1–6, with the
   docs warning as the standing control and the BA-owned peer interpretation. Gap 2's control is the
   docs warning only; do not carry over "plus the launch-checklist attestation" from exploration §6.
+  Record gaps 1 and 2 as **accepted risk** (decision-log row 13, the user): no pre-launch control,
+  docs warning only.
   Add the line: a failed conflict-row insert fails the sign-in as any transactional audit-write
   failure does (#235 `auth-error-handling`); this is not rejected option (c).
-  **Check:** `grep -n 'reporting-chain model' "$RECORD"` returns a hit. `grep -c '^[1-6]\. \*\*' "$RECORD"` is ≥ 6, or count by section read-through.
+  **Check:** `grep -n 'reporting-chain model' "$RECORD"` and `grep -n 'accepted risk' "$RECORD"` return hits. `grep -c '^[1-6]\. \*\*' "$RECORD"` is ≥ 6, or count by section read-through.
 - [ ] 1.7 Write the following:
   - the #238 AC disposition paragraph, naming both AC (2) branches (exploration §5 wording);
   - the dependency on #235;
@@ -89,13 +99,20 @@
 - [ ] 3.1 Appendix A "Before" quotes match #235 character for character.
   **Check:** `git show origin/ccr-b594efa3-9zclgu:docs/deployment.md | grep -F "treats them as **facilitator only**"` hits.
   The Follow-up 2 "Before" text is found verbatim with `grep -F` in `git show origin/ccr-b594efa3-9zclgu:openspec/changes/facilitator-role-claim-allowlist/proposal.md`.
-- [ ] 3.2 Appendix B contains the launch gate, the schedule and scope-freeze lines, the 11 minimum ACs,
-  the 2 pre-launch steps (row 10) and the PR-review checkboxes.
-  **Check:** `grep -n 'Gates:\*\* first-team launch' proposal.md` and `grep -n 'Scope freeze' proposal.md` hit.
-  Under "Minimum acceptance criteria" there are 11 numbered items. Under "Pre-launch steps" there are
+- [ ] 3.2 Appendix B contains the launch gate, the "merged and archived" blocker, the schedule and
+  scope-freeze lines, the 12 minimum ACs (11 plus AC 12 from row 18), the 2 pre-launch steps
+  (row 10) and the PR-review checkboxes.
+  **Check:** `grep -n 'Gates:\*\* first-team launch' proposal.md`, `grep -n 'merged and archived' proposal.md`
+  and `grep -n 'Scope freeze' proposal.md` hit.
+  Under "Minimum acceptance criteria" there are 12 numbered items. Under "Pre-launch steps" there are
   2 `- [ ]` items; under "PR review" there are 2. `grep -c "row 10" proposal.md` is ≥ 2, and
   `grep -n "no user is assigned both" proposal.md` hits the attestation. `line-management` appears
-  only in Open items and the Review disposition table, not in Appendix B.
+  only in Closed items and the Review disposition table, not as an Appendix B step.
+  `grep -n "scheduled date\|state = 'draft'" proposal.md` returns nothing (Engineer F2).
+- [ ] 3.3 Appendix C (draft-takeover issue #MMM) states no launch gate, the decided points from
+  rows 14–17, open questions, and acceptance criteria.
+  **Check:** `grep -n 'Gates:\*\* none' proposal.md` hits. Appendix C has an "Open questions"
+  heading with ≥ 1 numbered item and an "Acceptance criteria" heading.
 
 ## 4. Scope guard
 
@@ -104,12 +121,17 @@
   other `openspec/changes/`.
 - [ ] 4.2 There is no `specs/` directory in this change (design D2).
   **Check:** `test ! -d openspec/changes/238-facilitator-reporting-chain-decision/specs`.
+- [ ] 4.3 Archive as a documents-only change (design D2, Engineer M6). `openspec validate --strict`
+  will likely flag a change with no deltas; archive with `--skip-specs` or equivalent, as
+  `2026-09-29-join-link-use-case-sync` did. This is an archive-time note, not a defect.
+  **Check:** the archive command used is recorded in the #238 PR description.
 
 ## 5. After the orchestrator files the follow-up issue
 
-- [ ] 5.1 Replace every `#NNN` with the filed issue number in `RECORD` and in `proposal.md`
-  (Appendix A.1 to A.3), and record the number in `decision-log.md`.
-  **Check:** `grep -rn '#NNN' "$RECORD" openspec/changes/238-facilitator-reporting-chain-decision/proposal.md` returns nothing.
+- [ ] 5.1 Replace every `#NNN` (conflict-rule issue) and `#MMM` (draft-takeover issue) with the
+  filed issue numbers in `RECORD`, `proposal.md` (Appendices A to C) and `design.md`, and record
+  both numbers in `decision-log.md`. Cross-link the two issues on GitHub.
+  **Check:** `grep -rn '#NNN\|#MMM' "$RECORD" openspec/changes/238-facilitator-reporting-chain-decision/proposal.md openspec/changes/238-facilitator-reporting-chain-decision/design.md` returns nothing.
 - [ ] 5.2 Note in the #238 PR description: "AC 1: pending amendment on #235 (Appendix A.1)" and
   "VP acknowledgment pending (persona review approved with conditions; human VP sign-off owned by
   the product owner)". This is a human or orchestrator action.
