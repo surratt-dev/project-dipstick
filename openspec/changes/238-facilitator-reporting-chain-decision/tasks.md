@@ -169,10 +169,10 @@
 
 ## 4. Scope guard and archive
 
-- [ ] 4.1 Only allowed paths changed: exactly 4 files under `requirements/` (`RECORD`, `Summary.md`,
+- [x] 4.1 Only allowed paths changed: exactly 4 files under `requirements/` (`RECORD`, `Summary.md`,
   the use-cases README, 01) plus `$P/`.
   **Check:** `git diff --name-only origin/main...HEAD; git status --porcelain` lists nothing else.
-- [ ] 4.2 No `specs/` directory in this change (design D2).
+- [x] 4.2 No `specs/` directory in this change (design D2).
   **Check:** `test ! -d "$P/specs"`.
 - [ ] 4.3 Archive as a documents-only change, last repository action. `openspec` can't run, so:
   add a decision-log row "Archived by manual `git mv`; openspec validate not run (CLI unavailable;
