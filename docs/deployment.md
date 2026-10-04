@@ -57,6 +57,7 @@ Optional:
 |---|---|
 | `TOKEN_ENCRYPTION_KEY` | Encryption key for refresh tokens in Redis (falls back to `SESSION_SECRET`) |
 | `PORT` | HTTP listen port (default: `3000`) |
+| `OIDC_ROLE_CLAIM` | Name of the ID-token claim that carries the user's app role (default: `role`). See [Role claim (OIDC_ROLE_CLAIM)](#role-claim-oidc_role_claim) |
 
 ### Docker run
 
@@ -170,6 +171,73 @@ This means a filtering transport still puts a meaningful slice of the authentica
 **Before adopting any pino transport with a level filter:** revisit `emitAuditEvent` in `audit-logger.ts` — the child-logger level override protects against the application log level only, and the transport will need its own accommodation (e.g. a level floor on the transport config, or routing audit events to an unfiltered destination) to keep the events above from going dark.
 
 **Future consideration (deferred, GitHub issue #3):** a startup check that verifies audit events actually reach their configured sink was requested in issue #3 but is not built in this change, because no transport is configured anywhere in this codebase today — building a reachability check against a failure mode that doesn't yet exist would be premature engineering. This is not a nice-to-have to revisit "if" the `emitAuditEvent` rework above happens to get to it: given the events above, a filtering transport shipped without this check risks silently losing the authentication and session-lifecycle audit trail with zero indication anything was lost. Build this check alongside the `emitAuditEvent` rework, before that transport goes to production.
+
+## Role claim (OIDC_ROLE_CLAIM)
+
+Your identity provider (IdP) decides each user's app role. Dipstick has no screen, endpoint or script that assigns one. At every sign-in the application reads the claim named by `OIDC_ROLE_CLAIM` (default `role`) from the signed ID token and stores the result as the user's role, replacing whatever was stored before.
+
+The claim must be one that only IdP administrators can set, such as Entra app roles. Never point `OIDC_ROLE_CLAIM` at an attribute users can edit themselves.
+
+### Allowed values
+
+Only these five values are recognised. Any other value is ignored.
+
+| Value | Grants |
+|---|---|
+| `application_admin` | Application administration (privileged) |
+| `facilitator` | **Privileged.** Creates teams and Health Check sessions, and edits standing topics |
+| `engineering_manager` | Manager access to the teams they are recorded as managing |
+| `senior_engineer` | Identical to `engineer`. It grants nothing extra |
+| `engineer` | Default. A user whose claim is missing or holds no allowed value is an `engineer` |
+
+### How the claim is read
+
+- The claim may be a single string or an array of strings.
+- Matching is exact. Values are not trimmed, case-folded or split on commas, so `Facilitator`, ` facilitator` and `facilitator,engineer` are each one unrecognised value.
+- Unrecognised values, including non-string array elements, are ignored. The application logs a warning, `OIDC role claim contained values not on the allowlist; ignored`, with counts only. Raw claim values are never logged or audited.
+- If more than one allowed value is present, the highest wins: `application_admin` > `facilitator` > `engineering_manager` > `senior_engineer` > `engineer`.
+
+> Do not assign `facilitator` to anyone who manages people. If a user is sent both `engineering_manager` and `facilitator`, the application treats them as **facilitator only**. From then on, the rule that managers never participate in a Health Check is enforced only by their team memberships being recorded with the `engineering_manager` role. Keep those memberships accurate, and give managers exactly one app role.
+
+When this happens the application logs the warning `OIDC role claim carried engineering_manager but a higher-precedence role was applied`. It is a log line only, not an alert.
+
+### Example: Microsoft Entra ID app roles
+
+1. In the app registration, open **App roles** and create one app role per value you use (for example `facilitator`, `engineering_manager`, `application_admin`). Set each role's **Value** to the exact string from the table above. Allowed member types: **Users/Groups**.
+2. In the enterprise application, under **Users and groups**, assign users or groups to those roles.
+3. Set `OIDC_ROLE_CLAIM=roles`.
+
+Entra emits assigned app roles in the ID token as a `roles` array, for example `"roles": ["senior_engineer", "facilitator"]`, which resolves to `facilitator`.
+
+### When a change takes effect
+
+- A role change, grant or revocation, takes effect within 90 minutes, or immediately if the person signs out and back in. A newly granted facilitator should sign out and in. Token refresh does not re-read the role; only a completed sign-in does, and the 90-minute absolute session lifetime forces one.
+- There is no in-app control to revoke a role or end someone's session. Revoking the user's refresh tokens at the IdP ends their app session at the next token refresh, which the application attempts 5 minutes before the access token expires. That is no faster than the IdP's access-token lifetime; with Entra's default lifetime it is usually no faster than the 90-minute cap.
+- A revoked facilitator keeps running any session they have already opened until it ends.
+
+### Troubleshooting: "I was given facilitator but still see the join-link page"
+
+Likely causes:
+
+- **They have not signed in again.** The role is read only at sign-in. Ask them to sign out and back in.
+- **`OIDC_ROLE_CLAIM` names the wrong claim.** For Entra app roles it must be `roles`; the default is `role`.
+- **The IdP does not send the claim on the ID token.** The application reads the ID token only, not the access token or userinfo.
+- **The value is not an exact match.** For example `Facilitator` or `facilitator ` with a trailing space.
+
+How to check:
+
+- Look in the backend logs for the allowlist warning `OIDC role claim contained values not on the allowlist; ignored` at their sign-in. It carries `claimName`, `claimShape`, `ignoredCount` and `allowlistedCount`, but never the values.
+- Query the audit log. Every sign-in that changes a returning user's role, or maps them to a role other than `engineer`, writes an `auth.role_claim_mapped` row whose metadata carries `globalRole` and `previousRole` (a first sign-in writes `auth.first_access_created` instead):
+
+  ```sql
+  SELECT timestamp, metadata->>'previousRole' AS previous_role, metadata->>'globalRole' AS global_role
+  FROM audit_log
+  WHERE operation = 'auth.role_claim_mapped'
+    AND metadata->>'oidcSubject' = '<their OIDC subject>'
+  ORDER BY timestamp DESC;
+  ```
+
+  No recent row with `global_role = facilitator` means the claim did not arrive as `facilitator`.
 
 ## Kubernetes
 

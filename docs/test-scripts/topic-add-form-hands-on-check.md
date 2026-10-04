@@ -20,7 +20,7 @@ Record a pass/fail and notes for each step in the [results table](#results) at t
 
 ## Setup
 
-The persona accounts have no teams, and `facilitator-001` signs in as an `engineer` (see `docs/local-development.md`). The SQL below creates four test teams and temporarily promotes `facilitator-001` to `facilitator`. **No team lists `facilitator-001` as a member**, which the add form requires.
+The persona accounts have no teams. `facilitator-001` signs in as a real `facilitator` through the stub IdP's `role` claim (see `docs/local-development.md`), so no role setup is needed. The SQL below creates four test teams. **No team lists `facilitator-001` as a member**, which the add form requires.
 
 | Team | State | Used for |
 |---|---|---|
@@ -41,9 +41,7 @@ The app runs at http://localhost:5173.
 
 ### 2. Sign in once as the facilitator
 
-Open http://localhost:5173 and click the **facilitator-001** persona button. You'll land on `/no-team`, which is expected at this point. Signing in creates the `users` row the setup needs.
-
-> **Order matters.** The backend resets `global_role` from the identity provider on **every** sign-in, and `facilitator-001` has no role claim. Run the setup **after** signing in. If you sign out and back in, re-run only the `UPDATE users …` line.
+Open http://localhost:5173 and click the **facilitator-001** persona button. You'll land on `/sessions/new`, the facilitator landing page. Sign in once before running the setup: the first sign-in creates the `users` row for `facilitator-001`, and the setup SQL references that row as the teams' creator and the sessions' facilitator.
 
 ### 3. Create the test data
 
@@ -58,9 +56,6 @@ DO $$ BEGIN
     RAISE EXCEPTION 'Sign in once as facilitator-001 before running this script';
   END IF;
 END $$;
-
--- Promote facilitator-001 (reverted on next sign-in; re-run this line after signing in again).
-UPDATE users SET global_role = 'facilitator' WHERE oidc_subject = 'facilitator-001';
 
 -- Four test teams. facilitator-001 is deliberately NOT a member of any.
 INSERT INTO teams (id, name, created_by_user_id)
@@ -108,7 +103,7 @@ SQL
 
 ### 4. Reload
 
-Reload the browser. You should be redirected to **/sessions/new**, the facilitator landing page, which confirms the promotion took effect. The test teams aren't linked from anywhere a non-member can see, so open them by URL:
+Reload the browser. You should still be on **/sessions/new**, the facilitator landing page: `facilitator-001` is a member of none of the new teams. The test teams aren't linked from anywhere a non-member can see, so open them by URL:
 
 | Team | URL |
 |---|---|
@@ -202,8 +197,6 @@ Admins can view this screen but can't add topics until #176 is fixed.
 3. **Empty With Archived:** **This team has no active topics.** with only **Show archived topics (2)**.
 4. **Empty Unlocked:** **This team has no active topics. Topics can't be added from this account yet.** with no buttons.
 
-Signing in as admin doesn't affect `facilitator-001`'s promotion, but signing back in as `facilitator-001` resets it. Re-run the `UPDATE users …` line if you go back.
-
 ---
 
 ## Results
@@ -228,7 +221,7 @@ Record the outcome on PR #196, and file any copy fixes or the H4 decision as iss
 
 ## Cleanup
 
-This removes the test teams and everything attached to them, and resets `facilitator-001` to `engineer`. It affects only rows whose team ID starts with `55555555-0000-4000-8000-`.
+This removes the test teams and everything attached to them. It affects only rows whose team ID starts with `55555555-0000-4000-8000-`.
 
 ```bash
 docker exec -i project-dipstick-postgres-1 psql -U dipstick -d dipstick -v ON_ERROR_STOP=1 <<'SQL'
@@ -237,7 +230,6 @@ DELETE FROM audit_log WHERE team_id::text LIKE '55555555-0000-4000-8000-%';
 DELETE FROM topics    WHERE team_id::text LIKE '55555555-0000-4000-8000-%';
 DELETE FROM sessions  WHERE team_id::text LIKE '55555555-0000-4000-8000-%';
 DELETE FROM teams     WHERE id::text      LIKE '55555555-0000-4000-8000-%';
-UPDATE users SET global_role = 'engineer' WHERE oidc_subject = 'facilitator-001';
 COMMIT;
 SQL
 ```

@@ -1,6 +1,6 @@
 # Deferral: Designate a Facilitator
 
-**Status:** **Decided: Option A, facilitator designation through the IdP role claim** (2026-10-03, PR #230 Follow-up 8). Implementation is tracked in #235. The in-app designation endpoint described below is **not required** and is kept only as a possible later convenience.
+**Status:** **Resolved by `facilitator-role-claim-allowlist` (#235).** Decided: Option A, facilitator designation through the IdP role claim (2026-10-03, PR #230 Follow-up 8). The in-app designation endpoint described below is **not required** and is to be built only if a supported IdP cannot send a custom role claim.
 **Follow-on owner:** Marcus Delgado (Business Analyst)
 **Confirmed deferred:** Yes. The in-app UI and endpoint stay out of scope (design.md Decision 1 of `assign-role-to-team-member`). Designation itself is now provided by the IdP; see the Decision section below.
 
@@ -14,7 +14,7 @@
 
 **Why:**
 - **One writer for `global_role`.** The IdP sets it and the application re-reads it at every sign-in. No precedence rule is needed between an app-assigned value and the IdP claim.
-- **Demotion and audit already exist.** Removing the claim demotes the user at their next sign-in, and `auth.role_claim_mapped` records the prior and new role. That covers follow-on requirements 3 and 4 below without new work.
+- **Demotion existed; its audit did not.** Removing the claim already demoted the user at their next sign-in. But `auth.role_claim_mapped` fired only when the new role was not `engineer`, so a demotion to `engineer` left no audit row. `facilitator-role-claim-allowlist` (#235, its Decision 4) added that row: `auth.role_claim_mapped` now fires on any role change at sign-in, demotions included, and records the previous and new role. Together these cover follow-on requirements 3 and 4 below.
 - **Bootstrapping is solved.** The first Facilitator is designated in the IdP, which is the IdP role-claim route the "Connection to bootstrapping" section already lists. That covers follow-on requirement 5.
 - **BRD alignment.** "Application Administrator … may assign facilitators" (BRD, FR-1: Identity and Access, Application Administrator role) is met by an administrator assigning the role or group in the IdP.
 - **Not tied to one IdP.** The claim name is configurable, so this works for every supported OIDC provider, not only the primary one.
@@ -25,7 +25,7 @@
 
 **Revisit if** a supported IdP cannot send a custom role claim. The in-app designation described below would then become the fallback for that provider.
 
-**Consequence for this document.** Follow-on requirements 1 and 2 below (the `PATCH /api/v1/users/:userId/global-role` endpoint, admin-only) are no longer needed for the product to work. They describe a possible later convenience, not a gap.
+**Consequence for this document.** Follow-on requirements 1 and 2 below (the `PATCH /api/v1/users/:userId/global-role` endpoint, admin-only) are no longer needed for the product to work. They describe a fallback to be built only if a supported IdP cannot send a custom role claim, not a gap. Operators designate facilitators as described in the role-claim section of the deployment docs: [Role claim (OIDC_ROLE_CLAIM)](../../docs/deployment.md#role-claim-oidc_role_claim).
 
 ---
 

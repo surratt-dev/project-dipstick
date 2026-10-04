@@ -102,7 +102,7 @@ The Docker Compose stack includes a stubbed OIDC identity provider built with [`
 
 When an unauthenticated request hits any route, the frontend checks whether the persona login shortcut is available (`GET /auth/dev-login-options`, bounded by a 300ms timeout). This check only ever succeeds locally — it is double-gated on `NODE_ENV !== "production"` AND the configured `OIDC_ISSUER` resolving to a private/local address, so it is a hard `404` in any deployed environment, with no added latency there.
 
-When it succeeds, you land on a **"LOCAL DEV ONLY — PERSONA LOGIN"** page instead of the generic IdP form: one button per seeded test account below, labeled with its role and account id. Clicking a button starts a completely normal OIDC Authorization Code + PKCE sign-in — the button only pre-selects which account the stub IdP's interaction screen auto-approves (via the standard `login_hint` parameter); it does not skip or shortcut the exchange itself. The Facilitator button is labeled by account id alone, with an inline note that its role is not seeded (see the Test accounts table below).
+When it succeeds, you land on a **"LOCAL DEV ONLY — PERSONA LOGIN"** page instead of the generic IdP form: one button per seeded test account below, labeled with its role and account id. Clicking a button starts a completely normal OIDC Authorization Code + PKCE sign-in — the button only pre-selects which account the stub IdP's interaction screen auto-approves (via the standard `login_hint` parameter); it does not skip or shortcut the exchange itself.
 
 If the persona login page isn't shown (a deployed environment, or the check times out), or you click **"Sign in manually"**, you land on the stub IdP's plain login form — enter the **account ID** as the login and `password` as the password (the stub does not actually verify the password).
 
@@ -110,12 +110,12 @@ If the persona login page isn't shown (a deployed environment, or the check time
 
 | Login (account ID) | Password | Name | Email | `global_role` on sign-in |
 |---|---|---|---|---|
-| `participant-001` | `password` | Alex Participant | participant@example.com | default (`engineer`) — not seeded |
-| `facilitator-001` | `password` | Sam Facilitator | facilitator@example.com | default (`engineer`) — **not seeded**; signs in as a default user, not a Facilitator. `facilitator` is not on the application's role-claim allowlist, so there is currently no way to seed this account with a real Facilitator role. A single identity also can't exercise cross-team facilitation — that needs separate team-scoped fixtures, which don't exist yet. |
+| `participant-001` | `password` | Alex Participant | participant@example.com | default (`engineer`) — no `role` claim |
+| `facilitator-001` | `password` | Sam Facilitator | facilitator@example.com | **`facilitator`** — real, via the OIDC `role` claim. Member of no team: to run a session, sign in (you land on the session-creation entry point) and create a team there. The new-team flow never makes its creator a member, so that team meets the "facilitator is not a member" rule. The only seeded team is the `__default_topics__` template, which cannot host a session. |
 | `manager-001` | `password` | Morgan Manager | manager@example.com | **`engineering_manager`** — real, via the OIDC `role` claim |
 | `admin-001` | `password` | Riley Admin | admin@example.com | **`application_admin`** — real, via the OIDC `role` claim |
 
-`manager-001` and `admin-001` carry an OIDC `role` claim in the stub's account definitions (`docker/oidc/server.js`), asserted in the ID token on every sign-in. The backend's existing role-claim mapping (`OIDC_ROLE_CLAIM`, `account-resolver.ts`) reads that claim and sets `users.global_role` accordingly — the same mechanism a real IdP's role claim would use, not a separate seeding path. `facilitator-001` and `participant-001` carry no `role` claim and are unaffected.
+Three accounts — `facilitator-001`, `manager-001` and `admin-001` — carry an OIDC `role` claim in the stub's account definitions (`docker/oidc/accounts.js`), asserted in the ID token on every sign-in. The backend's role-claim mapping (`OIDC_ROLE_CLAIM`, `account-resolver.ts`) reads that claim and sets `users.global_role` accordingly — the same mechanism a real IdP's role claim uses (see [Role claim (OIDC_ROLE_CLAIM)](deployment.md#role-claim-oidc_role_claim)), not a separate seeding path. The role is re-read at every sign-in, so it survives signing out and back in, and no SQL step is needed. `participant-001` carries no `role` claim and relies on the default (`engineer`).
 
 ### Testing multiple personas at once
 
@@ -125,7 +125,7 @@ Each persona button (or a manual sign-in) starts a normal, independent session �
 
 - **Protocol:** OIDC Authorization Code + PKCE with `offline_access` scope for refresh tokens
 - **Token lifetimes:** access token 1 hour, refresh token 8 hours, session 8 hours
-- **Claims returned:** `sub`, `name`, `email`, and `role` (only for `manager-001`/`admin-001` — see Test accounts above)
+- **Claims returned:** `sub`, `name`, `email`, and `role` (only for `facilitator-001`/`manager-001`/`admin-001` — see Test accounts above)
 - **Refresh tokens:** issued when `offline_access` scope is requested (which the backend always requests)
 - **Logout:** supports RP-initiated logout; the backend will redirect to the IdP's `end_session_endpoint` on logout
 - **State:** entirely in-memory — restarting the `oidc` container clears all sessions, which will invalidate any active browser sessions
@@ -138,7 +138,7 @@ The backend requests `openid profile email offline_access`. The stub IdP returns
 - `sub` — unique identifier for the account (used as `oidc_subject` in the database)
 - `name` — display name
 - `email` — email address
-- `role` — only for `manager-001` and `admin-001` (see Test accounts above); read by the backend's existing `OIDC_ROLE_CLAIM` mapping to set `users.global_role`
+- `role` — only for `facilitator-001`, `manager-001` and `admin-001` (see Test accounts above); read by the backend's `OIDC_ROLE_CLAIM` mapping to set `users.global_role`
 
 The `iss` (issuer) claim is `http://localhost:4011`.
 

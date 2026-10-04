@@ -128,27 +128,27 @@ These pin behaviour that should already hold. They exist so a future privilege g
 
 ## 6. Documentation
 
-- [ ] 6.1 `docs/deployment.md`: add `OIDC_ROLE_CLAIM` (default `role`) to the Optional variables table, and add the `## Role claim (OIDC_ROLE_CLAIM)` section (design D8). Keep it to this checklist, which mirrors the `first-access` requirement "Deployment documentation describes the role claim"; the reviewer ticks each box in the PR:
+- [x] 6.1 `docs/deployment.md`: add `OIDC_ROLE_CLAIM` (default `role`) to the Optional variables table, and add the `## Role claim (OIDC_ROLE_CLAIM)` section (design D8). Keep it to this checklist, which mirrors the `first-access` requirement "Deployment documentation describes the role claim"; the reviewer ticks each box in the PR:
   - [ ] `OIDC_ROLE_CLAIM` and the five-value allowlist table, `facilitator` marked privileged, `senior_engineer` marked identical to `engineer`, plus one sentence: the claim must be one only IdP administrators can set (for example Entra app roles), never a user-editable attribute
   - [ ] string or array, exact match, and the precedence order
   - [ ] one Entra app-roles example (`OIDC_ROLE_CLAIM=roles`, app role **Value** equal to the role string, assigned to users or groups, emitted as an array on the ID token); no other IdP walkthrough
   - [ ] latency and revocation: "takes effect within 90 minutes, or immediately if the person signs out and back in; a newly granted facilitator should sign out and in"; IdP revocation as design D7 states it (no faster than the access-token lifetime; no in-app control); and one sentence: a revoked facilitator keeps running any session they have already opened until it ends
   - [ ] the troubleshooting entry "I was given facilitator but still see the join-link page", with causes (not signed in again, wrong `OIDC_ROLE_CLAIM`, IdP not sending the claim on the ID token, value not an exact match) and how to check (the allowlist warning in logs, `auth.role_claim_mapped` rows)
   - [ ] the manager warning, **verbatim** from proposal.md
-- [ ] 6.2 `docs/local-development.md`:
+- [x] 6.2 `docs/local-development.md`:
   - line ~105: the Facilitator button is now labelled like the others; remove the unseeded note
   - the Test accounts table, `facilitator-001` row (~114): **`facilitator`**, real via the OIDC `role` claim, member of no team; create a team through the session-creation entry point to run a session
   - ~118: three accounts carry a claim
   - Scopes and claims (~141): `role` for `facilitator-001`, `manager-001` and `admin-001`
 
   Fix the stale `docker/oidc/server.js` reference to `docker/oidc/accounts.js` while there.
-- [ ] 6.3 `docs/test-scripts/topic-add-form-hands-on-check.md`:
+- [x] 6.3 `docs/test-scripts/topic-add-form-hands-on-check.md`:
   - keep "sign in once first" (step 2), and explain it as creating the `users` row the setup SQL references
   - delete the "Order matters" callout (~46)
   - delete the `UPDATE users SET global_role = 'facilitator'` line and its comment (~62-63)
   - delete the Part 5 re-run sentence (~205)
   - delete the cleanup's `UPDATE users SET global_role = 'engineer'` line and the "resets facilitator-001" wording (~232, ~240)
-- [ ] 6.4 `requirements/use cases/01b - Designate a Facilitator - Deferral.md`:
+- [x] 6.4 `requirements/use cases/01b - Designate a Facilitator - Deferral.md`:
   - set Status to **Resolved by `facilitator-role-claim-allowlist` (#235)**
   - replace "kept only as a possible later convenience" with "built only if a supported IdP cannot send a custom role claim"
   - **required correction, line 17** ("**Demotion and audit already exist.** … without new work."): rewrite it to say demotion at next sign-in already existed, but the demotion audit row was added by this change (Decision 4). Leaving line 17 unchanged would contradict Decision 4
