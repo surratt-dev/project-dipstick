@@ -11,6 +11,7 @@
 **VP of Engineering (decision-log row 12):** Persona review (Executive Stakeholder) approved with conditions; human VP of Engineering acknowledgment *pending* (owner: the user, as product owner). The persona review is input to the VP, not the VP's acknowledgment. #238 does not close until the human acknowledgment is recorded here.
 **Implementation:** #241 (conflict rule; blocked by #235; gates first-team launch).
 **Draft takeover:** #240 (separate issue; no launch gate).
+**Implementation status:** not yet built. On `main` today the IdP role claim is single-valued and allowlisted to `engineer`, `engineering_manager` and `application_admin` (`account-resolver.ts`): `facilitator` can't be granted through the claim and an array claim resolves to `engineer`. #235 Decision 7 (precedence) exists only on #235's branch, not in `openspec/specs/`. The rule in sections 2–3 takes effect with #241, after #235 lands.
 
 **Traceability:**
 - `Summary.md:12`: the facilitator is "a senior engineer from *another* team … not in the team's reporting chain" (the intent).
@@ -22,7 +23,7 @@
 
 ## 2. Decision
 
-The application does **not** model the reporting chain. Instead it enforces a narrow conflict rule: a user the IdP sends both `engineering_manager` and `facilitator` is signed in as `engineering_manager`, is told, and the conflict is audited. If the claim also contains `application_admin`, the user is signed in as `application_admin` and the conflict is still told and audited.
+The application does **not** model the reporting chain. Instead, once #241 ships, it enforces a narrow conflict rule: a user the IdP sends both `engineering_manager` and `facilitator` is signed in as `engineering_manager`, is told, and the conflict is audited. If the claim also contains `application_admin`, the user is signed in as `application_admin` and the conflict is still told and audited.
 
 **Glossary.** In #238 and the decision log, "error" and "flag" mean *the conflict is never silent*: the user is told and the conflict is audited. They do **not** mean a failed sign-in.
 
@@ -33,6 +34,8 @@ The rule only changes how the role claim is *read*. The application still never 
 ---
 
 ## 3. Resolved-role rule
+
+*The rule #241 will add (not yet built; see Status).*
 
 Among the allowlisted values in the claim: if both `engineering_manager` and `facilitator` are present, discard `facilitator`, then apply #235 precedence (`application_admin` > `facilitator` > `engineering_manager` > `senior_engineer` > `engineer`) to what remains. Whenever both were present, record a role conflict, whatever role was finally applied.
 
