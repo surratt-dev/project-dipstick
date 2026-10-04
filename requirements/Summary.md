@@ -9,7 +9,7 @@ A recurring, facilitated retrospective where engineers vote on subjective topics
 - **Duration:** ~30 minutes (first session: 1 hour); brief by design
 - **Cadence:** Biweekly to start; adjust as team tempo changes
 - **Participants:** All engineers on the team
-- **Facilitator:** A senior engineer from *another* team — empathetic, a good listener, not in the team's reporting chain
+- **Facilitator:** A senior engineer from *another* team — empathetic, a good listener, not in the team's reporting chain[^reporting-chain]
 
 ## How It Works
 
@@ -39,3 +39,5 @@ A recurring, facilitated retrospective where engineers vote on subjective topics
 - Track action items across sessions and follow up on their effectiveness
 - Use a small, cozy room to encourage open conversation
 - Teams may apply the health check to greenfield code only, or legacy code as well — team decides
+
+[^reporting-chain]: How the application applies "not in the team's reporting chain" is decided in [01c - Facilitator Reporting Chain - Decision](use%20cases/01c%20-%20Facilitator%20Reporting%20Chain%20-%20Decision.md) (#238).

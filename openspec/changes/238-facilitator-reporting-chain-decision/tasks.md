@@ -16,7 +16,7 @@
 
 ## 1. Decision record (`01c`)
 
-- [ ] 1.1 Create `RECORD` with the **full heading skeleton** from design D1: the three-sentence
+- [x] 1.1 Create `RECORD` with the **full heading skeleton** from design D1: the three-sentence
   summary (section 0, no heading) above sections 1–11 as `## ` headings. Fill in the summary
   (rule, why, what it doesn't catch) and the Status block now:
   - Decided 2026-10-04 by the user (product owner), decision-log rows 1–4, 8–11 and 13–18.
@@ -32,18 +32,18 @@
   **Check:** `grep -c '^## ' "$RECORD"` is exactly 11. `grep -n 'pending' "$RECORD"` hits the VP
   line. `grep -n 'row 12' "$RECORD"` and `grep -n 'row 19' "$RECORD"` hit the Status block.
   `grep -n 'Acknowledged' "$RECORD"` returns nothing.
-- [ ] 1.2 Write the Decision with its glossary line ("error" means never silent, not a failed
+- [x] 1.2 Write the Decision with its glossary line ("error" means never silent, not a failed
   sign-in). State that the rule supersedes #235 Decision 7 **for this pair only** and that #235
   precedence is otherwise unchanged (row 3). Write the resolved-role table: the 11 rows, identical
   to proposal Appendix B's table.
   **Check:** `grep -n 'never silent' "$RECORD"` and `grep -n 'for this pair only' "$RECORD"` hit.
   `diff <(grep -E '^\| (`|string)' "$RECORD") <(sed -n '/^## Appendix B/,/^## Appendix C/p' "$P/proposal.md" | grep -E '^> \| (`|string)' | sed 's/^> //')`
   prints nothing, and the first command alone counts 11 lines.
-- [ ] 1.3 Write "Why `engineering_manager`". Lead with broken EM access, then defence in depth,
+- [x] 1.3 Write "Why `engineering_manager`". Lead with broken EM access, then defence in depth,
   then failure direction.
   **Check:** in `grep -n 'mismatch\|defence in depth' "$RECORD"`, the first mismatch hit comes
   before the first defence-in-depth hit.
-- [ ] 1.4 Write "How this shows up for people":
+- [x] 1.4 Write "How this shows up for people":
   - the three-audience table;
   - the user is told *and* the conflict is audited (row 9);
   - audit content limited to allowlisted role names, no raw claim values; the S4 disposition;
@@ -53,7 +53,7 @@
   Leave the exact copy to #NNN.
   **Check:** `grep -n 'raw claim' "$RECORD"`, `grep -n 'S4' "$RECORD"`,
   `grep -n 'APPLICATION_ADMIN_CONTACT_EMAIL' "$RECORD"` and `grep -n 'display text, not behaviour' "$RECORD"` hit.
-- [ ] 1.5 Write the Sessions section (rows 11, 14–19; design D5), stated as decisions:
+- [x] 1.5 Write the Sessions section (rows 11, 14–19; design D5), stated as decisions:
   - drafts by a user now resolved to `engineering_manager` stay blocked at room-open; the notice
     names them;
   - a stranded draft can't be recreated in the app **while it holds the team's single open-session
@@ -77,7 +77,7 @@
   `grep -in 'no launch gate'`, `grep -in 'pre-launch draft check'`, `grep -n 'own app user id'`,
   `grep -n '30 minutes'`, `grep -n '#MMM'`. `grep -in 'recreat' "$RECORD"` hits only the
   "while it holds the slot" sentence. `grep -in 'reassign' "$RECORD"` hits only "no reassignment".
-- [ ] 1.6 Write Rejected (a)–(d), reporting-chain model first, and Residual gaps 1–6. The docs
+- [x] 1.6 Write Rejected (a)–(d), reporting-chain model first, and Residual gaps 1–6. The docs
   warning is the standing control for **gaps 1–4**; gap 5 (peer interpretation) is BA-owned; gap
   6 (interim) is closed by the launch gate (row 8). Gaps 1 and 2 are **accepted risk** (row 13):
   no pre-launch control, docs warning only; do not carry over "plus the launch-checklist
@@ -86,7 +86,7 @@
   option (c).
   **Check:** `grep -n 'reporting-chain model' "$RECORD"`, `grep -n 'accepted risk' "$RECORD"` and
   `grep -n 'gaps 1–4' "$RECORD"` hit. Six numbered gaps, by read-through.
-- [ ] 1.7 Write sections 9–11:
+- [x] 1.7 Write sections 9–11:
   - the #238 AC disposition paragraph naming both AC 2 branches (exploration §5 wording);
   - the dependency on #235; the first-team-launch gate (row 8); the pre-launch items, which live
     in #NNN (row 10, no checklist doc);
@@ -98,44 +98,44 @@
   **Check:** `grep -n 'stands unchanged' "$RECORD"` and
   `grep -n 'Business Analyst and the VP of Engineering' "$RECORD"` hit. Section 11 names all five
   consequences, by read-through.
-- [ ] 1.8 Whole-record guard: no exact notice copy, no app setting or toggle for the rule, nothing
+- [x] 1.8 Whole-record guard: no exact notice copy, no app setting or toggle for the rule, nothing
   that makes the no-manager or other-team rule optional. Use "supersedes", not "overrides".
   **Check:** `grep -in 'toggle\|configurable\|opt out\|override' "$RECORD"` returns nothing.
 
 ## 2. Pointers and index
 
-- [ ] 2.1 `requirements/Summary.md`: add a footnote marker to line 12 and one footnote at the end
+- [x] 2.1 `requirements/Summary.md`: add a footnote marker to line 12 and one footnote at the end
   linking `RECORD`. Sentence text unchanged.
   **Check:** `git diff -U0 origin/main -- requirements/Summary.md` shows only the marker on line 12
   and the appended footnote. `grep -n "not in the team's reporting chain" requirements/Summary.md` matches.
-- [ ] 2.2 `requirements/use cases/README.md`: add index rows for 01b and 01c, in that order,
+- [x] 2.2 `requirements/use cases/README.md`: add index rows for 01b and 01c, in that order,
   directly after the 01 row, with URL-encoded links.
   **Check:** `grep -n '^| \[01' "requirements/use cases/README.md"` shows exactly three rows, 01,
   01b, 01c, on consecutive lines.
-- [ ] 2.3 `requirements/use cases/01 - Identity and Access - Use Cases.md`: add one cross-reference
+- [x] 2.3 `requirements/use cases/01 - Identity and Access - Use Cases.md`: add one cross-reference
   line after the "Facilitator designation … (#235)" out-of-scope note (l.226) pointing to `RECORD`.
   **Check:** `grep -c '01c%20-%20Facilitator' "requirements/use cases/01 - Identity and Access - Use Cases.md"`
   is 1, and `git diff --numstat origin/main -- "requirements/use cases/01 - Identity and Access - Use Cases.md"` shows 1–2 added, 0 deleted.
-- [ ] 2.4 Every relative link added in 2.1–2.3 resolves.
+- [x] 2.4 Every relative link added in 2.1–2.3 resolves.
   **Check:** a short script URL-decodes each added link target, resolves it relative to the linking
   file, and runs `test -f`. All pass.
 
 ## 3. Proposal appendices (already drafted, verify only)
 
-- [ ] 3.1 Appendix A "Before" quotes match #235 at `$S235` character for character, and A.2's
+- [x] 3.1 Appendix A "Before" quotes match #235 at `$S235` character for character, and A.2's
   target exists.
   **Check:** `git show "$S235:docs/deployment.md" | grep -cF "treats them as **facilitator only**"`
   ≥ 1. The Follow-up 2 "Before" text is found with `grep -F` in
   `git show "$S235:openspec/changes/facilitator-role-claim-allowlist/proposal.md"`.
   `git show "$S235:openspec/changes/facilitator-role-claim-allowlist/decision-log.md" | grep -c '^| 7 '` is 1.
-- [ ] 3.2 Appendix B has the launch gate, the "merged and archived" blocker, schedule and scope
+- [x] 3.2 Appendix B has the launch gate, the "merged and archived" blocker, schedule and scope
   freeze lines, 12 minimum ACs, 2 pre-launch steps and 2 PR-review checkboxes.
   **Check:** `grep -n 'Gates:\*\* first-team launch' "$P/proposal.md"`, `grep -n 'merged and archived' "$P/proposal.md"`,
   `grep -n 'Scope freeze' "$P/proposal.md"` and `grep -n 'no user is assigned both' "$P/proposal.md"` hit.
   `grep -n "scheduled date\|state = 'draft'" "$P/proposal.md"` returns nothing (Engineer F2).
   By read-through: ACs 1–12, 2 pre-launch `- [ ]`, 2 PR-review `- [ ]`; `line-management` is not an
   Appendix B step.
-- [ ] 3.3 Appendix C states no launch gate, the decided points from rows 14–17, open questions and
+- [x] 3.3 Appendix C states no launch gate, the decided points from rows 14–17, open questions and
   acceptance criteria.
   **Check:** `grep -n 'Gates:\*\* none' "$P/proposal.md"` hits. By read-through: an "Open
   questions" heading with ≥ 1 item and an "Acceptance criteria" heading.

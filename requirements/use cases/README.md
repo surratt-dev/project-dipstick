@@ -6,6 +6,8 @@ Feature-level use case documents organized by functional area. Each file covers 
 |------|----------------|
 | [00-actors.md](00-actors.md) | Definitions of all actors referenced across use cases |
 | [01 - Identity and Access - Use Cases.md](01%20-%20Identity%20and%20Access%20-%20Use%20Cases.md) | Authentication, authorization, and role management |
+| [01b - Designate a Facilitator - Deferral.md](01b%20-%20Designate%20a%20Facilitator%20-%20Deferral.md) | Facilitator designation through the IdP role claim (decided) and the deferred in-app designation |
+| [01c - Facilitator Reporting Chain - Decision.md](01c%20-%20Facilitator%20Reporting%20Chain%20-%20Decision.md) | How "not in the team's reporting chain" is enforced: the Engineering Manager + Facilitator role-conflict rule |
 | [02 - Session Setup - Use Cases.md](02%20-%20Session%20Setup%20-%20Use%20Cases.md) | Creating and configuring a retrospective session |
 | [03 - Pre-Session Action Item Review - Use Cases.md](03%20-%20Pre-Session%20Action%20Item%20Review%20-%20Use%20Cases.md) | Reviewing open action items before a new session begins |
 | [04 - Live Voting - Use Cases.md](04%20-%20Live%20Voting%20-%20Use%20Cases.md) | Real-time voting during an active session |
