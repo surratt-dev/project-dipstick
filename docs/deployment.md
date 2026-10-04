@@ -214,6 +214,7 @@ Entra emits assigned app roles in the ID token as a `roles` array, for example `
 - A role change, grant or revocation, takes effect within 90 minutes, or immediately if the person signs out and back in. A newly granted facilitator should sign out and in. Token refresh does not re-read the role; only a completed sign-in does, and the 90-minute absolute session lifetime forces one.
 - There is no in-app control to revoke a role or end someone's session. Revoking the user's refresh tokens at the IdP ends their app session at the next token refresh, which the application attempts 5 minutes before the access token expires. That is no faster than the IdP's access-token lifetime; with Entra's default lifetime it is usually no faster than the 90-minute cap.
 - A revoked facilitator keeps running any session they have already opened until it ends.
+- **Accepted control:** the 90-minute absolute session lifetime is the control mechanism for role changes, revocation included. Plan on a removed role remaining in effect for up to 90 minutes. This is an accepted risk, not a defect.
 
 ### Troubleshooting: "I was given facilitator but still see the join-link page"
 
