@@ -171,7 +171,7 @@ These pin behaviour that should already hold. They exist so a future privilege g
   - `local-dev-environment`: role claims on accounts, participant unseeded → 5.1/5.2; session with no SQL step, survives sign-out/in, role on the ID token → 5.6/6.2/6.3
 
   Record any gap in the PR.
-- [ ] 7.7 The PR body lists the proposal Follow-ups: #237 as a go-live gate, the reporting-chain issue (to be filed), and the dev-provider production-guard gap (Follow-up 4, to be filed). It carries the proposal's release-note line **verbatim**: "The IdP role claim now accepts `facilitator` and `senior_engineer`, and accepts arrays (highest role wins). Demotions are now audited. ID-token signatures are now verified against the IdP's published keys." It also carries the operator caveat: a rollback to the previous build also turns signature verification back off.
+- [ ] 7.7 The PR body lists the proposal Follow-ups: #237 as a go-live gate, the reporting-chain decision (#238), and the dev-provider production-guard gap (#239). It carries the proposal's release-note line **verbatim**: "The IdP role claim now accepts `facilitator` and `senior_engineer`, and accepts arrays (highest role wins). Demotions are now audited. ID-token signatures are now verified against the IdP's published keys." It also carries the operator caveat: a rollback to the previous build also turns signature verification back off.
 
 ## Review disposition
 
