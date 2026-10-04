@@ -143,7 +143,7 @@
 
 ## 5. Issues, placeholders and the #235 link (runs before §4)
 
-- [ ] 5.0 **(orchestrator)** File the two issues and cross-link them:
+- [x] 5.0 **(orchestrator)** File the two issues and cross-link them:
   1. File Appendix C as the draft-takeover issue → number `M` (its body still says `#NNN`).
   2. File Appendix B as the conflict-rule issue with `#MMM` replaced by `#M` → number `N`.
   3. Edit issue `M`'s body, replacing `#NNN` with `#N`.
@@ -152,14 +152,14 @@
      "Gates:** none", the decided points (rows 14–17) and its acceptance criteria (#238 AC 2).
 
   **Check:** the connector read-back passes for both bodies. Pass `N` and `M` to 5.1.
-- [ ] 5.1 Replace `#NNN` → `#N` and `#MMM` → `#M` in `RECORD`, `$P/proposal.md` and `$P/design.md`.
+- [x] 5.1 Replace `#NNN` → `#N` and `#MMM` → `#M` in `RECORD`, `$P/proposal.md` and `$P/design.md`.
   The sentences that *describe* the placeholders are reworded, not substituted:
   `proposal.md` Appendix A intro ("Replace `#NNN` with…"), `design.md` Context (the "are
   placeholders until the orchestrator files them" paragraph) and the `design.md` Risks bullet on
   placeholders. Add a decision-log row recording both issue numbers.
   **Check:** `grep -n '#NNN\|#MMM\|NNN\|MMM' "$RECORD" "$P/proposal.md" "$P/design.md" "$P/decision-log.md"`
   returns nothing, and `grep` exits 1, not 2 (so no file is missing).
-- [ ] 5.2 **(orchestrator)** #238 AC 1. #235's branch can't be pushed from this session, so post a
+- [x] 5.2 **(orchestrator)** #238 AC 1. #235's branch can't be pushed from this session, so post a
   comment on #235 with the Appendix A.1 and A.2 paste-ready text (real numbers in), noting the
   applier adjusts the A.1 link's `../` depth if #235 is archived by then. Post a comment on #238
   pointing to `RECORD` and the #235 comment. Both comments say "Decided by the product owner

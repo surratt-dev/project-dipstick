@@ -9,8 +9,8 @@
 **Status:** **Decided 2026-10-04 by the user (product owner)**, decision-log rows 1–4, 8–11 and 13–18 of change `238-facilitator-reporting-chain-decision` (#238). Decision-log row 19 is cited separately: pipeline default, accepted; subject to change by the product owner (the interim operator's audit identity and the notice's contact text, see "Sessions" and "How this shows up for people").
 **Follow-on owner:** the Business Analyst.
 **VP of Engineering (decision-log row 12):** Persona review (Executive Stakeholder) approved with conditions; human VP of Engineering acknowledgment *pending* (owner: the user, as product owner). The persona review is input to the VP, not the VP's acknowledgment. #238 does not close until the human acknowledgment is recorded here.
-**Implementation:** #NNN (conflict rule; blocked by #235; gates first-team launch).
-**Draft takeover:** #MMM (separate issue; no launch gate).
+**Implementation:** #241 (conflict rule; blocked by #235; gates first-team launch).
+**Draft takeover:** #240 (separate issue; no launch gate).
 
 **Traceability:**
 - `Summary.md:12`: the facilitator is "a senior engineer from *another* team … not in the team's reporting chain" (the intent).
@@ -81,7 +81,7 @@ Both halves of "never silent" are required: the user is **told**, *and* the conf
 
 **Contact.** The notice's "who to ask" text is the existing `APPLICATION_ADMIN_CONTACT_EMAIL`, with a generic fallback when it is unset; no new setting is added (decision-log row 19). Contact text is display text, not behaviour.
 
-**Copy.** The exact notice and room-open copy is decided in #NNN, reviewed by a human facilitator (not the implementer). This record fixes only the rules above.
+**Copy.** The exact notice and room-open copy is decided in #241, reviewed by a human facilitator (not the implementer). This record fixes only the rules above.
 
 ---
 
@@ -92,10 +92,10 @@ These are stated decisions (decision-log rows 11 and 14–19), not emergent prop
 **Drafts.**
 - A draft created by a user the conflict rule now resolves to `engineering_manager` stays blocked at room-open: the live-role check before draft → lobby stays, because a manager must not open a room (row 11). The user's conflict notice names these drafts.
 - A stranded draft can't be recreated in the app while it holds the team's single open-session slot: a draft counts as the team's one non-terminal session, and nothing in the app abandons a draft.
-- **Draft takeover** is the unblock path (rows 14–16). Another facilitator can take over **any draft**, not only stranded ones, after a **confirmation prompt**, and every takeover writes an **audit event**. The taker passes the usual checks: a live `facilitator` role and no membership on the draft's team. Takeover is tracked in #MMM, a separate issue with **no launch gate** (row 17).
-- **Until #MMM ships** (row 17): the **pre-launch draft check** in #NNN (row 10) covers drafts that exist at launch. A draft stranded after launch is cleared by a documented, audited operator step (#NNN), after which a facilitator creates a new draft. The operator records **their own app user id** as `actor_user_id` on the audit row, so the operator needs an app account (row 19).
+- **Draft takeover** is the unblock path (rows 14–16). Another facilitator can take over **any draft**, not only stranded ones, after a **confirmation prompt**, and every takeover writes an **audit event**. The taker passes the usual checks: a live `facilitator` role and no membership on the draft's team. Takeover is tracked in #240, a separate issue with **no launch gate** (row 17).
+- **Until #240 ships** (row 17): the **pre-launch draft check** in #241 (row 10) covers drafts that exist at launch. A draft stranded after launch is cleared by a documented, audited operator step (#241), after which a facilitator creates a new draft. The operator records **their own app user id** as `actor_user_id` on the audit row, so the operator needs an app account (row 19).
 - Draft-based access to the target team's content (action items, trends) requires a live `facilitator` role (row 18). A draft creator who is no longer a facilitator gets none.
-- There is no reassignment feature in #NNN. Takeover belongs to #MMM and is initiated by the taker.
+- There is no reassignment feature in #241. Takeover belongs to #240 and is initiated by the taker.
 
 **Sessions past room-open** (lobby or later) stay with their facilitator via `sessions.facilitator_id`, per #235 Decision 12 (row 11). The conflict rule never interrupts them; the role change takes effect at the next draft creation or room-open. Pulling a facilitator out between lock-in and reveal does more damage to the ritual than letting one brief session finish, and the audit row records the conflict either way. What this covers, per #235 Security review S3, so the extent is decided rather than emergent:
 - session control and live-event delivery;
@@ -128,27 +128,27 @@ The rule does not close these gaps. They are stated so they are not discovered l
 3. **Engineering Manager memberships not recorded or stale.** A manager whose memberships are missing for a team is invisible to every membership-based check. The conflict rule helps only by removing their facilitator ability while both roles are sent.
 4. **Informal authority.** Tech leads and "acting" managers without the Engineering Manager role. The ritual cares about them, but the application has no signal at all.
 5. **Interpretation of "not in the team's reporting chain"** (owned by the Business Analyst): it means not holding line authority over any participant, directly or through a skip level. A peer who shares a manager with the team is not in its reporting chain, so a sibling-team senior engineer is an acceptable facilitator.
-6. **The interim window.** Between #235 merging and #NNN shipping, the pair resolves to `facilitator` per #235 Decision 7. This gap is closed by the first-team-launch gate (decision-log row 8): no team goes live in that window.
+6. **The interim window.** Between #235 merging and #241 shipping, the pair resolves to `facilitator` per #235 Decision 7. This gap is closed by the first-team-launch gate (decision-log row 8): no team goes live in that window.
 
-**Standing control.** The deployment-docs warning ("Do not assign `facilitator` to anyone who manages people …") is the standing control for gaps 1–4; for gap 1 this is #235 Decision 9 (docs warning only, no alerting), which this rule leaves in force. Gaps 1 and 2 are accepted risk: they have no pre-launch control, and the docs warning is their only control. The pre-launch IdP attestation in #NNN covers the both-roles pair at launch, not gaps 1 or 2, and no broader line-management attestation is required (row 13). Gap 5 is owned by the Business Analyst. Gap 6 is closed by the launch gate.
+**Standing control.** The deployment-docs warning ("Do not assign `facilitator` to anyone who manages people …") is the standing control for gaps 1–4; for gap 1 this is #235 Decision 9 (docs warning only, no alerting), which this rule leaves in force. Gaps 1 and 2 are accepted risk: they have no pre-launch control, and the docs warning is their only control. The pre-launch IdP attestation in #241 covers the both-roles pair at launch, not gaps 1 or 2, and no broader line-management attestation is required (row 13). Gap 5 is owned by the Business Analyst. Gap 6 is closed by the launch gate.
 
 ---
 
 ## 9. AC disposition, dependency and launch gate
 
-**#238 acceptance criteria.** #238 AC 2 offers two branches. This decision meets both. **No reporting-chain model is chosen**, so the #235 deployment-docs warning is confirmed as the standing control for residual gaps 1–4. **A narrow code rule is chosen**, so implementation issue #NNN is filed. It is blocked by #235 and gates first-team launch (decision-log row 8). #238 AC 1 (the link from #235's Follow-up 2 to this record) is met when the amendment text in the #238 proposal, Appendix A.1 (archived at `openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision/proposal.md`), is applied to #235.
+**#238 acceptance criteria.** #238 AC 2 offers two branches. This decision meets both. **No reporting-chain model is chosen**, so the #235 deployment-docs warning is confirmed as the standing control for residual gaps 1–4. **A narrow code rule is chosen**, so implementation issue #241 is filed. It is blocked by #235 and gates first-team launch (decision-log row 8). #238 AC 1 (the link from #235's Follow-up 2 to this record) is met when the amendment text in the #238 proposal, Appendix A.1 (archived at `openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision/proposal.md`), is applied to #235.
 
-**Dependency.** #NNN depends on #235's role resolution (the `facilitator` allowlist entry, array claims and precedence), and must not ship before #235 is merged and archived, including #235's ID-token signature verification: the conflict row is only evidence if the claim is verified.
+**Dependency.** #241 depends on #235's role resolution (the `facilitator` allowlist entry, array claims and precedence), and must not ship before #235 is merged and archived, including #235's ID-token signature verification: the conflict row is only evidence if the claim is verified.
 
-**Launch gate.** #NNN gates first-team launch, like #237 (decision-log row 8). No team goes live until it is closed.
+**Launch gate.** #241 gates first-team launch, like #237 (decision-log row 8). No team goes live until it is closed.
 
-**Pre-launch items.** Both live in #NNN as pre-launch steps (decision-log row 10); there is no separate launch-checklist document:
+**Pre-launch items.** Both live in #241 as pre-launch steps (decision-log row 10); there is no separate launch-checklist document:
 - the IdP administrator's written attestation that no user is assigned both `engineering_manager` and `facilitator`;
-- the one-time pre-launch draft check for drafts owned by now-conflicted users, with each hit taken over (#MMM) or cleared by the audited operator step.
+- the one-time pre-launch draft check for drafts owned by now-conflicted users, with each hit taken over (#240) or cleared by the audited operator step.
 
 **Records on public issues.** The repository is public. What these steps (and every later use of the operator step) record on a GitHub issue is limited to: the operator's GitHub handle, the date, an environment *label* (for example `production`, never a hostname or connection string), the hit count, and the action per hit keyed by session id. People's names or emails, the IdP administrator's list of users, the attestation itself and any query output go in an internal ticket. The issue carries only that ticket's reference, which is also the `ticket` value on the operator audit row.
 
-**Interim.** Until #NNN ships, the #235 warning text stands unchanged and, together with the #235 D3 log line, is the only control for this pair. No team goes live in that window (decision-log row 8).
+**Interim.** Until #241 ships, the #235 warning text stands unchanged and, together with the #235 D3 log line, is the only control for this pair. No team goes live in that window (decision-log row 8).
 
 ---
 
@@ -166,4 +166,4 @@ The rule does not close these gaps. They are stated so they are not discovered l
 - **`requirements/use cases/README.md`:** index rows for 01b and this record.
 - **`01 - Identity and Access - Use Cases.md`:** a cross-reference line beside the "Facilitator designation … (#235)" out-of-scope note.
 - **#235 (`facilitator-role-claim-allowlist`):** the Follow-up 2 link (#238 proposal Appendix A.1) and the Decision 7 annotation (Appendix A.2), applied by whichever of #235 and #238 merges second.
-- **Deployment-docs warning:** its new text, and the #235 spec text pinned to it, are applied by #NNN (#238 proposal Appendix A.3, archived at `openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision/proposal.md`), not before, so the docs never describe behaviour that doesn't exist.
+- **Deployment-docs warning:** its new text, and the #235 spec text pinned to it, are applied by #241 (#238 proposal Appendix A.3, archived at `openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision/proposal.md`), not before, so the docs never describe behaviour that doesn't exist.
