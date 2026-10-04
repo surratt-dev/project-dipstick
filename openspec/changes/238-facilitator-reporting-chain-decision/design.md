@@ -18,7 +18,9 @@ concurred:
 - `docs/` is operator documentation, and #238's AC says `requirements/`.
 
 Section order:
-1. Status / Owners / Traceability.
+0. Three-sentence summary (the rule, why, what it doesn't catch). Most readers stop here.
+1. Status / Owners / Traceability. The VP line records the persona review (Executive Stakeholder,
+   approved with conditions) and marks the human VP of Engineering acknowledgment *pending*.
 2. Decision, with the glossary line.
 3. Resolved-role rule.
 4. Why.
@@ -61,9 +63,14 @@ There are three amendments, each with its own applier:
 
 ### D4. Pre-launch items live in the follow-up issue (row 10)
 
-The IdP attestation, the one-time read-only interim-session check and the Priya walk-through are
-checkboxes in the follow-up issue body (Appendix B). No launch-checklist document is created.
-01c cites them by reference to that issue.
+Row 10 names two pre-launch items, and both are checkboxes in the follow-up issue body
+(Appendix B): the IdP attestation (no user holds both roles) and the one-time read-only check for
+drafts by now-conflicted users. No launch-checklist document is created. 01c cites them by
+reference to that issue. The attestation covers the both-roles pair at launch; it is not a control
+for residual gaps 1 or 2.
+
+The Facilitator walk-through and notice-copy review are part of the follow-up's PR review, not
+pre-launch gates (Executive Stakeholder recommendation 2; they don't trace to row 10).
 
 ### D5. Session handling is stated as a decision (row 11)
 

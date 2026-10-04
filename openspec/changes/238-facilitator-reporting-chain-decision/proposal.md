@@ -2,7 +2,8 @@
 
 *Framed by Devon Calloway (Internal Champion). Builds on `exploration-notes.md` (revised after the
 Facilitator and BA explore reviews) and the binding `decision-log.md`, rows 1–11. Nothing in the
-decision log is reopened here.*
+decision log is reopened here. Revised after the propose reviews (`propose-review-ba.md`,
+`propose-review-exec.md`); see "Review disposition" at the end of the main body.*
 
 ## Why
 
@@ -46,9 +47,13 @@ This change adds **documents only**. No application code, migrations, specs unde
 
 1. **New decision record** `requirements/use cases/01c - Facilitator Reporting Chain - Decision.md`,
    modelled on 01b's deferral doc. It contains:
+   - **Three-sentence summary** at the top, before the traceability header: what the rule is, why,
+     and what it doesn't catch (skip-level managers and managers sent only `facilitator`).
    - **Status and owners.** Decided 2026-10-04 by the user (product owner), decision-log rows 1–4
-     and 8–11. Follow-on owner: Marcus Delgado (BA). VP of Engineering acknowledgment (Rachel
-     Okonkwo): *pending*. #238 does not close until that field is filled.
+     and 8–11. Follow-on owner: the Business Analyst. VP of Engineering acknowledgment: "Persona
+     review (Executive Stakeholder) approved with conditions, see #NNN; human VP of Engineering
+     acknowledgment *pending* (owner: the user, as product owner)." The persona review is input to the VP,
+     not the VP's sign-off. #238 does not close until the human acknowledgment is recorded.
    - **Traceability header.** `Summary.md:12`; BRD §6.2 and §6.3; FR-2.1 [HARD], FR-2.2 [HARD];
      #235 Decisions 7, 9 and 12; #235 design D3; #235 Security review S4.
    - **The decision**, plus a glossary line: "error" means *the conflict is never silent*, not a
@@ -72,13 +77,20 @@ This change adds **documents only**. No application code, migrations, specs unde
    - **Residual gaps** 1–6 (manager sent only `facilitator`; skip-level managers and above; missing
      or stale EM memberships; informal authority; the BA-owned "peer is not in the reporting
      chain" interpretation; the interim window), with the deployment-docs warning confirmed as the
-     standing control.
-   - **#238 AC disposition paragraph**, the dependency on #235, the first-team-launch gate
+     standing control. Gap 2 (skip-level managers) is controlled by the docs warning only; the
+     pre-launch IdP attestation covers the both-roles pair at launch, not gaps 1 or 2.
+   - **Audit-write failure line:** a failed conflict-row insert fails the sign-in as any
+     transactional audit-write failure does (#235 `auth-error-handling`). This is not rejected
+     option (c), which is about the conflict itself.
+   - **#238 AC disposition paragraph**, naming both AC (2) branches explicitly (exploration §5):
+     no reporting-chain model is chosen, so the docs warning is the standing control for residual
+     gaps 1–4; a narrow code rule is chosen, so #NNN is filed. Then the dependency on #235, the first-team-launch gate
      (row 8), where the pre-launch items live (row 10: the follow-up issue, no checklist doc), and
      a link to the follow-up implementation issue.
    - **Revisit if:** an IdP can supply a reliable manager attribute; a person with line authority
-     over a team's participants is reported to have facilitated that team's session; or the app
-     gains org-structure data for another reason.
+     over a team's participants is reported to have facilitated that team's session (reports go to
+     the Business Analyst and the VP of Engineering); or the app gains org-structure data for
+     another reason.
 2. **Pointer from `requirements/Summary.md:12`.** A footnote marker on the facilitator line and one
    footnote at the end of the file. The sentence itself is unchanged, because it's the source
    concept.
@@ -150,14 +162,21 @@ the archived `2026-09-29-join-link-use-case-sync` (also no spec delta). Rational
     minimum ACs.
 - **Human actions outside this change:**
   - File the follow-up issue (orchestrator).
-  - VP acknowledgment on the record's Status line.
+  - Human VP of Engineering acknowledgment on the record's Status line (owner: the user, as product
+    owner). The Executive Stakeholder persona review does not substitute for it.
   - GitHub comments on #235 and #238 pointing to the record.
   - Move #238 on the project board (decision-log row 7).
 
 ## Open items
 
-1. **VP acknowledgment** (Rachel Okonkwo) on the 01c Status line. #238 doesn't close without it.
-2. **`openspec validate --strict` not run.** The CLI isn't available in this environment. The artifacts
+1. **Human VP of Engineering acknowledgment** on the 01c Status line (owner: the user, as product owner).
+   The Executive Stakeholder persona review approved with conditions; that is not the real VP's
+   sign-off. #238 doesn't close without the human acknowledgment.
+2. **Broader line-management attestation (new question for the user, not drafted into #NNN).**
+   Should the pre-launch IdP attestation also confirm that no `facilitator` holder line-manages
+   anyone on a team using the app? Row 10 decided only "no one holds both roles". The broader
+   version would be the only pre-launch control touching residual gaps 1 and 2. Ask before adding.
+3. **`openspec validate --strict` not run.** The CLI isn't available in this environment. The artifacts
    follow the archived-change structure by hand.
 
 *Closed since exploration:*
@@ -165,6 +184,35 @@ the archived `2026-09-29-join-link-use-case-sync` (also no spec delta). Rational
 - Launch-checklist location (row 10).
 - Launch gate (row 8).
 - User notice (row 9).
+
+## Review disposition
+
+Propose-stage reviews: `propose-review-ba.md` (BA) and `propose-review-exec.md` (Executive
+Stakeholder persona). BA R1–R4 trace to decision-log rows 10 and 11 or to #235's design; I checked
+R4 against #235 `design.md` (`shouldRecordRoleClaimMapped` returns `false` for a new user) and it
+holds.
+
+| Point | Disposition | Rationale / where |
+|---|---|---|
+| BA R1: attestation must match row 10 ("no one holds both roles") | Accepted | It's what the user decided. Appendix B attestation reworded; "only control for gaps 1 and 2" removed; 01c gap 2's control is the docs warning only (What Changes item 1, task 1.6). The broader line-management version goes to the user as Open item 2, not into #NNN. |
+| BA R2: interim check covers drafts only, and finds not-yet-re-signed-in users | Accepted | `active` contradicted row 11 / #235 Decision 12, and the `global_role` query missed exactly the first-session case. Replaced with the BA's (a)/(b)/(c) draft query, run after deploy and after the attestation. |
+| BA R2 (last bullet): walk-through misattributed to row 10 | Accepted (via Exec rec. 2) | Walk-through moved out of the pre-launch section into a "PR review" section with its own source (Facilitator suggestion 11). |
+| BA R3: define the terms the notice ACs depend on | Accepted | Every row of the BA's table is now a definition or AC in Appendix B (live-session route, sign-in, placement, copy rules, admin copy, draft list, non-blocking, contact fallback, copy-review checkbox). Route paths are left for #NNN to list; I don't invent them here. |
+| BA R4: first-access vs. returning sign-in | Accepted | Verified against #235 D5. Scenario 1 and AC 3 scoped to returning sign-ins; new first-access scenario; AC 6 asserts `previousRole: null`. |
+| BA S1: say why a failed audit insert fails sign-in | Accepted | One line in Appendix B Scenario 3 and in the 01c plan. Stops the next reader confusing it with rejected option (c). |
+| BA S2: AC for "never silent" | Accepted | Folded into AC 3 rather than a new AC, keeping the count at 11 (Exec condition 2). |
+| BA S3: log field set equals metadata set | Accepted | Scope bullet and AC 4. Cites #235 S4/Constraints as the source. |
+| BA S4: room-open 403 condition | Accepted | AC 8 reworded. |
+| BA S5: AC-disposition names both branches | Accepted | 01c plan (What Changes item 1) uses the exploration §5 wording. |
+| BA S6: trigger 2 owner and channel | Accepted (merged with Exec condition 3) | Recipients named by role: "the Business Analyst and the VP of Engineering". |
+| BA S7: `grep -c "row 10"` ≥ 2 | Accepted | Added to task 3.2. |
+| Exec: "Acknowledged … Rachel Okonkwo" for the 01c Status line | **Modified** | This is a persona review, not the real VP's sign-off. Status line reads "Persona review (Executive Stakeholder) approved with conditions; human VP of Engineering acknowledgment pending (owner: the user, as product owner)". Open item 1 and #238's open state are kept. |
+| Exec condition 1: start #NNN when #235 merges, parallel with #237; escalate slips | Accepted | "Schedule" line in Appendix B header. |
+| Exec condition 2: freeze #NNN at minimum ACs | Accepted | "Scope freeze" line in Appendix B header. BA additions went into existing ACs, not new ones. |
+| Exec condition 3: trigger 2 recipients | Accepted | See BA S6. Roles, not persona names, in the requirements doc. |
+| Exec rec. 1: three-sentence summary at top of 01c | Accepted | What Changes item 1 and task 1.1; design D1 section order. |
+| Exec rec. 2: fold Priya walk-through into #NNN PR review, timebox it | Accepted | Matches row 10, which names only two pre-launch items. Design D4 updated. |
+| Exec rec. 3: accepts residual gaps with attestation + docs warning as standing control | Modified | Agreed on substance, but per BA R1 the attestation covers the pair at launch, not the residual gaps. The docs warning alone is their standing control. |
 
 ---
 
@@ -236,6 +284,11 @@ In the **same** PR, also amend:
 > issue is closed (#238 decision-log row 8).
 > **Decision record:** `requirements/use cases/01c - Facilitator Reporting Chain - Decision.md` (#238).
 > **Track:** full. Role resolution is an authorization boundary and touches the no-manager rule.
+> **Schedule:** start the day #235 merges, in parallel with #237, so this adds no serial time to
+> first-team launch. If it threatens the launch date, raise it with the VP of Engineering before
+> anyone trims ACs or proposes waiving the gate. The gate stays (#238 row 8).
+> **Scope freeze:** scope is frozen at the minimum ACs below. No reassignment flow, no in-app
+> "who is conflicted" view, no admin toggle and no alerting configuration is added during apply.
 >
 > ### Why
 > Under #235's precedence, a user the IdP sends both `engineering_manager` and `facilitator`
@@ -268,14 +321,20 @@ In the **same** PR, also amend:
 > | string `"engineering_manager facilitator"` | `engineer` | no |
 >
 > ### Normative scenarios (replace #235's "Facilitator outranks engineering manager")
-> - **WHEN** the role claim is `["facilitator","engineering_manager"]` **THEN** `users.global_role`
->   is `'engineering_manager'`, exactly one conflict audit row is written in the same transaction
->   as the `auth.role_claim_mapped` row, the D3 outranked warning is **not** emitted, and the user
->   sees the conflict notice on their first non-session page.
+> - **WHEN** a **returning** user's role claim is `["facilitator","engineering_manager"]` **THEN**
+>   `users.global_role` is `'engineering_manager'`, exactly one conflict audit row is written in the
+>   same transaction as the `auth.role_claim_mapped` row, the D3 outranked warning is **not**
+>   emitted, and the user sees the conflict notice on the first non-session page after sign-in.
+> - **WHEN** a **first-access** user's role claim is `["facilitator","engineering_manager"]`
+>   **THEN** one `auth.first_access_created` row and one conflict row are written in the same
+>   transaction (no `auth.role_claim_mapped` row, per #235 D5), and the conflict row's
+>   `previousRole` is `null`.
 > - **WHEN** the role claim is `["application_admin","facilitator","engineering_manager"]` **THEN**
 >   `users.global_role` is `'application_admin'`, the D3 outranked warning **and** one conflict
 >   row are both emitted, and the notice uses admin-specific copy.
 > - **WHEN** the conflict-row insert fails **THEN** the sign-in fails and neither row persists.
+>   This is #235's transactional-audit rule (`auth-error-handling`, `AuditWriteError`), not rejected
+>   option (c), which is about the conflict itself.
 > - **WHEN** the role claim is the string `"engineering_manager facilitator"` **THEN** no conflict
 >   is recorded.
 >
@@ -286,25 +345,36 @@ In the **same** PR, also amend:
 >   post-commit structured log event. Register the operation in `audit-logger.ts`. Metadata is
 >   limited to `{ oidcSubject, appliedRole, conflictingRoles: ["engineering_manager","facilitator"],
 >   previousRole, correlationId }`. No raw claim values, no non-allowlisted elements or their
->   counts. One row per sign-in while the conflict persists. Docs name the event as suitable for an
->   operator alert; the app configures none (#235 Decision 9).
-> - **User notice**:
->   - Placement: non-blocking, never a modal, on the first non-session page after sign-in.
+>   counts (#235 Security S4 and Constraints). The post-commit structured log event carries exactly
+>   the same field set as the audit-row metadata. One row per sign-in while the conflict persists.
+>   Docs name the event as suitable for an operator alert; the app configures none (#235 Decision 9).
+> - **User notice** (terms used by the ACs):
+>   - *Live-session route:* the lobby, pre-session, active, reveal and wrap-up routes. This issue
+>     lists their paths.
+>   - *Sign-in:* a completed OIDC callback that runs account resolution. A mid-session re-auth
+>     counts; the notice is deferred to the next non-session page.
+>   - Placement: the first page rendered after sign-in that is **not** a live-session route. The
+>     notice is dismissible and doesn't block navigation (no modal or overlay).
 >   - Frequency: shown on every sign-in while the conflict persists; once dismissed, hidden until
 >     the next sign-in.
->   - Never rendered on a live-session route (lobby, pre-session, active, reveal, wrap-up), including
->     the re-authentication return path.
+>   - Never rendered on a live-session route, including the re-authentication return path.
 >   - Copy rules:
 >     - No "IdP", "OIDC" or "claim".
->     - Says which role goes, what still works, and how to clear it (sign out and back in after the
->       fix).
->     - Mentions the promotion case.
+>     - Names Facilitator as the role not applied; states that Engineering Manager access to their
+>       team(s) still works; states that they can't open or run new sessions; says how to clear it
+>       (sign out and back in after the fix).
+>     - Includes a sentence telling the user that if they have recently become a manager, this is
+>       expected.
 >     - Never blames the user.
->     - Contact text is deployment-configured display text with a generic fallback.
->   - Lists the user's stranded `draft` sessions (team and date) and asks them to arrange another
+>     - Contact text is deployment-configured display text, rendered verbatim as plain text (not
+>       HTML), with a generic fallback when none is configured.
+>   - Lists every session with `state = 'draft'` and `facilitator_id` = the user, with no cap,
+>     showing team name and scheduled date (not created date), and asks them to arrange another
 >     facilitator.
->   - Admin-specific copy for the admin case.
->   - Copy is reviewed by Priya Nair (Facilitator).
+>   - Admin case: copy states that administrator access is unaffected and that the
+>     Facilitator/Engineering Manager assignment still needs fixing.
+>   - Copy review by the Facilitator role (Priya Nair) is a checkbox on this issue, with name and
+>     date.
 > - **Room-open:** the existing live-`global_role` check before draft → lobby stays. When the
 >   user carries the conflict flag, the 403 gets conflict-specific copy (for example, "You can't
 >   open this session because your account is now set up as an Engineering Manager. Another
@@ -326,24 +396,31 @@ In the **same** PR, also amend:
 > ### Minimum acceptance criteria
 > 1. Every row of the rule table is a passing resolver test.
 > 2. Duplicate elements produce one conflict. A string claim never produces a conflict.
-> 3. One `role_claim_mapped` row plus one conflict row are written in the same transaction. A
->    failed conflict insert fails the sign-in and neither row persists.
-> 4. Conflict-row metadata is limited to the fixed fields. A test asserts that a non-allowlisted
->    element (for example `superuser`) and its count are absent from the audit row and the
->    structured log.
+> 3. On a **returning** sign-in, one `auth.role_claim_mapped` row and one conflict row are written
+>    in the same transaction. A failed conflict insert fails the sign-in and neither row persists.
+>    No code path applies `engineering_manager` because of the pair without writing the conflict row.
+> 4. Conflict-row metadata is limited to the fixed fields, and the structured-log field set equals
+>    the metadata set. A test asserts that a non-allowlisted element (for example `superuser`) and
+>    its count are absent from the audit row and the structured log.
 > 5. With `application_admin` present, the D3 warn and the conflict row both fire. Without admin,
 >    D3 does not fire for the pair.
-> 6. First access with a conflicting claim writes `auth.first_access_created` and the conflict row.
+> 6. On **first access** with a conflicting claim, one `auth.first_access_created` row and one
+>    conflict row are written in the same transaction, and the conflict row's `previousRole` is
+>    `null`.
 > 7. The notice:
->    - renders on the landing page;
+>    - renders on the landing page **and** on one other non-session route reached first after
+>      sign-in;
+>    - is dismissible and doesn't block navigation (no modal or overlay);
 >    - does **not** render on any session route, including the re-auth return path (extend
 >      `reauthRequiredHostParity`);
 >    - reappears on the next conflicted sign-in after dismissal;
 >    - is absent for a non-conflicted sign-in;
 >    - uses admin-specific copy in the admin case;
->    - lists stranded drafts.
-> 8. The room-open 403 carries conflict-specific copy when the flag is set, and the draft stays
->    blocked.
+>    - lists every stranded draft (team name, scheduled date);
+>    - renders the generic contact fallback when no contact text is configured, and the configured
+>      text verbatim as plain text when it is.
+> 8. The room-open 403 response contains the conflict-specific message **only** when the user's
+>    last sign-in recorded a conflict, and the generic 403 copy otherwise. The draft stays blocked.
 > 9. #238 Appendix A.3 is applied. The #235 `first-access` and `auth-error-handling` specs and the
 >    verbatim docs SHALL are amended consistently, and the docs checklist scenario passes against the
 >    new warning text.
@@ -351,15 +428,22 @@ In the **same** PR, also amend:
 >     role resolves to `engineering_manager`.
 > 11. The simulator has a persona that sends both roles.
 >
+> ### PR review (not a pre-launch step; Facilitator review suggestion 11)
+> - [ ] **Notice copy reviewed** by the Facilitator role (Priya Nair). Record name and date.
+> - [ ] **Walk-through** by the Facilitator role, timeboxed to one session, using the both-roles
+>   simulator persona with a pending draft: sign in, read the notice, try room-open, "fix" the
+>   IdP, sign back in.
+>
 > ### Pre-launch steps (must be done before the first team goes live; #238 row 10)
 > - [ ] **IdP attestation.** The IdP administrator confirms in writing (recorded on this issue,
->   with name and date) that no current holder of `facilitator` has line-management responsibility
->   for anyone in a team using the app. This is the only control that touches residual gaps 1
->   and 2.
-> - [ ] **One-time read-only interim check.** Before go-live, the deploying operator runs one
->   read-only query: `draft` or `active` sessions whose facilitator now has
->   `global_role = 'engineering_manager'` or has a conflict row. A human recreates any hits under a
->   proper facilitator. Record the operator, date, environment and result on this issue. This is
->   not shipped code.
-> - [ ] **Usability walk-through with Priya Nair**, using the both-roles simulator persona with a
->   pending draft: sign in, read the notice, try room-open, "fix" the IdP, sign back in.
+>   with name and date) that, at the time of attestation,
+>   no user is assigned both `engineering_manager` and `facilitator` in the IdP.
+>   (#238 decision-log row 10.)
+> - [ ] **One-time read-only draft check.** After this issue is deployed and after the IdP
+>   attestation above, the deploying operator runs one read-only query: sessions in `draft` whose
+>   `facilitator_id` belongs to a user who (a) has `global_role = 'engineering_manager'`, or
+>   (b) has any `<conflict audit operation>` row, or (c) appears on the IdP administrator's list of
+>   users who held both roles at any time since #235 was deployed. A human arranges for another
+>   facilitator to recreate each hit (row 11; no reassignment). Sessions past room-open are out of
+>   scope (row 11, #235 Decision 12). Record the operator, date, environment, query and result on
+>   this issue. This is not shipped code. (#238 decision-log row 10.)

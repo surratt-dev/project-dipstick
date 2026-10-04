@@ -8,13 +8,18 @@
 
 - [ ] 1.1 Create `RECORD` with the section order from design D1. The Status block:
   - Decided 2026-10-04 by the user (product owner), decision-log rows 1–4 and 8–11.
-  - Follow-on owner: Marcus Delgado (BA).
-  - VP of Engineering acknowledgment: *pending*.
+  - Follow-on owner: the Business Analyst.
+  - VP of Engineering acknowledgment: "Persona review (Executive Stakeholder) approved with
+    conditions, see #NNN; human VP of Engineering acknowledgment *pending* (owner: the user, as product
+    owner)." Do not record the persona review as the VP's acknowledgment.
   - Implementation: #NNN.
+
+  Put a three-sentence summary (rule, why, what it doesn't catch) above the traceability header.
 
   Include a traceability header citing `Summary.md:12`, BRD §6.2 and §6.3, FR-2.1, FR-2.2, #235
   Decisions 7, 9 and 12, #235 D3, and #235 Security S4.
-  **Check:** `test -f "$RECORD"`. Also, `grep -c '^## ' "$RECORD"` is ≥ 10, and `grep -n 'pending' "$RECORD"` hits the VP line.
+  **Check:** `test -f "$RECORD"`. Also, `grep -c '^## ' "$RECORD"` is ≥ 10, `grep -n 'pending' "$RECORD"` hits the VP line,
+  and `grep -n 'Acknowledged' "$RECORD"` returns nothing.
 - [ ] 1.2 Write the Decision and glossary line ("error" means never silent, not a failed sign-in), and
   the resolved-role rule with all 11 table rows from exploration §3.
   **Check:** `grep -c '^| `' "$RECORD"` is ≥ 11. `grep -n 'never silent' "$RECORD"` returns a hit.
@@ -40,17 +45,22 @@
   **Check:** `grep -n 'facilitator_id' "$RECORD"` and `grep -n 'Decision 12' "$RECORD"` return hits.
   `grep -in 'reassign' "$RECORD"` appears only in a "no reassignment" statement.
 - [ ] 1.6 Write Rejected (a) to (d), with the reporting-chain model first, and Residual gaps 1–6, with the
-  docs warning as the standing control and the BA-owned peer interpretation.
+  docs warning as the standing control and the BA-owned peer interpretation. Gap 2's control is the
+  docs warning only; do not carry over "plus the launch-checklist attestation" from exploration §6.
+  Add the line: a failed conflict-row insert fails the sign-in as any transactional audit-write
+  failure does (#235 `auth-error-handling`); this is not rejected option (c).
   **Check:** `grep -n 'reporting-chain model' "$RECORD"` returns a hit. `grep -c '^[1-6]\. \*\*' "$RECORD"` is ≥ 6, or count by section read-through.
 - [ ] 1.7 Write the following:
-  - the #238 AC disposition paragraph;
+  - the #238 AC disposition paragraph, naming both AC (2) branches (exploration §5 wording);
   - the dependency on #235;
   - the first-team-launch gate (row 8);
   - the pre-launch items, which live in #NNN (row 10, no checklist doc);
   - the interim statement ("Until #NNN ships, the #235 warning text stands unchanged…");
-  - Revisit-if, with three triggers.
+  - Revisit-if, with three triggers. Trigger 2 names its recipients: "the Business Analyst and the
+    VP of Engineering" (roles, not persona names).
 
-  **Check:** `grep -n 'first team' "$RECORD"`, `grep -n 'Revisit' "$RECORD"` and `grep -n 'stands unchanged' "$RECORD"` return hits.
+  **Check:** `grep -n 'first team' "$RECORD"`, `grep -n 'Revisit' "$RECORD"`, `grep -n 'stands unchanged' "$RECORD"`
+  and `grep -n 'Business Analyst and the VP of Engineering' "$RECORD"` return hits.
   `grep -rn 'checklist' "$RECORD"` contains no statement that a checklist doc exists.
 - [ ] 1.8 The record contains no exact notice copy, no app setting or toggle for the rule, and no
   wording that makes the no-manager rule or the facilitator-from-another-team rule optional.
@@ -79,9 +89,13 @@
 - [ ] 3.1 Appendix A "Before" quotes match #235 character for character.
   **Check:** `git show origin/ccr-b594efa3-9zclgu:docs/deployment.md | grep -F "treats them as **facilitator only**"` hits.
   The Follow-up 2 "Before" text is found verbatim with `grep -F` in `git show origin/ccr-b594efa3-9zclgu:openspec/changes/facilitator-role-claim-allowlist/proposal.md`.
-- [ ] 3.2 Appendix B contains the launch gate, the 11 minimum ACs and the 3 pre-launch steps.
-  **Check:** `grep -n 'Gates:\*\* first-team launch' proposal.md` hits. Under "Minimum acceptance criteria" there are 11
-  numbered items. Under "Pre-launch steps" there are 3 `- [ ]` items.
+- [ ] 3.2 Appendix B contains the launch gate, the schedule and scope-freeze lines, the 11 minimum ACs,
+  the 2 pre-launch steps (row 10) and the PR-review checkboxes.
+  **Check:** `grep -n 'Gates:\*\* first-team launch' proposal.md` and `grep -n 'Scope freeze' proposal.md` hit.
+  Under "Minimum acceptance criteria" there are 11 numbered items. Under "Pre-launch steps" there are
+  2 `- [ ]` items; under "PR review" there are 2. `grep -c "row 10" proposal.md` is ≥ 2, and
+  `grep -n "no user is assigned both" proposal.md` hits the attestation. `line-management` appears
+  only in Open items and the Review disposition table, not in Appendix B.
 
 ## 4. Scope guard
 
@@ -97,5 +111,6 @@
   (Appendix A.1 to A.3), and record the number in `decision-log.md`.
   **Check:** `grep -rn '#NNN' "$RECORD" openspec/changes/238-facilitator-reporting-chain-decision/proposal.md` returns nothing.
 - [ ] 5.2 Note in the #238 PR description: "AC 1: pending amendment on #235 (Appendix A.1)" and
-  "VP acknowledgment pending". This is a human or orchestrator action.
+  "VP acknowledgment pending (persona review approved with conditions; human VP sign-off owned by
+  the product owner)". This is a human or orchestrator action.
   **Check:** the PR body contains both strings.
