@@ -1,0 +1,66 @@
+## Why
+
+Right now nobody can run a real Health Check without typing SQL. FR-2.1 [HARD] says only a Facilitator may create a session, and no supported path produces a facilitator who is still one after their next sign-in. `users.global_role` is re-mapped from the IdP role claim at every sign-in, and the claim allowlist in `account-resolver.ts` is `{engineer, engineering_manager, application_admin}`. A `facilitator` claim is dropped with a warning, and any `UPDATE users` an operator runs is undone the next time that person signs in. The hands-on test script tells people to re-run a promotion line after every sign-in. When a role only exists through a workaround, each team invents its own workaround, and the rules end up living in people's heads again. The application was built so they don't.
+
+`requirements/use cases/01b - Designate a Facilitator - Deferral.md` settled who owns the role (2026-10-03, Option A; implementation is GitHub #235): **the IdP is the source of truth.** One writer for one column. There is no "make facilitator" button that could one day be used to promote a manager. This change does the work that decision implies.
+
+One correction to the deferral doc and the issue. Both say demotion and its audit come "for free". They don't. `auth.role_claim_mapped` fires only when the new role is not `engineer`, and `auth-error-handling` currently specifies that a reversion to `engineer` writes no row. A facilitator who loses the role today leaves no audit row behind, only the absence of later ones. Working out who could run sessions last quarter by inference is exactly the spreadsheet gap the app exists to close, so this change fixes it (Decision 4).
+
+## What Changes
+
+- **The role-claim allowlist becomes exactly `{engineer, senior_engineer, facilitator, engineering_manager, application_admin}`**: the five values of the `user_role` enum, no more. A unit test asserts set equality, so widening the list means a failing test and a spec delta, not a one-line edit. `facilitator` is named as a privileged role (it creates sessions and edits standing topics). `senior_engineer` is allowlisted but non-privileged: every authorization check SHALL treat it exactly like `engineer`. No migration is needed, because the enum and the shared type already carry all five.
+- **The role claim may be a string or an array** (Decisions 6, 7). Entra, the primary IdP, sends `roles` as an array. The `String(rawClaimValue)` coercion goes away. Non-allowlisted elements are ignored with a warning that carries counts, never raw values. Among the allowlisted elements, the highest by precedence wins: **`application_admin` > `facilitator` > `engineering_manager` > `senior_engineer` > `engineer`**. An empty array, or one with nothing allowlisted, maps to `engineer`. A comma-joined string such as `"facilitator,engineer"` is one non-allowlisted value. It is not split.
+- **An outranked `engineering_manager` is logged.** When precedence discards `engineering_manager` (for example a user sent both `facilitator` and `engineering_manager`), a structured warning names the applied role and the outranked allowlisted roles. Those are enum values, not raw input, so they are safe to log. It is a log line, not an alert (Decision 9), and it is the only trace inside the app of the risk described under Constraints below.
+- **`auth.role_claim_mapped` fires on any role change** (Decision 4). For a returning user it now fires when the new role is not `engineer` **or** the new role differs from the previous role. That covers demotion from `facilitator`, `engineering_manager` and `application_admin`. The "Reversion … not represented" scenario is replaced. The structured log line gains `previousRole`, which until now only the `audit_log` row carried. Both the row and the log line read one shared predicate, so they cannot drift apart. Accepted consequence: `senior_engineer`, like EM and admin today, writes a row on every sign-in (Decision 8).
+- **Role-change latency is specified as a limitation.** A role change applies at the user's next authentication. The existing app session keeps the old role until then, which is at most the 90-minute absolute lifetime. The only faster path is revoking the user's refresh tokens at the IdP, and that takes effect at the session's next token refresh. There is no in-app revoke control, and this change does not add one.
+- **Local dev: `facilitator-001` becomes a real facilitator.** It gets `role: "facilitator"` in `docker/oidc/accounts.js`, and `seeded: true` in `DEV_LOGIN_OPTIONS`. It stays a member of no team. The only seeded team is the `__default_topics__` template, which cannot host a session, so the precondition for "a team facilitator-001 is not a member of" is met by the existing new-team flow (`POST /api/v1/teams`, reached from the session-creation entry point). No `psql` step remains in `docs/local-development.md` or the hands-on test script.
+- **Docs.** `docs/deployment.md` gets its first role-claim section: `OIDC_ROLE_CLAIM`, the allowlist, string-versus-array handling and precedence, an Entra app-roles example, the manager warning (verbatim below), latency and revocation, and a troubleshooting entry ("I was given facilitator but still see the join-link page"). `docs/local-development.md` and `docs/test-scripts/topic-add-form-hands-on-check.md` drop the promotion workaround. The deferral doc is marked resolved, and its "possible later convenience" wording becomes "only if a supported IdP cannot send custom claims".
+
+## Constraints this change must preserve
+
+These are the parts of the ritual that carry its weight. Nothing in this change may make them optional.
+
+- **The application never writes `global_role`.** No endpoint, UI, seed migration or script sets `facilitator`. The deferral doc's in-app designation becomes a fallback only for an IdP that cannot send custom claims, and it is not built here.
+- **Facilitator from another team stays a hard block.** It is enforced as "no active `team_memberships` row on this team". The new-team flow continues to refuse to add its creator as a member (`facilitator-sessions.ts`, design D6). Adding the creator would turn the check upside down.
+- **The no-manager rule.** Under the chosen precedence, someone holding both `engineering_manager` and `facilitator` gets `global_role = facilitator`. The `global_role` half of the dual participation check then never fires for them. The rule rests entirely on their `team_memberships.role = engineering_manager` rows being accurate. If those rows are right, the ritual holds: they cannot participate in or facilitate the teams they manage. If those rows are missing, nothing in the app knows they are a manager. I would have ranked EM above facilitator so the order fails toward restriction. That was decided otherwise (Decision 7), and I'm following it. This change mitigates with documentation and a log line. It adds no code gate (Decision 9). The deployment docs SHALL carry this warning verbatim:
+
+  > Do not assign `facilitator` to anyone who manages people. If a user is sent both `engineering_manager` and `facilitator`, the application treats them as **facilitator only**. From then on, the rule that managers never participate in a Health Check is enforced only by their team memberships being recorded with the `engineering_manager` role. Keep those memberships accurate, and give managers exactly one app role.
+
+- **Raw claim values never reach an audit row or a log line.** That rule already holds, and it now applies to every element of an array claim.
+- **No new UI.** No role badge, no `/no-team` copy change, no admin toggle (Decisions 10 and Priya Q3). The app should stay in the background.
+
+## Non-goals
+
+- **Reporting-chain enforcement.** `requirements/Summary.md:12` says the facilitator must be "not in the team's reporting chain". The app approximates that as "not a member of this team". A manager given `facilitator` is still blocked on the teams where they hold EM memberships, but can facilitate a skip-level or sibling team where they hold none. The app has never modelled reporting lines, and this change doesn't start. See Follow-ups.
+- **Member-facilitator routing** (#237). A facilitator who belongs to their own home team lands on their team view and has no link to `/sessions/new`.
+- Lengthening the 90-minute session lifetime. Short sessions are part of the ritual.
+- An in-app revoke-sessions control.
+
+## Capabilities
+
+### New Capabilities
+
+None.
+
+### Modified Capabilities
+
+- `first-access`: modifies "Application provides a mechanism for assigning `global_role = 'engineering_manager'`". Validation requirement 4 now points at the closed allowlist, the constraints name every privileged role, and the allowlist-rejection scenario now says the warning never carries the raw value (this matches the code; the old wording said "identifying the unrecognized claim value"). Adds four requirements: "The IdP role-claim allowlist is closed", "Multi-valued role claims resolve by fixed precedence", "Facilitator designation comes only from the IdP and persists across sign-in", and "`senior_engineer` is non-privileged".
+- `auth-error-handling`: modifies "First Access and role-claim-mapping events are durably recorded" to state the firing condition (new role ≠ `engineer` OR ≠ previous role), replace the reversion scenario with demotion scenarios, and require `previousRole` on the structured log line.
+- `local-dev-environment`: modifies "Simulated OIDC provider". `facilitator-001` carries `role: facilitator`, and a precondition scenario states that it can create a session with no SQL step.
+
+Checked and unchanged: `persona-login` (the `seeded` field is still the single source of truth, and the unseeded-caveat branch stays even though no option uses it now), `oidc-auth` ("Role-blind authentication" is unaffected), `role-assignment` (membership roles only), `project-structure` (`canFacilitateSessions` already reads `global_role === 'facilitator'` live), and `session-creation`.
+
+## Impact
+
+- **Code:** `packages/backend/src/auth/account-resolver.ts` (allowlist, array handling, precedence, export `mapRoleClaimToGlobalRole` and `ROLE_PRECEDENCE` for tests, pino-ordered logger calls); `packages/backend/src/routes/auth.ts` (shared `shouldRecordRoleClaimMapped` predicate for the row and the log, `previousRole` on the log, `facilitator-001` `seeded: true`); `docker/oidc/accounts.js`.
+- **Tests:** `auth/__tests__/account-resolver.test.ts`; new `auth/__tests__/role-claim-allowlist-integration.test.ts` (real Postgres); `routes/__tests__/auth.test.ts`; `frontend/src/pages/__tests__/DevLoginPage.test.tsx`; possibly `docker/oidc/__tests__/interactions.test.js`.
+- **Docs:** `docs/deployment.md`, `docs/local-development.md`, `docs/test-scripts/topic-add-form-hands-on-check.md`, `requirements/use cases/01b - Designate a Facilitator - Deferral.md`.
+- **Data:** no migration. Existing rows are untouched until each user's next sign-in. Once an IdP sends `facilitator`, the first sign-in after deploy writes a `role_claim_mapped` row with `previousRole = engineer`.
+- **Operators:** behaviour changes for anyone whose IdP already sends an array claim. Today a one-element array maps by accident and a multi-element array falls back to `engineer`. After this change, precedence applies. Release note line: "The IdP role claim now accepts `facilitator` and `senior_engineer`, and accepts arrays (highest role wins). Demotions are now audited."
+- **Pipeline:** full track, since role mapping is an authorization boundary (Decision 1).
+
+## Follow-ups
+
+1. **#237: member-facilitators cannot reach session creation** (`App.tsx:34-41`). Already filed. I want it closed **before the first team goes live**, as a release gate rather than a #235 gate. A facilitator with a home team is the normal profile, and without #237 this change hands them a role they can't find a use for.
+2. **Reporting-chain enforcement (to be filed by a human; owner: BA, Marcus Delgado, with the VP of Engineering).** Decide whether "not in the team's reporting chain" (`Summary.md:12`) needs a model of its own (for example, manager-of relationships beyond TEAM-006 memberships), or whether "not a member" plus the deployment-docs warning is an acceptable standing approximation. Cite this proposal's Non-goals and Constraints. Link the issue number here once it is filed.
+3. **IdP-side revocation latency (owner: Security, Tomás Ferreira).** Measure how long real Entra refresh-token revocation takes to end an app session through the `invalid_grant` path, given Entra's access-token lifetime and the 5-minute refresh threshold. Record the result in the deployment docs. design.md describes the mechanism, but nobody has measured it against the production IdP.
