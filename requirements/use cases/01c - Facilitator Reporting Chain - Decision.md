@@ -81,7 +81,7 @@ Both halves of "never silent" are required: the user is **told**, *and* the conf
 
 **Contact.** The notice's "who to ask" text is the existing `APPLICATION_ADMIN_CONTACT_EMAIL`, with a generic fallback when it is unset; no new setting is added (decision-log row 19). Contact text is display text, not behaviour.
 
-**Copy.** The exact notice and room-open copy is decided in #NNN, reviewed by the Facilitator role. This record fixes only the rules above.
+**Copy.** The exact notice and room-open copy is decided in #NNN, reviewed by a human facilitator (not the implementer). This record fixes only the rules above.
 
 ---
 

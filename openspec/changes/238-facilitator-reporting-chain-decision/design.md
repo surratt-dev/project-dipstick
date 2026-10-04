@@ -2,7 +2,9 @@
 
 *Ingrid Sollenberger (Solution Architect). Revised after the design reviews
 (`design-review-engineer.md`, `design-review-security.md`); see "Design review disposition" at the
-end.*
+end. Revised again after the implementation reviews (`implementation-review-architect.md`,
+`implementation-review-security.md`) by Marcus Oyelaran (Full Stack Engineer); see "Implementation
+review disposition".*
 
 ## Context
 
@@ -16,6 +18,10 @@ Rows 13–18 were added during the design stage, in answer to the design reviews
   half of row 11. Takeover is a separate issue (#MMM) with no launch gate. Until it ships, a
   stranded draft is cleared by a documented, audited operator step;
 - row 18: draft-based team-content access also requires a live `facilitator` role (Security S2).
+
+Rows 19–21 are not product decisions by the user: row 19 is a pipeline default (operator audit
+identity, notice contact text), row 20 authorises the orchestrator's GitHub actions, and row 21
+says the copy-review and walk-through checkboxes need a human facilitator, not a persona.
 
 `#NNN` is the conflict-rule follow-up issue (Appendix B). `#MMM` is the draft-takeover issue
 (Appendix C). Both are placeholders until the orchestrator files them.
@@ -131,7 +137,7 @@ accidental.
 - There is still no reassignment feature in #NNN. Takeover is the takeover issue's feature, not a
   reassignment flow added to #NNN.
 - **Draft read access needs a live facilitator role** (row 18). Today `evaluateTeamAccess`
-  Path 3(b) (`team-content-access-helper.ts:216-221`) admits the draft's `facilitator_id` for 24
+  Path 3(b) (`team-content-access-helper.ts:218-221`) admits the draft's `facilitator_id` for 24
   hours with no role predicate, so a re-resolved manager could keep reading the target team's
   action items and trends. #NNN adds `global_role = 'facilitator'` to Path 3(b). This also closes
   the same gap for #235 Decision 12 revocations. It does not touch sessions past room-open.
@@ -189,14 +195,15 @@ Appendix B:
 - **Where the INSERT goes (F6).** In `writeAccountResolutionAuditRow`
   (`auth/account-resolution-audit.ts`, #235 D5), after the `first_access_created` or
   `role_claim_mapped` INSERT, so the real-Postgres integration test reaches it. The post-commit
-  `emitAuditEvent` stays in `routes/auth.ts`. Columns: `actor_global_role` = applied role,
-  `team_id` NULL, `target_user_id` NULL.
-- **Audit content (Security S4).** "No raw **role-claim** values" (`oidcSubject` is the established
-  identifier and stays). `conflictingRoles` is the code constant
+  `emitAuditEvent` stays in `routes/auth.ts`. Columns: `actor_user_id` = the signing-in user,
+  `actor_global_role` = applied role, `team_id` NULL, `target_user_id` NULL.
+- **Audit content (Security S4).** "No raw **role-claim** values". `oidcSubject` and `oidcIssuer`
+  are the established identifiers on every `auth.*` row and stay (a subject is unique only within
+  its issuer). `conflictingRoles` is the code constant
   `["engineering_manager","facilitator"]`, never built from the claim array.
 - **Live-session routes (F7).** Defined by path, not session state: `/session/*` and
   `/team/:teamId/session/*` (including the draft host). One exported `isLiveSessionPath(pathname)`,
-  unit-tested against every `App.tsx` route. A dedicated test, not `reauthRequiredHostParity`.
+  unit-tested against every `App.tsx` route; it must not match `/sessions/new`. A dedicated test, not `reauthRequiredHostParity`.
 - **Contact (F8).** Reuse `APPLICATION_ADMIN_CONTACT_EMAIL` (already exposed as
   `applicationAdminContactEmail`), with the generic fallback when it is unset. No new setting. If
   the Facilitator copy review needs free text, that becomes a new optional, length-capped env var
@@ -214,9 +221,16 @@ drafts. #238 records the decisions rows 14–17 made and leaves the rest to #MMM
 - Architectural note for #MMM: takeover updates `facilitator_id` on the **existing** row, so it
   doesn't touch `sessions_team_active_unique` and needs no abandon step. The previous owner is no
   longer the `facilitator_id`, so they lose Path 3(b) access and can no longer advance the draft.
-- Left open for #MMM (listed as open questions in Appendix C): notifying the previous owner,
-  whether the 24-hour draft window resets on takeover, takeover of expired drafts, and
-  concurrency between two takers.
+- Proposed for #MMM, marked *(proposed)* in Appendix C for that issue's design review:
+  concurrency. Takeover is an atomic compare-and-set (`UPDATE … WHERE id = $1 AND status = 'draft'
+  AND facilitator_id = $expectedPreviousOwner`), with the taker's live-role and non-membership
+  checks in the same transaction and `409` on zero rows. This covers two takers and a takeover
+  racing the owner's room-open (Security implementation review M2). The update-in-place ACs are
+  marked proposed too.
+- Left open for #MMM (listed as open questions in Appendix C): notifying the previous owner
+  (Security recommends an in-app notice), the entry point, whether the 24-hour draft window resets
+  on takeover (`created_at` is never rewritten), takeover of expired drafts, the operator step
+  after takeover ships, and auditing refused attempts (Security recommends auditing them).
 
 ## Risks / Trade-offs
 
@@ -269,3 +283,30 @@ Ferreira). Both approved with conditions. The user answered the two points that 
 | Sec consistency: gaps 1–2 as accepted risk | Accepted | D1 §8; proposal What Changes; task 1.6. |
 | Sec consistency: Facilitator Q3 (live-session rule) confirmed | Recorded | D5 cites Claim A; proposal Review disposition. |
 | Scope freeze vs. a 12th AC | **User decision overrides** | The Executive scope freeze capped #NNN at 11 ACs. Row 18 is the user's later decision, so AC 12 is added. Every other fix above is folded into existing ACs or Scope text. |
+
+## Implementation review disposition
+
+Reviews: `implementation-review-architect.md` (Ingrid Sollenberger) and
+`implementation-review-security.md` (Tomás Ferreira). Both approved with must-fix items. Fixes
+were applied by Marcus Oyelaran (Full Stack Engineer). Nothing below reopens a decision-log row.
+
+| Finding | Disposition | Where |
+|---|---|---|
+| Sec M1: public repo; Appendix B told people to record names, the IdP admin's list and query output on the issue | Accepted | Appendix B header ("Public repository" rule), operator step, IdP attestation, draft check; Appendix C header; 01c §9 "Records on public issues". Issues record only handle, date, environment label, hit count, action per session id; the rest goes in an internal ticket referenced from the issue and the audit row's `ticket`. |
+| Sec M2: takeover not atomic | Accepted, as proposed behaviour for #MMM's own review | Appendix C Behaviour (compare-and-set, in-transaction checks, `409` on zero rows); AC 2 clause, AC 6 aligned, new AC 7 (race with room-open); D8. |
+| Arch M1: 01c misglossed #235 Decision 9 | Accepted, with the optional citation | 01c §1 Traceability gloss; §5 keeps Decision 9 only on "configures none"; §8 cites Decision 9 as gap 1's control. |
+| Arch M2: A.1 "After" read as VP co-decision | Accepted | A.1 "After": "Decided 2026-10-04 by the product owner (human VP of Engineering acknowledgment pending …)"; tasks.md 5.2 comment wording. |
+| Arch S1: `oidcIssuer`; `actor_user_id` | Accepted | Appendix B Scope and AC 4; proposal Constraints; D7. |
+| Arch S2: room-open copy for applied `application_admin` | Accepted | Appendix B Room-open and AC 8. |
+| Arch S3: archived path for Appendix A.3/A.1 | Accepted | Appendix B header, Scope, AC 9; 01c §9 and §11. |
+| Arch S4: decided vs proposed takeover ACs; 403 message | Accepted | Appendix C ACs 1, 5, 6, 7 marked *(proposed)*; D8 aligned; Behaviour rewords the creator-only 403. |
+| Arch S5 / row 21: persona name on checkboxes | Accepted | Appendix B Scope and PR review: "a human facilitator (not the implementer)"; 01c §5. |
+| Arch S6: Path 3(b) reuse the snapshot | Accepted | Appendix B "Draft read access". |
+| Arch S7: `isLiveSessionPath` vs `/sessions/new` | Accepted | Appendix B notice terms and AC 7; D7. |
+| Arch S8: #235 spec item 2 | Accepted | Appendix A.3 amendment list. |
+| Arch S9: line-number nit | Accepted | D5 cites `:218-221`. Decision-log row 18 left as recorded. |
+| Sec N1: "raw role-claim values" in 01c §5 | Accepted | 01c §5; tasks.md 1.4 check updated to match. |
+| Sec N2: operator `actor_global_role` from DB; `ticket` constrained | Accepted | Appendix B operator step. |
+| Sec N3: notify previous owner; audit refused attempts | Accepted as recommendations | Appendix C open questions 1 and 6 (still open for #MMM). |
+| Sec N4: 409 enrichment; never rewrite `created_at` | Accepted | Appendix C open questions 2 and 4. |
+| Sec N5: CSRF on dismiss endpoint | Accepted | Appendix B Notice state. |

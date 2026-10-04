@@ -51,7 +51,8 @@
     is display text, not behaviour" (row 19).
 
   Leave the exact copy to #NNN.
-  **Check:** `grep -n 'raw claim' "$RECORD"`, `grep -n 'S4' "$RECORD"`,
+  **Check:** `grep -n 'raw role-claim' "$RECORD"` (was `'raw claim'`; changed after Security
+  implementation review N1 reworded §5), `grep -n 'S4' "$RECORD"`,
   `grep -n 'APPLICATION_ADMIN_CONTACT_EMAIL' "$RECORD"` and `grep -n 'display text, not behaviour' "$RECORD"` hit.
 - [x] 1.5 Write the Sessions section (rows 11, 14–19; design D5), stated as decisions:
   - drafts by a user now resolved to `engineering_manager` stay blocked at room-open; the notice
@@ -161,7 +162,8 @@
 - [ ] 5.2 **(orchestrator)** #238 AC 1. #235's branch can't be pushed from this session, so post a
   comment on #235 with the Appendix A.1 and A.2 paste-ready text (real numbers in), noting the
   applier adjusts the A.1 link's `../` depth if #235 is archived by then. Post a comment on #238
-  pointing to `RECORD` and the #235 comment. Add a decision-log row: "AC 1 pending: #238 stays open
+  pointing to `RECORD` and the #235 comment. Both comments say "Decided by the product owner
+  (human VP of Engineering acknowledgment pending)", never anything that reads as VP sign-off. Add a decision-log row: "AC 1 pending: #238 stays open
   until A.1 is applied to #235."
   **Check:** both comments are readable through the connector; `grep -n 'stays open' "$P/decision-log.md"` hits.
 
