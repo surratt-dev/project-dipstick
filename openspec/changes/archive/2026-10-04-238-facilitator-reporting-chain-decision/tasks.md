@@ -180,7 +180,7 @@
   `git mv "$P" openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision`.
   **Check:** `test -d openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision && test ! -d "$P"`.
   `grep -n 'validate not run' openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision/decision-log.md` hits.
-- [ ] 4.4 **(orchestrator)** #238 PR description, edited once: "AC 1: pending amendment on #235
+- [x] 4.4 **(orchestrator)** #238 PR description, edited once: "AC 1: pending amendment on #235
   (Appendix A.1), comment <link>; #238 stays open until applied"; "VP acknowledgment pending
   (persona review approved with conditions; human VP sign-off owned by the product owner)"; #235
   compared at `54c1e9bf`; "openspec validate not run; archived by manual `git mv`".
