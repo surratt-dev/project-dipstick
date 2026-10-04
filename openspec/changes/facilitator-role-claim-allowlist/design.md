@@ -60,14 +60,15 @@ const PERMITTED_GLOBAL_ROLES: ReadonlySet<string> = new Set(ROLE_PRECEDENCE);
 
 - Allowlist membership is **exact string equality**. No trimming, case folding or comma splitting. `"Facilitator"`, `" facilitator"` and `"facilitator,engineer"` are each one non-allowlisted value. Normalising input would widen what counts as a privileged claim, and an IdP administrator can always send the exact value.
 - A non-string array element counts as ignored. It is never coerced.
-- Duplicates (`["facilitator","facilitator"]`) are harmless. The result is `facilitator` with nothing ignored.
+- Duplicates (`["facilitator","facilitator"]`) are harmless. The result is `facilitator` with nothing ignored. Counts are per element and duplicates are not collapsed, so `["facilitator","facilitator","superuser"]` warns with `ignoredCount: 1, allowlistedCount: 2`.
+- Only a top-level `undefined`/`null` is an absent claim. A `null` element inside an array is a non-string element: `[null]` maps to `engineer` and warns with `claimShape: "array", ignoredCount: 1, allowlistedCount: 0`.
 - The result is the first entry of `ROLE_PRECEDENCE` that appears among the allowlisted elements, or `engineer` when there is none.
 
 **Warning shape (never raw values).** One `warn` per sign-in at most, message `"OIDC role claim contained values not on the allowlist; ignored"`, fields `{ claimName, claimShape: "string" | "array" | "other", ignoredCount, allowlistedCount }`. `claimName` is configuration, not user input. The current test already asserts that `superuser` is absent from the message and the fields, and the new tests extend that check to every element of an array (tasks 1.4).
 
 ### D3. Outranked `engineering_manager` is logged (exploration open item 1: yes, narrowed)
 
-When `engineering_manager` is among the allowlisted elements but loses to a higher role, emit one `warn`: message `"OIDC role claim carried engineering_manager but a higher-precedence role was applied"`, fields `{ claimName, appliedRole, outrankedRoles }`. `outrankedRoles` is the sorted list of allowlisted values that lost. These are enum strings produced by the allowlist filter, not raw input, so they are safe to log.
+When `engineering_manager` is among the allowlisted elements but loses to a higher role, emit one `warn`: message `"OIDC role claim carried engineering_manager but a higher-precedence role was applied"`, fields `{ claimName, appliedRole, outrankedRoles }`. `outrankedRoles` lists every distinct allowlisted value other than the applied role (not only `engineering_manager`), once each, in `ROLE_PRECEDENCE` order (highest first). For `["application_admin","facilitator","engineering_manager"]` it is `["facilitator","engineering_manager"]`. These are enum strings produced by the allowlist filter, not raw input, so they are safe to log.
 
 - Why only EM: it is the one outranking that weakens a ritual constraint. That is the no-manager rule's `global_role` signal (proposal Constraints). `["senior_engineer","facilitator"]` is an ordinary Entra assignment, and warning on every such sign-in would bury the one line that matters.
 - It is log-only, with no `audit_log` row and no alert (Decision 9). A user resolved this way still gets the normal `role_claim_mapped` row, and its `globalRole` is the applied role.
@@ -103,20 +104,20 @@ To make the integration test (tasks 3.x) honest without driving the whole OIDC c
 ### D7. Latency and revocation (exploration Finding 4, open item 2)
 
 What the code does, confirmed by reading `auth/middleware.ts`:
-- `global_role` changes only at `/auth/callback`. Token refresh (`refreshSessionTokens`) does not re-read claims.
+- `global_role` changes only at a completed `/auth/callback`. Token refresh (`refreshSessionTokens`) does not re-read claims and does not count as "authentication" for role purposes. This holds for revocation as well as grant: a user whose `facilitator` claim is removed keeps `global_role = 'facilitator'` (and `POST /api/v1/teams` keeps succeeding for them, since it reads the live column) until their next `/auth/callback`.
 - The absolute session lifetime is 90 minutes (`ABSOLUTE_LIFETIME_MS`), so a role change reaches a signed-in user within 90 minutes at most, or immediately if they sign out and back in.
 - If an operator revokes the user's refresh tokens at the IdP, the next refresh attempt gets `invalid_grant`. It is classified as `revoked` with no retry, and the session is destroyed with an `auth.session_invalidated` row (`reason: token_revoked`). Refresh is attempted only once the access token is within 5 minutes of expiry (`TOKEN_REFRESH_THRESHOLD_S`). Revocation therefore ends the app session at roughly (access-token remaining lifetime − 5 min). That bound depends on the IdP. With Entra's default access-token lifetime (60–90 min, randomised) it is usually **no faster than the 90-minute cap**. The docs say this plainly and do not promise a fast kill switch. Measuring it against production Entra is proposal Follow-up 3.
 
 ### D8. Deployment docs structure
 
-A new `## Role claim (OIDC_ROLE_CLAIM)` section in `docs/deployment.md`, placed after "Required environment variables". `OIDC_ROLE_CLAIM` also goes in the Optional table.
-1. What it does: the IdP is the only source of `global_role`, re-read at every sign-in, from the signed ID token only.
-2. The allowlist table: the five values, what each grants, and `facilitator` marked privileged.
-3. String or array, exact match, precedence order, how ignored values are logged.
-4. Entra example: define app roles whose **Value** is the exact role string, assign users or groups, and set `OIDC_ROLE_CLAIM=roles`. Note that Entra emits `roles` as an array, and that app roles (not group claims) are the supported route.
-5. **Manager warning** (verbatim from the proposal).
-6. When changes take effect: next sign-in, within 90 minutes, a newly granted facilitator should sign out and in, and IdP revocation behaves as in D7. Note that a session running past 90 minutes forces re-authentication, and a role changed that morning arrives mid-ceremony.
-7. Troubleshooting: "I was given facilitator but still see the join-link page". Causes: not signed in again; wrong `OIDC_ROLE_CLAIM` name; IdP not sending the claim on the ID token; value not an exact match. Includes how to check (the allowlist warning in the logs, `role_claim_mapped` rows).
+A new `## Role claim (OIDC_ROLE_CLAIM)` section in `docs/deployment.md`, placed after "Required environment variables". `OIDC_ROLE_CLAIM` also goes in the Optional table. The section holds exactly the five items in the `first-access` requirement "Deployment documentation describes the role claim", plus the manager warning, and no more (VP review: operators' needs only, not an IdP tutorial):
+1. `OIDC_ROLE_CLAIM` and the allowlist table: the five values, `facilitator` marked privileged, `senior_engineer` marked identical to `engineer`.
+2. String or array, exact match, precedence order.
+3. One Entra example: app roles whose **Value** is the exact role string, assigned to users or groups, `OIDC_ROLE_CLAIM=roles`, emitted as an array on the ID token. No Okta or Keycloak walkthrough until a customer asks.
+4. When changes take effect: next sign-in, within 90 minutes; a newly granted facilitator should sign out and in; IdP revocation behaves as in D7 and there is no in-app control.
+5. Troubleshooting: "I was given facilitator but still see the join-link page". Causes: not signed in again; wrong `OIDC_ROLE_CLAIM` name; IdP not sending the claim on the ID token; value not an exact match. How to check: the allowlist warning in the logs, `role_claim_mapped` rows.
+
+Plus the **manager warning**, verbatim from the proposal.
 
 ## Risks / Trade-offs
 

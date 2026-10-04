@@ -29,8 +29,10 @@ The provider's signing key SHALL be adequate to successfully sign and issue an I
 
 #### Scenario: Local facilitator can run a session with no SQL step
 - **WHEN** a fresh `docker compose up` has run with migrations and seed data applied
-- **AND** a developer signs in as `facilitator-001` through the persona login page, creates a new team through the session-creation entry point, and opens its session
-- **THEN** the team and its first session are created and `facilitator-001` holds no membership on that team
+- **AND** a developer signs in as `facilitator-001` through the persona login page and creates a new team through the session-creation entry point
+- **THEN** `POST /api/v1/teams` returns `201` with `status: 'lobby'`, and the `sessions` row named by the response's `sessionId` has `status = 'lobby'` and `facilitator_id` equal to `facilitator-001`'s user id
+- **AND** `team_memberships` has zero rows for (`facilitator-001`, the new team)
+- **AND** `facilitator-001`'s `users.global_role = 'facilitator'` was written only by `/auth/callback`; no SQL statement was run by hand at any step
 - **AND** neither `docs/local-development.md` nor any hands-on test script under `docs/test-scripts/` instructs the developer to run `psql` or `UPDATE users` to obtain the facilitator role
 
 #### Scenario: Facilitator role survives signing out and back in

@@ -82,7 +82,7 @@ During the OIDC authentication flow, the application SHALL read a designated rol
 - **AND** the IdP administrator removes the role claim from the user's account
 - **AND** the user signs in again
 - **THEN** `users.global_role` is updated to `'engineer'` at sign-in
-- **AND** an `auth.role_claim_mapped` audit row records `previousRole = 'engineering_manager'` and `globalRole = 'engineer'`
+- **AND** the demotion is audited per `auth-error-handling` scenario "Demotion from engineering manager or application admin is recorded"
 - **AND** the user's TEAM-006-established `team_memberships` rows are not automatically removed (those require an explicit TEAM-006 removal operation)
 
 ## ADDED Requirements
@@ -121,7 +121,9 @@ Candidates not on the allowlist SHALL be ignored. If at least one candidate is i
 
 Among the allowlisted candidates the application SHALL select the highest by this precedence, and no other: **`application_admin` > `facilitator` > `engineering_manager` > `senior_engineer` > `engineer`**. If no candidate is allowlisted, the user receives `engineer`.
 
-When `engineering_manager` is among the allowlisted candidates and a higher-precedence role is selected, the application SHALL emit one structured warning naming the applied role and the outranked allowlisted roles. This warning is log-only; it writes no `audit_log` row and raises no alert. Because these names are allowlisted enum values, not raw input, logging them does not violate the raw-value rule above.
+Candidates are counted per element: duplicates are not collapsed, so `["facilitator","facilitator"]` has two allowlisted candidates and nothing ignored (no warning). Only an absent claim (key missing, or a top-level `undefined`/`null`) is "absent"; a `null` **element** inside an array is a non-string candidate and is ignored with a warning, so `[null]` maps to `engineer` with `ignoredCount: 1`, `allowlistedCount: 0`.
+
+When `engineering_manager` is among the allowlisted candidates and a higher-precedence role is selected, the application SHALL emit one structured warning naming the applied role and the outranked allowlisted roles. `outrankedRoles` SHALL list every distinct allowlisted candidate other than the applied role — not only `engineering_manager` — once each, in precedence order (highest first). This warning is log-only; it writes no `audit_log` row and raises no alert. Because these names are allowlisted enum values, not raw input, logging them does not violate the raw-value rule above.
 
 **Known consequence (accepted).** A user sent both `engineering_manager` and `facilitator` resolves to `facilitator`. For that user, the no-manager rule is enforced only through `team_memberships.role = 'engineering_manager'` rows, not through `global_role`. The deployment documentation SHALL warn operators not to assign `facilitator` to anyone who manages people.
 
@@ -152,15 +154,35 @@ When `engineering_manager` is among the allowlisted candidates and a higher-prec
 - **WHEN** the role claim is `[42, {"role": "facilitator"}, "senior_engineer"]`
 - **THEN** `users.global_role` is `'senior_engineer'` and the warning carries `ignoredCount: 2`
 
+#### Scenario: Duplicate allowlisted elements are counted, not collapsed
+- **WHEN** the role claim is `["facilitator", "facilitator"]`
+- **THEN** `users.global_role` is `'facilitator'` and no warning is logged
+- **AND WHEN** the role claim is `["facilitator", "facilitator", "superuser"]`
+- **THEN** `users.global_role` is `'facilitator'` and one warning carries `ignoredCount: 1` and `allowlistedCount: 2`
+
+#### Scenario: A null array element is ignored, not treated as an absent claim
+- **WHEN** the role claim is `[null]`
+- **THEN** `users.global_role` is `'engineer'`
+- **AND** one warning carries `claimShape: 'array'`, `ignoredCount: 1`, and `allowlistedCount: 0`
+
+#### Scenario: Every outranked role is listed in precedence order
+- **WHEN** the role claim is `["engineering_manager", "facilitator", "application_admin", "facilitator"]`
+- **THEN** `users.global_role` is `'application_admin'`
+- **AND** exactly one outranked warning names `appliedRole: 'application_admin'` and `outrankedRoles: ['facilitator', 'engineering_manager']`
+
+#### Scenario: Senior engineer plus facilitator persists across re-sign-in
+- **WHEN** a user signs in twice, each time with the role claim `["senior_engineer", "facilitator"]`
+- **THEN** after each sign-in the database row has `users.global_role = 'facilitator'` (verified by the real-PostgreSQL integration test through `resolveOrCreateAccount`)
+
 ---
 
 ### Requirement: Facilitator designation comes only from the IdP and persists across sign-in
 
-`users.global_role = 'facilitator'` SHALL be set only by the sign-in role-claim mapping. No application endpoint, UI, seed migration, or script SHALL write `facilitator` (or any other value) to `users.global_role`. An in-app designation mechanism is permitted only as a fallback for a supported IdP that cannot send a custom role claim, and requires its own change.
+`users.global_role = 'facilitator'` SHALL be set only by the sign-in role-claim mapping. No application endpoint, UI, seed migration, or script SHALL write `facilitator` (or any other value) to `users.global_role`. **Test-fixture exception:** automated tests MAY insert or update a `users` row directly to establish a "previous role" precondition (for example, the integration tests that verify demotion); such writes are confined to test setup, are never shipped, and are never documented as a way for a person to obtain a role. An in-app designation mechanism is permitted only as a fallback for a supported IdP that cannot send a custom role claim, and requires its own change.
 
-A user whose ID token carries `facilitator` SHALL hold `global_role = 'facilitator'` after every such sign-in, and `GET /auth/session` SHALL report `canFacilitateSessions: true` for them. A user whose ID token no longer carries `facilitator` SHALL be demoted at their next authentication, and the demotion SHALL be audited (see `auth-error-handling`).
+A user whose ID token carries `facilitator` SHALL hold `global_role = 'facilitator'` after every such sign-in, and `GET /auth/session` SHALL report `canFacilitateSessions: true` for them. Persistence across sign-in SHALL be verified by an integration test that runs `resolveOrCreateAccount` and the audit-row write against a real PostgreSQL database (not only by mocked unit tests). A user whose ID token no longer carries `facilitator` SHALL be demoted at their next completed `/auth/callback`, and the demotion SHALL be audited as specified in `auth-error-handling`, "First Access and role-claim-mapping events are durably recorded" (the single home for the demotion audit assertions).
 
-**Accepted limitation — latency.** A role change takes effect at the user's next authentication. A session established before the change keeps the prior role until the user signs in again, bounded by the 90-minute absolute session lifetime (`oidc-auth`). Token refresh does not re-read the role claim. Revoking the user's refresh tokens at the IdP ends the application session at its next refresh attempt (classified as `revoked`); the application provides no in-app control to end another user's session sooner.
+**Accepted limitation — latency.** A role change takes effect at the user's next completed `/auth/callback`. Token refresh is not authentication for this purpose: it does not re-read the role claim. A session established before the change keeps the prior role until the user completes `/auth/callback` again, bounded by the 90-minute absolute session lifetime (`oidc-auth`). This applies to revocation as well as grant. Revoking the user's refresh tokens at the IdP ends the application session at its next refresh attempt (classified as `revoked`); the application provides no in-app control to end another user's session sooner.
 
 #### Scenario: Facilitator persists on re-sign-in
 - **WHEN** a returning user whose `users.global_role` is `'facilitator'` signs in again with an ID token carrying `facilitator`
@@ -176,17 +198,23 @@ A user whose ID token carries `facilitator` SHALL hold `global_role = 'facilitat
 - **WHEN** a returning user whose `users.global_role` is `'facilitator'` signs in with no role claim
 - **THEN** `users.global_role` becomes `'engineer'`
 - **AND** `GET /auth/session` returns `canFacilitateSessions: false`
-- **AND** exactly one `auth.role_claim_mapped` audit row records `previousRole = 'facilitator'` and `globalRole = 'engineer'`
+- **AND** the demotion is audited per `auth-error-handling` scenario "Demotion from facilitator is recorded"
 
 #### Scenario: Role change does not reach an existing session before re-authentication
 - **WHEN** an IdP administrator grants `facilitator` to a user who is already signed in
-- **THEN** that user's `users.global_role` is unchanged until they next authenticate, which happens no later than the end of the 90-minute absolute session lifetime
+- **THEN** that user's `users.global_role` is unchanged until their next completed `/auth/callback`, which happens no later than the end of the 90-minute absolute session lifetime
+
+#### Scenario: Facilitator revocation does not reach an existing session before re-authentication
+- **WHEN** an IdP administrator removes `facilitator` from a user who is already signed in
+- **THEN** that user's `users.global_role` stays `'facilitator'`, and `POST /api/v1/teams` keeps succeeding for them, until their next completed `/auth/callback`, which happens no later than the end of the 90-minute absolute session lifetime
+- **AND WHEN** the administrator also revokes that user's refresh tokens at the IdP
+- **THEN** the application session ends at its next refresh attempt, classified as `revoked`
 
 ---
 
 ### Requirement: `senior_engineer` is non-privileged
 
-`senior_engineer` is an allowlisted, non-privileged global role. Every authorization check in the application SHALL treat `global_role = 'senior_engineer'` identically to `global_role = 'engineer'`.
+`senior_engineer` is an allowlisted, non-privileged global role. Every authorization check in the application SHALL treat `global_role = 'senior_engineer'` identically to `global_role = 'engineer'`. For this change, that claim is verified by exactly the endpoints in the scenarios below (`GET /auth/session`, `POST /api/v1/teams/:teamId/sessions/draft`, `POST /api/v1/teams/:teamId/topics`, `POST /api/v1/teams`); this list is exhaustive for this change. Like any other role, `senior_engineer` is removed at the next completed `/auth/callback` once the IdP stops sending it, and that demotion is audited per `auth-error-handling`.
 
 #### Scenario: senior_engineer persists on re-sign-in
 - **WHEN** a returning user whose `users.global_role` is `'senior_engineer'` signs in again with an ID token carrying `senior_engineer`
@@ -203,3 +231,32 @@ A user whose ID token carries `facilitator` SHALL hold `global_role = 'facilitat
 #### Scenario: senior_engineer cannot administer standing topics
 - **WHEN** a user with `global_role = 'senior_engineer'` and no membership on Team A calls `POST /api/v1/teams/:teamA/topics`
 - **THEN** the response is `403`, identical to the response for `global_role = 'engineer'`
+
+#### Scenario: senior_engineer cannot create a team
+- **WHEN** a user with `global_role = 'senior_engineer'` calls `POST /api/v1/teams`
+- **THEN** the response is `403` with the same body (`error.category = 'forbidden'`, same message; `correlationId` excepted) as for `global_role = 'engineer'`
+- **AND** an `audit_log` row with `operation = 'team.creation_denied_role'` and `actor_global_role = 'senior_engineer'` is written
+- **AND** no team, topic, or session row is created
+
+#### Scenario: senior_engineer demoted when the claim is removed
+- **WHEN** a returning user whose `users.global_role` is `'senior_engineer'` signs in with no role claim
+- **THEN** `users.global_role` becomes `'engineer'`
+- **AND** the demotion is audited per `auth-error-handling` scenario "Demotion from senior engineer is recorded"
+
+---
+
+### Requirement: Deployment documentation describes the role claim
+
+`docs/deployment.md` SHALL contain a role-claim section that a reviewer can check item by item, and SHALL NOT grow into a per-IdP tutorial. It SHALL contain exactly these items, plus the manager warning:
+
+1. `OIDC_ROLE_CLAIM` (default `role`) and the five-value allowlist, with `facilitator` marked privileged and `senior_engineer` marked as identical to `engineer`.
+2. String-versus-array handling (exact match, no normalisation) and the precedence order `application_admin` > `facilitator` > `engineering_manager` > `senior_engineer` > `engineer`.
+3. One Entra app-roles example. No other IdP walkthrough is required in this change.
+4. Latency and revocation: a change applies at the next sign-in, within the 90-minute session lifetime; IdP refresh-token revocation is no faster than the IdP's access-token lifetime; there is no in-app control.
+5. A troubleshooting entry titled "I was given facilitator but still see the join-link page".
+
+The manager warning in proposal.md ("Do not assign `facilitator` to anyone who manages people. …") SHALL appear word for word.
+
+#### Scenario: Deployment docs pass the role-claim checklist
+- **WHEN** a reviewer reads the role-claim section of `docs/deployment.md`
+- **THEN** each of items 1–5 above is present, exactly one IdP example (Entra) is given, and the manager warning matches proposal.md character for character

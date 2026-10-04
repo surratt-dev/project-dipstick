@@ -3,11 +3,11 @@
 - **Test first.** A task labelled **(red)** writes a test and runs it to see it fail for the stated reason before the matching **(green)** task changes production code. A task labelled **(pin)** adds a regression test that should pass on first run; if it fails, stop and investigate before going on.
 - Unit tests for the resolver live in `packages/backend/src/auth/__tests__/account-resolver.test.ts` and keep its existing `db.js`/`config.js` mocks.
 - Fixture `global_role` values come only from the `user_role` enum (`engineer`, `senior_engineer`, `facilitator`, `engineering_manager`, `application_admin`). `participant` is a membership role, never a global role.
-- No test, fixture, doc or script may write `users.global_role` directly to obtain a role, except as the "previous role" setup row in the integration tests in section 3.
+- No test, fixture, doc or script may write `users.global_role` directly to obtain a role, except as the "previous role" setup row in the integration tests in section 3. This is the test-fixture exception stated in the `first-access` requirement "Facilitator designation comes only from the IdP and persists across sign-in"; it does not extend to docs, seeds or scripts a person runs.
 
 ## 0. Pre-check
 
-- [ ] 0.1 Run `openspec validate facilitator-role-claim-allowlist --strict` (CLI unavailable in the proposal environment; see 7.4). Fix any delta-format error before writing code.
+- [ ] 0.1 Run `openspec validate facilitator-role-claim-allowlist --strict` (CLI unavailable in the proposal environment; see 7.4). Fix any delta-format error before writing code. If the CLI still cannot run, record 0.1 as **UNMET** and carry it to 7.4; do not substitute a hand check.
 
 ## 1. Allowlist, claim shape and precedence (`packages/backend/src/auth/account-resolver.ts`, design D1–D4)
 
@@ -24,11 +24,13 @@
   - `[]` and `["superuser","root"]` → `engineer`, one warning
   - `[42, {role:"facilitator"}, "senior_engineer"]` → `senior_engineer`, `ignoredCount: 2`
   - `["facilitator","facilitator"]` → `facilitator`, no warning
+  - `["facilitator","facilitator","superuser"]` → `facilitator`, one warning with `ignoredCount: 1, allowlistedCount: 2` (per-element counts, duplicates not collapsed)
+  - `[null]` → `engineer`, one warning with `claimShape: "array", ignoredCount: 1, allowlistedCount: 0` (a null element is ignored, not an absent claim)
   - `42`, `true`, `{ role: "facilitator" }` → `engineer`, `claimShape: "other"`
 
   Add one `resolveOrCreateAccount` case with an array claim asserting the upsert parameter. Fails: arrays are `String()`-coerced today.
 - [ ] 1.7 **(green)** Implement D2: normalise to candidates (string → `[s]`, array → elements, other → one non-allowlisted candidate), filter by exact membership with no coercion, and pick the first `ROLE_PRECEDENCE` entry present, else `engineer`. Remove `String(rawClaimValue)`. 1.3–1.6 pass.
-- [ ] 1.8 **(red)** Outranked-EM tests (design D3): `["facilitator","engineering_manager"]` emits exactly one additional warning with fields `{ claimName, appliedRole: "facilitator", outrankedRoles: ["engineering_manager"] }`. `["application_admin","engineering_manager","senior_engineer"]` → `outrankedRoles: ["engineering_manager","senior_engineer"]` (sorted). `["senior_engineer","facilitator"]` and `["engineering_manager"]` emit no outranked warning.
+- [ ] 1.8 **(red)** Outranked-EM tests (design D3): `["facilitator","engineering_manager"]` emits exactly one additional warning with fields `{ claimName, appliedRole: "facilitator", outrankedRoles: ["engineering_manager"] }`. `["application_admin","engineering_manager","senior_engineer"]` → `outrankedRoles: ["engineering_manager","senior_engineer"]`. `["engineering_manager","facilitator","application_admin","facilitator"]` → exactly one outranked warning with `appliedRole: "application_admin"`, `outrankedRoles: ["facilitator","engineering_manager"]` (every distinct loser, precedence order, deduplicated). `["senior_engineer","facilitator"]` and `["engineering_manager"]` emit no outranked warning.
 - [ ] 1.9 **(green)** Implement the D3 warning. 1.8 passes.
 - [ ] 1.10 Rewrite the module header comment and the `PERMITTED_GLOBAL_ROLES` comment: five-role closed allowlist (spec "The IdP role-claim allowlist is closed"), string or array, precedence, exact match, raw values never logged, and the application never writes `global_role` itself. Remove "silently treated as absent" wording that no longer matches the warning behaviour.
 
@@ -37,7 +39,7 @@
 - [ ] 2.1 **(red)** New `packages/backend/src/auth/__tests__/account-resolution-audit.test.ts`: truth-table test for `shouldRecordRoleClaimMapped`:
   - new user → `false`
   - `engineer`→`engineer` → `false`
-  - `facilitator`→`engineer`, `engineering_manager`→`engineer`, `application_admin`→`engineer` → `true`
+  - `facilitator`→`engineer`, `senior_engineer`→`engineer`, `engineering_manager`→`engineer`, `application_admin`→`engineer` → `true`
   - `engineer`→`facilitator`, `engineering_manager`→`facilitator` → `true`
   - `senior_engineer`→`senior_engineer`, `facilitator`→`facilitator` → `true`
 
@@ -45,10 +47,11 @@
 - [ ] 2.2 **(green)** Create `packages/backend/src/auth/account-resolution-audit.ts` exporting `shouldRecordRoleClaimMapped` and `writeAccountResolutionAuditRow(client, user, { ip, correlationId })`. Move the two existing `INSERT INTO audit_log` statements out of `routes/auth.ts`'s `withAuditTransaction` callback **unchanged**, except that the `role_claim_mapped` branch is gated by the predicate. `routes/auth.ts` calls the writer. 2.1 passes.
 - [ ] 2.3 **(red)** `packages/backend/src/routes/__tests__/auth.test.ts` (near the transactional-group block, ~line 886):
   - (a) returning user `previousGlobalRole: "facilitator"`, `globalRole: "engineer"` → exactly one `'auth.role_claim_mapped'` INSERT whose metadata has `previousRole: "facilitator"`, `globalRole: "engineer"`, and actor role `engineer`; exactly one structured `auth.role_claim_mapped` event with `previousRole: "facilitator"`
-  - (b) same for `engineering_manager` and `application_admin` (parameterised)
+  - (b) same for `senior_engineer`, `engineering_manager` and `application_admin` (parameterised)
   - (c) `engineer`→`engineer` → no `role_claim_mapped` INSERT and no structured event
   - (d) the existing non-default test (~line 816) also asserts `previousRole` on the structured event
   - (e) the structured event's key set is exactly `{ userId, oidcSubject, globalRole, previousRole, sourceIp, correlationId }`
+  - (f) returning user `previousGlobalRole: "engineer"` whose claim is `"superuser"` (resolved `globalRole: "engineer"`) → no `role_claim_mapped` INSERT, no structured `auth.role_claim_mapped` event; the allowlist warning is the only output ("warning only", #235 AC 4)
 
   Fails on (a), (b), (d) and (e).
 - [ ] 2.4 **(green)** In `routes/auth.ts`, gate the post-commit `emitAuditEvent("auth.role_claim_mapped", …)` on `shouldRecordRoleClaimMapped(user)` and add `previousRole: user.previousGlobalRole`. Update the comment above it and the `audit-logger.ts` comment on `auth.role_claim_mapped` (~line 118) to describe the new firing condition. 2.3 passes; the rest of `auth.test.ts` still passes.
@@ -59,9 +62,9 @@
 New file `packages/backend/src/auth/__tests__/role-claim-allowlist-integration.test.ts`, following `topics-integration.test.ts`'s pattern (`probeInfra`/`requireInfraOrThrow`, env fallbacks, dynamic imports, no `db.js` mocks). Each test uses a unique `oidc_subject` and cleans up its `users` and `audit_log` rows. Each test runs `resolveOrCreateAccount` and `writeAccountResolutionAuditRow` inside `withAuditTransaction`, exactly as the callback does.
 
 - [ ] 3.1 **(pin)** Persistence: first sign-in with `role: "facilitator"` → row has `global_role = 'facilitator'` and one `auth.first_access_created` row with `metadata.globalRole = 'facilitator'`. Second sign-in with the same claim → still `facilitator`, one `auth.role_claim_mapped` row with `previousRole = 'facilitator'`. Repeat for `senior_engineer`.
-- [ ] 3.2 **(pin)** Demotion audit: sign in with `facilitator`, then with no role claim → `global_role = 'engineer'`, exactly one new `auth.role_claim_mapped` row with `actor_global_role = 'engineer'`, `metadata.previousRole = 'facilitator'`, `metadata.globalRole = 'engineer'`, `team_id IS NULL`. Repeat with the second sign-in's claim `"superuser"` and assert `superuser` does not appear in any `audit_log.metadata::text` for that user.
-- [ ] 3.3 **(pin)** No-op default: two sign-ins with no claim → zero `auth.role_claim_mapped` rows for that user.
-- [ ] 3.4 **(pin)** Array precedence persists: `roles`-style array `["senior_engineer","facilitator"]` under the configured claim name → `global_role = 'facilitator'` in the database.
+- [ ] 3.2 **(pin)** Demotion audit: sign in with `facilitator`, then with no role claim → `global_role = 'engineer'`, exactly one new `auth.role_claim_mapped` row with `actor_global_role = 'engineer'`, `metadata.previousRole = 'facilitator'`, `metadata.globalRole = 'engineer'`, `team_id IS NULL`. Repeat with the second sign-in's claim `"superuser"` and assert `superuser` does not appear in any `audit_log.metadata::text` for that user. Repeat with `senior_engineer` then no claim → `metadata.previousRole = 'senior_engineer'` (#235 AC 3).
+- [ ] 3.3 **(pin)** No-op default: two sign-ins with no claim → zero `auth.role_claim_mapped` rows for that user. A third sign-in with claim `"superuser"` → still `engineer`, still zero `auth.role_claim_mapped` rows (warning only).
+- [ ] 3.4 **(pin)** Array precedence persists: `roles`-style array `["senior_engineer","facilitator"]` under the configured claim name → `global_role = 'facilitator'` in the database, on the first sign-in and again on a second sign-in with the same claim.
 - [ ] 3.5 Run 3.1–3.4 once against the pre-change code (stash sections 1–2 or check out `main` in a scratch worktree) and record in the PR that 3.1, 3.2 and 3.4 fail there. This is the red half for the integration layer.
 
 ## 4. `senior_engineer` is non-privileged (spec requirement "`senior_engineer` is non-privileged")
@@ -69,7 +72,7 @@ New file `packages/backend/src/auth/__tests__/role-claim-allowlist-integration.t
 These pin behaviour that should already hold. They exist so a future privilege grant to `senior_engineer` fails a named test.
 
 - [ ] 4.1 **(pin)** `routes/__tests__/auth.test.ts` (next to 4.3/4.4 at ~line 2377): `GET /auth/session` for `global_role = 'senior_engineer'` returns `canFacilitateSessions: false`.
-- [ ] 4.2 **(pin)** `routes/__tests__/facilitator-sessions.test.ts`: `POST /api/v1/teams/:teamId/sessions/draft` and `POST /api/v1/teams` by `senior_engineer` return the same `403` status and body as for `engineer`.
+- [ ] 4.2 **(pin)** `routes/__tests__/facilitator-sessions.test.ts`: `POST /api/v1/teams/:teamId/sessions/draft` and `POST /api/v1/teams` by `senior_engineer` return the same `403` status and body as for `engineer`. For `POST /api/v1/teams`, also assert a `team.creation_denied_role` audit INSERT with `actor_global_role = 'senior_engineer'` and no team/session INSERT.
 - [ ] 4.3 **(pin)** `routes/__tests__/topics.test.ts`: `POST /api/v1/teams/:teamId/topics` by `senior_engineer` with no membership returns the same `403` as for `engineer`.
 - [ ] 4.4 **(pin)** `routes/__tests__/auth.test.ts`: `GET /auth/session` for `global_role = 'facilitator'` returns `canFacilitateSessions: true` (extend the existing 4.3 test if it already covers this; do not duplicate).
 
@@ -80,19 +83,17 @@ These pin behaviour that should already hold. They exist so a future privilege g
 - [ ] 5.3 **(red)** `routes/__tests__/auth.test.ts` (~line 282): `facilitator-001` option has `seeded: true`. Fails.
 - [ ] 5.4 **(green)** `routes/auth.ts` `DEV_LOGIN_OPTIONS`: `facilitator-001` → `seeded: true`. Keep the comment explaining `seeded` as the single source of truth. 5.3 passes.
 - [ ] 5.5 `packages/frontend/src/pages/__tests__/DevLoginPage.test.tsx`: update the fixture (line 8) to `seeded: true`. Keep the unseeded-caveat test by giving it its own synthetic option with `seeded: false`, so the still-specified caveat branch stays covered.
-- [ ] 5.6 Manual check (record in the PR): fresh `docker compose down -v && docker compose up -d --wait`, migrate, `npm run dev`. Sign in as `facilitator-001` and confirm you land on the session-creation entry point, not `/no-team`. Create a team, confirm the session opens, and confirm `SELECT count(*) FROM team_memberships tm JOIN users u ON u.id = tm.user_id WHERE u.oidc_subject = 'facilitator-001'` is `0`. Sign out and in again and confirm `canFacilitateSessions` is still `true`. Use no `psql` write at any step.
+- [ ] 5.6 Manual check (record in the PR): fresh `docker compose down -v && docker compose up -d --wait`, migrate, `npm run dev`. Sign in as `facilitator-001` and confirm you land on the session-creation entry point, not `/no-team`. Create a team, confirm `POST /api/v1/teams` returns `201` with `status: "lobby"` and that the `sessions` row for the returned `sessionId` has `facilitator_id` = facilitator-001's user id, and confirm `SELECT count(*) FROM team_memberships tm JOIN users u ON u.id = tm.user_id WHERE u.oidc_subject = 'facilitator-001'` is `0`. Sign out and in again and confirm `canFacilitateSessions` is still `true`. Use no `psql` write at any step.
 
 ## 6. Documentation
 
-- [ ] 6.1 `docs/deployment.md`: add `OIDC_ROLE_CLAIM` (default `role`) to the Optional variables table, and add the `## Role claim (OIDC_ROLE_CLAIM)` section in the design D8 order:
-  - the allowlist table, with `facilitator` marked privileged and `senior_engineer` marked as identical to `engineer`
-  - string or array, exact match, and the precedence order
-  - an Entra app-roles example (`OIDC_ROLE_CLAIM=roles`, app role **Value** equal to the role string, assigned to users or groups, emitted as an array on the ID token)
-  - the manager warning, **verbatim** from proposal.md
-  - "takes effect within 90 minutes, or immediately if the person signs out and back in; a newly granted facilitator should sign out and in"
-  - IdP revocation as design D7 states it (no faster than the access-token lifetime; no in-app control)
-  - the mid-ceremony re-authentication note
-  - the troubleshooting entry "I was given facilitator but still see the join-link page", with causes: not signed in again, wrong `OIDC_ROLE_CLAIM`, IdP not sending the claim on the ID token, value not an exact match. Say how to check: the allowlist warning in logs, and `auth.role_claim_mapped` rows.
+- [ ] 6.1 `docs/deployment.md`: add `OIDC_ROLE_CLAIM` (default `role`) to the Optional variables table, and add the `## Role claim (OIDC_ROLE_CLAIM)` section (design D8). Keep it to this checklist, which mirrors the `first-access` requirement "Deployment documentation describes the role claim"; the reviewer ticks each box in the PR:
+  - [ ] `OIDC_ROLE_CLAIM` and the five-value allowlist table, `facilitator` marked privileged, `senior_engineer` marked identical to `engineer`
+  - [ ] string or array, exact match, and the precedence order
+  - [ ] one Entra app-roles example (`OIDC_ROLE_CLAIM=roles`, app role **Value** equal to the role string, assigned to users or groups, emitted as an array on the ID token); no other IdP walkthrough
+  - [ ] latency and revocation: "takes effect within 90 minutes, or immediately if the person signs out and back in; a newly granted facilitator should sign out and in"; IdP revocation as design D7 states it (no faster than the access-token lifetime; no in-app control)
+  - [ ] the troubleshooting entry "I was given facilitator but still see the join-link page", with causes (not signed in again, wrong `OIDC_ROLE_CLAIM`, IdP not sending the claim on the ID token, value not an exact match) and how to check (the allowlist warning in logs, `auth.role_claim_mapped` rows)
+  - [ ] the manager warning, **verbatim** from proposal.md
 - [ ] 6.2 `docs/local-development.md`:
   - line ~105: the Facilitator button is now labelled like the others; remove the unseeded note
   - the Test accounts table, `facilitator-001` row (~114): **`facilitator`**, real via the OIDC `role` claim, member of no team; create a team through the session-creation entry point to run a session
@@ -109,7 +110,7 @@ These pin behaviour that should already hold. They exist so a future privilege g
 - [ ] 6.4 `requirements/use cases/01b - Designate a Facilitator - Deferral.md`:
   - set Status to **Resolved by `facilitator-role-claim-allowlist` (#235)**
   - replace "kept only as a possible later convenience" with "built only if a supported IdP cannot send a custom role claim"
-  - correct the "Demotion and audit already exist" bullet: demotion audit was added by this change (Decision 4), not pre-existing
+  - **required correction, line 17** ("**Demotion and audit already exist.** … without new work."): rewrite it to say demotion at next sign-in already existed, but the demotion audit row was added by this change (Decision 4). Leaving line 17 unchanged would contradict Decision 4
   - point the Consequence paragraph at the deployment-docs role-claim section
 - [ ] 6.5 Stale-wording sweep: `grep -rn "not on the application's role-claim allowlist\|not seeded\|re-run only the .UPDATE users\|PERMITTED_GLOBAL_ROLES does not include" docs requirements packages docker --include=*.md --include=*.ts --include=*.tsx --include=*.js` returns no hits that describe the old behaviour. Archived changes are excluded.
 
@@ -118,7 +119,7 @@ These pin behaviour that should already hold. They exist so a future privilege g
 - [ ] 7.1 `npm run lint` passes at the repo root.
 - [ ] 7.2 `npm run test` passes, with the section 3 integration file running (not skipped) against the Docker Compose Postgres.
 - [ ] 7.3 `npm run build` passes, including the `satisfies readonly UserRole[]` check from 1.2.
-- [ ] 7.4 `openspec validate facilitator-role-claim-allowlist --strict` passes. If the CLI still cannot be installed (npm registry blocked), check by hand: every delta requirement has at least one `#### Scenario:`, every MODIFIED requirement header matches the main spec header exactly, and the PR says the CLI was not run.
+- [ ] 7.4 **Hard gate.** `openspec validate facilitator-role-claim-allowlist --strict` passes (#235 AC). If the CLI cannot be run, this task stays **UNMET**: do not tick it, and state in the PR that the #235 validate AC is unmet and needs a human to run the CLI and sign off before merge. A hand check (every delta requirement has a `#### Scenario:`, MODIFIED headers match the main spec exactly) may be recorded as supporting evidence, but it does **not** satisfy this task.
 - [ ] 7.5 Raw-value check by inspection (security reviewer): no `logger.*`, `emitAuditEvent` or `audit_log` INSERT in `account-resolver.ts`, `account-resolution-audit.ts` or the callback path takes the raw claim or any element of it.
-- [ ] 7.6 Spec trace: each scenario in the three delta specs maps to a task above (allowlist → 1.1/1.3; precedence → 1.6/1.8/3.4; facilitator persistence and demotion → 3.1/3.2/2.3/4.4; `senior_engineer` → 3.1/4.1–4.3; firing condition → 2.1/2.3/3.2/3.3; local dev → 5.1–5.6; latency → 6.1 docs plus the existing `oidc-auth` absolute-lifetime tests). Record any gap in the PR.
+- [ ] 7.6 Spec trace: each scenario in the three delta specs maps to a task above (allowlist → 1.1/1.3; precedence, duplicates, `[null]`, outranked list → 1.6/1.8/3.4; facilitator persistence and demotion → 3.1/3.2/2.3/4.4; `senior_engineer` persistence, demotion and denial → 3.1/3.2/2.3(b)/4.1–4.3; warning-only for a returning engineer → 2.3(f)/3.3; firing condition → 2.1/2.3/3.2/3.3; local dev → 5.1–5.6; grant and revocation latency → 6.1 docs plus the existing `oidc-auth` absolute-lifetime and `revoked` refresh tests; deployment docs checklist → 6.1). Record any gap in the PR.
 - [ ] 7.7 The PR body lists the proposal Follow-ups: #237 as a go-live gate, the reporting-chain issue (to be filed), and the revocation-latency measurement.
