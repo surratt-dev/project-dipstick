@@ -16,7 +16,7 @@
 - `Summary.md:12`: the facilitator is "a senior engineer from *another* team … not in the team's reporting chain" (the intent).
 - BRD §6.2 (Engineering Managers never participate) and §6.3 (facilitator from another team).
 - FR-2.1 [HARD] (only Facilitators create sessions) and FR-2.2 [HARD] (the facilitator holds no membership on the target team): what is enforced today.
-- #235 (`facilitator-role-claim-allowlist`): Decisions 7 (role-claim precedence), 9 (audit events suitable for operator alerts, none configured) and 12 (an existing session stays with its facilitator); design D3 (the outranked-role log line); Security review S4 (where a role conflict is recorded).
+- #235 (`facilitator-role-claim-allowlist`): Decisions 7 (role-claim precedence), 9 (a manager switched to `facilitator` gets a docs warning only, with no alerting) and 12 (an existing session stays with its facilitator); design D3 (the outranked-role log line); Security review S4 (where a role conflict is recorded).
 
 ---
 
@@ -72,10 +72,10 @@ Both halves of "never silent" are required: the user is **told**, *and* the conf
 | Audience | What they see |
 |---|---|
 | The conflicted person | One plain, non-blocking notice outside sessions on every sign-in while the conflict persists, and a conflict-specific refusal if they try to open a room. The notice never appears on a live-session route. |
-| The IdP or access administrator, and Security | A dedicated conflict audit row and a structured log event, plus a troubleshooting entry in the deployment documentation. The event is named as suitable for an operator alert; the application configures none (#235 Decision 9). |
+| The IdP or access administrator, and Security | A dedicated conflict audit row and a structured log event, plus a troubleshooting entry in the deployment documentation. The event is named as suitable for an operator alert. The application configures none (#235 Decision 9). |
 | Everyone else: the team, participants and other facilitators | Nothing, ever. |
 
-**Audit content.** The conflict record carries allowlisted role names and identifiers the application already audits, and nothing else. It never contains raw claim values: no non-allowlisted elements, no counts of them, no case variants. The conflicting pair is a fixed code constant, never built from the claim.
+**Audit content.** The conflict record carries allowlisted role names and identifiers the application already audits, and nothing else. It never contains raw role-claim values: no non-allowlisted elements, no counts of them, no case variants. The conflicting pair is a fixed code constant, never built from the claim.
 
 **Security S4 disposition.** #235's Security review S4 asked where a role conflict is recorded. The answer is a dedicated conflict audit row, written in the same transaction as the sign-in's role audit row. The outranked roles are **not** added to the existing role-mapping audit row; one purpose-built row is clearer to an incident reviewer than a general field.
 
@@ -130,13 +130,13 @@ The rule does not close these gaps. They are stated so they are not discovered l
 5. **Interpretation of "not in the team's reporting chain"** (owned by the Business Analyst): it means not holding line authority over any participant, directly or through a skip level. A peer who shares a manager with the team is not in its reporting chain, so a sibling-team senior engineer is an acceptable facilitator.
 6. **The interim window.** Between #235 merging and #NNN shipping, the pair resolves to `facilitator` per #235 Decision 7. This gap is closed by the first-team-launch gate (decision-log row 8): no team goes live in that window.
 
-**Standing control.** The deployment-docs warning ("Do not assign `facilitator` to anyone who manages people …") is the standing control for gaps 1–4. Gaps 1 and 2 are accepted risk: they have no pre-launch control, and the docs warning is their only control. The pre-launch IdP attestation in #NNN covers the both-roles pair at launch, not gaps 1 or 2, and no broader line-management attestation is required (row 13). Gap 5 is owned by the Business Analyst. Gap 6 is closed by the launch gate.
+**Standing control.** The deployment-docs warning ("Do not assign `facilitator` to anyone who manages people …") is the standing control for gaps 1–4; for gap 1 this is #235 Decision 9 (docs warning only, no alerting), which this rule leaves in force. Gaps 1 and 2 are accepted risk: they have no pre-launch control, and the docs warning is their only control. The pre-launch IdP attestation in #NNN covers the both-roles pair at launch, not gaps 1 or 2, and no broader line-management attestation is required (row 13). Gap 5 is owned by the Business Analyst. Gap 6 is closed by the launch gate.
 
 ---
 
 ## 9. AC disposition, dependency and launch gate
 
-**#238 acceptance criteria.** #238 AC 2 offers two branches. This decision meets both. **No reporting-chain model is chosen**, so the #235 deployment-docs warning is confirmed as the standing control for residual gaps 1–4. **A narrow code rule is chosen**, so implementation issue #NNN is filed. It is blocked by #235 and gates first-team launch (decision-log row 8). #238 AC 1 (the link from #235's Follow-up 2 to this record) is met when the amendment text in the #238 proposal, Appendix A.1, is applied to #235.
+**#238 acceptance criteria.** #238 AC 2 offers two branches. This decision meets both. **No reporting-chain model is chosen**, so the #235 deployment-docs warning is confirmed as the standing control for residual gaps 1–4. **A narrow code rule is chosen**, so implementation issue #NNN is filed. It is blocked by #235 and gates first-team launch (decision-log row 8). #238 AC 1 (the link from #235's Follow-up 2 to this record) is met when the amendment text in the #238 proposal, Appendix A.1 (archived at `openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision/proposal.md`), is applied to #235.
 
 **Dependency.** #NNN depends on #235's role resolution (the `facilitator` allowlist entry, array claims and precedence), and must not ship before #235 is merged and archived, including #235's ID-token signature verification: the conflict row is only evidence if the claim is verified.
 
@@ -145,6 +145,8 @@ The rule does not close these gaps. They are stated so they are not discovered l
 **Pre-launch items.** Both live in #NNN as pre-launch steps (decision-log row 10); there is no separate launch-checklist document:
 - the IdP administrator's written attestation that no user is assigned both `engineering_manager` and `facilitator`;
 - the one-time pre-launch draft check for drafts owned by now-conflicted users, with each hit taken over (#MMM) or cleared by the audited operator step.
+
+**Records on public issues.** The repository is public. What these steps (and every later use of the operator step) record on a GitHub issue is limited to: the operator's GitHub handle, the date, an environment *label* (for example `production`, never a hostname or connection string), the hit count, and the action per hit keyed by session id. People's names or emails, the IdP administrator's list of users, the attestation itself and any query output go in an internal ticket. The issue carries only that ticket's reference, which is also the `ticket` value on the operator audit row.
 
 **Interim.** Until #NNN ships, the #235 warning text stands unchanged and, together with the #235 D3 log line, is the only control for this pair. No team goes live in that window (decision-log row 8).
 
@@ -164,4 +166,4 @@ The rule does not close these gaps. They are stated so they are not discovered l
 - **`requirements/use cases/README.md`:** index rows for 01b and this record.
 - **`01 - Identity and Access - Use Cases.md`:** a cross-reference line beside the "Facilitator designation … (#235)" out-of-scope note.
 - **#235 (`facilitator-role-claim-allowlist`):** the Follow-up 2 link (#238 proposal Appendix A.1) and the Decision 7 annotation (Appendix A.2), applied by whichever of #235 and #238 merges second.
-- **Deployment-docs warning:** its new text, and the #235 spec text pinned to it, are applied by #NNN (#238 proposal Appendix A.3), not before, so the docs never describe behaviour that doesn't exist.
+- **Deployment-docs warning:** its new text, and the #235 spec text pinned to it, are applied by #NNN (#238 proposal Appendix A.3, archived at `openspec/changes/archive/2026-10-04-238-facilitator-reporting-chain-decision/proposal.md`), not before, so the docs never describe behaviour that doesn't exist.
