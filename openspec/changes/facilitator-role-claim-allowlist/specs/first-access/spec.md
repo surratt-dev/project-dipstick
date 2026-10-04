@@ -14,7 +14,7 @@ During the OIDC authentication flow, the application SHALL read a designated rol
 
 1. **Claim name configuration:** The claim name that carries the role assignment is read from the `OIDC_ROLE_CLAIM` environment variable at startup. It is not hardcoded. The default value is `role`. Operators may configure a custom claim name (e.g., `https://myorg.example.com/role`, `groups`, `roles`) to match their IdP's claim schema.
 
-2. **Signed ID token only:** The role claim is read exclusively from the signed ID token returned in the OIDC code exchange (`tokens.claims()`). Claims from the userinfo endpoint are not signed and MUST NOT be used for role assignment. The implementation reads from `IdTokenClaims` — the object produced by `tokens.claims()` — never from a separate userinfo call.
+2. **Signed ID token only:** The role claim is read exclusively from the signed ID token returned in the OIDC code exchange (`tokens.claims()`), after its JWS signature has been verified against the IdP's JWKS (`oidc-auth`, "OIDC callback and token validation"). Claims from the userinfo endpoint are not signed and MUST NOT be used for role assignment. The implementation reads from `IdTokenClaims` — the object produced by `tokens.claims()` — never from a separate userinfo call.
 
 3. **Absent claim behavior:** When the role claim is absent from the token (the claim key is not present, or the value is undefined/null), the user receives the default role: `engineer`. A missing claim is not an error — it is the normal case for users without a non-default role. The application MUST NOT reject authentication when the role claim is absent, and SHALL NOT emit a warning for an absent claim.
 
@@ -249,10 +249,10 @@ A user whose ID token carries `facilitator` SHALL hold `global_role = 'facilitat
 
 `docs/deployment.md` SHALL contain a role-claim section that a reviewer can check item by item, and SHALL NOT grow into a per-IdP tutorial. It SHALL contain exactly these items, plus the manager warning:
 
-1. `OIDC_ROLE_CLAIM` (default `role`) and the five-value allowlist, with `facilitator` marked privileged and `senior_engineer` marked as identical to `engineer`.
+1. `OIDC_ROLE_CLAIM` (default `role`) and the five-value allowlist, with `facilitator` marked privileged and `senior_engineer` marked as identical to `engineer`, and a statement that the claim must be one only IdP administrators can set (for example Entra app roles), never a user-editable attribute.
 2. String-versus-array handling (exact match, no normalisation) and the precedence order `application_admin` > `facilitator` > `engineering_manager` > `senior_engineer` > `engineer`.
 3. One Entra app-roles example. No other IdP walkthrough is required in this change.
-4. Latency and revocation: a change applies at the next sign-in, within the 90-minute session lifetime; IdP refresh-token revocation is no faster than the IdP's access-token lifetime; there is no in-app control.
+4. Latency and revocation: a change applies at the next sign-in, within the 90-minute session lifetime; IdP refresh-token revocation is no faster than the IdP's access-token lifetime; there is no in-app control; a revoked facilitator keeps running any session they have already opened until it ends.
 5. A troubleshooting entry titled "I was given facilitator but still see the join-link page".
 
 The manager warning in proposal.md ("Do not assign `facilitator` to anyone who manages people. …") SHALL appear word for word.
