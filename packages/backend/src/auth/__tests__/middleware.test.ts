@@ -30,6 +30,16 @@ vi.mock("../session-invalidation-audit.js", () => ({
 vi.mock("../../config.js", () => ({
   config: { SESSION_SECRET: "test" },
 }));
+// configurable-oidc-role-map task 4.3: spies on the two ways a role could be
+// re-resolved, so the refresh test can assert neither is reached.
+const mockResolveOrCreateAccount = vi.fn();
+const mockDbQuery = vi.fn();
+vi.mock("../account-resolver.js", () => ({
+  resolveOrCreateAccount: (...args: unknown[]) => mockResolveOrCreateAccount(...args),
+}));
+vi.mock("../../db.js", () => ({
+  db: { query: (...args: unknown[]) => mockDbQuery(...args), connect: vi.fn() },
+}));
 
 import { authMiddleware, refreshSessionTokens, REFRESH_RETRY_DELAY_MS } from "../middleware.js";
 
@@ -389,6 +399,37 @@ describe("authMiddleware", () => {
       expect(result.session).not.toBe(inputSession);
       expect(result.session.encryptedAccessToken).toBe("enc(new-access)");
     }
+  });
+
+  // configurable-oidc-role-map (#243) task 4.3 (oidc-role-mapping "Token
+  // refresh does not re-resolve the role"): roles are re-resolved only at
+  // interactive sign-in. Even when the refresh response carries a new ID
+  // token with a different role claim, refreshSessionTokens neither calls
+  // resolveOrCreateAccount nor writes users.global_role. The ~90-minute
+  // revocation bound in docs/deployment.md cites this test.
+  it("refreshSessionTokens does not re-resolve the role or write users.global_role", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    mockGetDecryptedTokens.mockReturnValue({ accessToken: "old", refreshToken: "refresh-tok", expiresAt: nowSec + 60 });
+    mockRefreshOidcToken.mockResolvedValue({
+      access_token: "new-access",
+      refresh_token: "new-refresh",
+      id_token: "new-id-token",
+      expires_in: 3600,
+      claims: () => ({ sub: "sub-1", iss: "https://idp.example.com", role: "application_admin" }),
+    });
+
+    const log = { child: vi.fn(() => ({ info: vi.fn() })) } as unknown as Parameters<typeof refreshSessionTokens>[2];
+    const result = await refreshSessionTokens(
+      { userId: "user-1", sessionCreatedAt: new Date().toISOString(), tokenExpiresAt: nowSec + 60, encryptedAccessToken: "enc(old)" },
+      "sess-1",
+      log,
+      "http",
+    );
+
+    expect(result.status).toBe("refreshed");
+    expect(mockResolveOrCreateAccount).not.toHaveBeenCalled();
+    expect(mockDbQuery.mock.calls.some((c) => /global_role/i.test(String(c[0])))).toBe(false);
+    expect(mockDbQuery).not.toHaveBeenCalled();
   });
 
   it("should touch session when token is not near expiry", async () => {

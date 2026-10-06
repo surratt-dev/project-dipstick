@@ -24,7 +24,7 @@ A `docker-compose.yml` SHALL be provided at the project root that starts Postgre
 ---
 
 ### Requirement: Simulated OIDC provider
-The Docker Compose environment SHALL include a `node-oidc-provider`-based OIDC server that supports the authorization code flow with PKCE and issues refresh tokens. It SHALL be pre-configured with at least four test user accounts covering each application role. Of these, the `manager-001` and `admin-001` accounts SHALL carry an OIDC `role` claim (`engineering_manager` and `application_admin` respectively) so that signing in as either account, via the existing role-claim-to-`global_role` mapping, produces a user with the corresponding real application role. The `facilitator-001` and `participant-001` accounts SHALL NOT carry a `role` claim; signing in as either produces a default user with no seeded application role.
+The Docker Compose environment SHALL include a `node-oidc-provider`-based OIDC server that supports the authorization code flow with PKCE and issues refresh tokens. It SHALL be pre-configured with at least four test user accounts covering each application role. Of these, the `manager-001`, `admin-001` and `facilitator-001` accounts SHALL carry an OIDC `role` claim (`engineering_manager`, `application_admin` and `facilitator` respectively) so that signing in as any of them, via the role-claim-to-`global_role` mapping under the default role map (no `OIDC_ROLE_MAP` set), produces a user with the corresponding real application role. The `participant-001` account SHALL NOT carry a `role` claim; signing in as it produces a default user with no seeded application role.
 
 The provider's signing key SHALL be adequate to successfully sign and issue an ID token on every authorization code exchange. Requested-scope claims, including the `role` claim, SHALL be delivered directly on the signed ID token rather than requiring a separate `/userinfo` call, since the backend reads claims from the ID token only and does not call `/userinfo`.
 
@@ -44,8 +44,13 @@ The provider's signing key SHALL be adequate to successfully sign and issue an I
 - **WHEN** a developer signs in as `manager-001` or `admin-001`
 - **THEN** the resulting user's `global_role` is set to `engineering_manager` or `application_admin` respectively, on every sign-in, via the existing OIDC role-claim mapping
 
-#### Scenario: Facilitator and participant accounts remain unseeded
-- **WHEN** a developer signs in as `facilitator-001` or `participant-001`
+#### Scenario: Facilitator account carries the facilitator role
+- **WHEN** a developer signs in as `facilitator-001` with no `OIDC_ROLE_MAP` set
+- **THEN** the resulting user's `global_role` is `facilitator` on every sign-in
+- **AND** that user can create a draft session
+
+#### Scenario: Participant account remains unseeded
+- **WHEN** a developer signs in as `participant-001`
 - **THEN** the resulting user has no seeded `global_role` beyond the default, identical to today's behavior
 
 #### Scenario: ID token issuance succeeds on every exchange
@@ -53,7 +58,7 @@ The provider's signing key SHALL be adequate to successfully sign and issue an I
 - **THEN** a signed ID token is returned; token issuance does not fail due to an inadequate signing key
 
 #### Scenario: Role claim is delivered on the ID token, not via userinfo
-- **WHEN** a developer signs in as `manager-001` or `admin-001`
+- **WHEN** a developer signs in as `manager-001`, `admin-001` or `facilitator-001`
 - **THEN** the `role` claim is present directly on the signed ID token, and the backend maps it to `global_role` without calling the OIDC `/userinfo` endpoint
 
 ---
@@ -75,11 +80,19 @@ A `.env.example` file SHALL exist at the project root documenting all required e
 
 #### Scenario: Required OIDC variables
 - **WHEN** the backend starts
-- **THEN** the following environment variables are required: `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI`, `NODE_ENV`. Optional variables include `TOKEN_ENCRYPTION_KEY` and `APP_ORIGIN`.
+- **THEN** the following environment variables are required: `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI`, `NODE_ENV`. Optional variables include `TOKEN_ENCRYPTION_KEY`, `APP_ORIGIN`, `OIDC_ROLE_CLAIM` and `OIDC_ROLE_MAP`.
 
 #### Scenario: Production-mode guards
 - **WHEN** `NODE_ENV=production`
-- **THEN** the application requires `APP_ORIGIN` to be set, `SESSION_SECRET` to be at least 32 characters, and `OIDC_ISSUER` to not point to a local/private address
+- **THEN** the application requires `APP_ORIGIN` to be set, `SESSION_SECRET` to be at least 32 characters, `OIDC_ISSUER` to not point to a local/private address, and `OIDC_ROLE_MAP` to be set with at least one key targeting `engineering_manager` (see `oidc-role-mapping`)
+
+#### Scenario: Real IdP requires a role map in every environment
+- **WHEN** the backend starts with `OIDC_ROLE_MAP` unset and an `OIDC_ISSUER` that is not a local/private address, whatever its `NODE_ENV`
+- **THEN** the process exits at startup with an error stating that `OIDC_ROLE_MAP` is required when `OIDC_ISSUER` is not a local address
+
+#### Scenario: Local development needs no role map
+- **WHEN** a developer copies `.env.example` to `.env` (whose `OIDC_ISSUER` is the local stub, `http://localhost:4011`, and whose `OIDC_ROLE_MAP` line is commented out) and starts the backend with a non-production `NODE_ENV`
+- **THEN** the backend starts and uses the built-in identity role map
 
 ---
 

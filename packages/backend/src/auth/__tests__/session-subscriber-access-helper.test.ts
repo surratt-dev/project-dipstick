@@ -166,6 +166,43 @@ describe("evaluateSessionSubscriberAccess", () => {
     expect(grant).toBeNull();
   });
 
+  // configurable-oidc-role-map D11 (E3): application admins are excluded
+  // from the participant path on the same terms as Engineering Managers.
+  it("D11: returns null when users.global_role is application_admin, even with a session_participants row and an active participant membership", async () => {
+    mockRow({
+      participant_row_id: "participant-row-1",
+      membership_exists: true,
+      membership_removed_at: null,
+      membership_role: "participant",
+      global_role: "application_admin",
+    });
+
+    const grant = await evaluateSessionSubscriberAccess(USER_ID, SESSION_ID);
+
+    expect(grant).toBeNull();
+  });
+
+  it("D11: an application_admin who is the session's facilitator keeps the facilitator grant", async () => {
+    mockRow({
+      facilitator_id: USER_ID,
+      session_status: "active",
+      global_role: "application_admin",
+      participant_row_id: "participant-row-1",
+      membership_exists: true,
+      membership_role: "participant",
+    });
+
+    const grant = await evaluateSessionSubscriberAccess(USER_ID, SESSION_ID);
+
+    expect(grant).toEqual({
+      path: "facilitator",
+      sessionId: SESSION_ID,
+      teamId: TEAM_ID,
+      sessionStatus: "active",
+      actorGlobalRole: "application_admin",
+    });
+  });
+
   it("returns null for a removed member (removed_at is set), even with a session_participants row", async () => {
     mockRow({
       participant_row_id: "participant-row-1",

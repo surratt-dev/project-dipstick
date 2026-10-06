@@ -29,10 +29,13 @@ describe("resolveKnownAccountId", () => {
 });
 
 describe("accounts", () => {
-  it("carries a role claim only on manager-001 and admin-001", () => {
+  // configurable-oidc-role-map (#243) D9: facilitator-001 now carries the
+  // `facilitator` role claim, which the default role map resolves to a real
+  // facilitator. participant-001 stays without one.
+  it("carries a role claim on manager-001, admin-001 and facilitator-001 only", () => {
     expect(accounts["manager-001"].role).toBe("engineering_manager");
     expect(accounts["admin-001"].role).toBe("application_admin");
-    expect(accounts["facilitator-001"].role).toBeUndefined();
+    expect(accounts["facilitator-001"].role).toBe("facilitator");
     expect(accounts["participant-001"].role).toBeUndefined();
   });
 });

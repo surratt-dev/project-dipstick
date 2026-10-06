@@ -361,6 +361,37 @@ describe("ws-event-dispatcher", () => {
       expect(conn.sent).toHaveLength(1); // still just the first — the second was correctly denied
     });
 
+    // configurable-oidc-role-map D11 (E3): a connected participant whose
+    // users.global_role becomes application_admin at a re-sign-in stops
+    // receiving session_state_change on the very next push, no reconnect.
+    it("D11: stops delivering session_state_change once the subscriber's global_role becomes application_admin mid-connection", async () => {
+      const registry = new ConnectionRegistry();
+      const conn = fakeConn("admin-user");
+      registry.register("session", "s1", conn);
+
+      const participantRow = {
+        session_id: "s1", team_id: "t1", facilitator_id: "someone-else", session_status: "active",
+        global_role: "engineer", participant_row_id: "p1", membership_role: "participant",
+        membership_removed_at: null, membership_exists: true,
+      };
+      mockDbQuery.mockResolvedValueOnce({ rows: [participantRow] });
+      await dispatch(
+        { eventType: "session_state_change", sessionId: "s1", payload: { sessionId: "s1", teamId: "t1", previousStatus: "lobby", newStatus: "active", changedAt: new Date().toISOString() } },
+        registry,
+      );
+      expect(conn.sent).toHaveLength(1);
+
+      // Same participant row and membership; only users.global_role changed.
+      mockDbQuery.mockResolvedValueOnce({ rows: [{ ...participantRow, global_role: "application_admin" }] });
+      await dispatch(
+        { eventType: "session_state_change", sessionId: "s1", payload: { sessionId: "s1", teamId: "t1", previousStatus: "active", newStatus: "wrap_up", changedAt: new Date().toISOString() } },
+        registry,
+      );
+
+      expect(mockDbQuery).toHaveBeenCalledTimes(2);
+      expect(conn.sent).toHaveLength(1);
+    });
+
     it("stops delivering vote_readiness_update once the subscriber's role becomes engineering_manager mid-connection (facilitator path)", async () => {
       const registry = new ConnectionRegistry();
       const conn = fakeConn("promoted-facilitator");

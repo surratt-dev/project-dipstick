@@ -372,7 +372,8 @@ describe("POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in", () =
     });
 
     expect(res.statusCode).toBe(403);
-    expect(res.json().error.message).toContain("Engineering Managers");
+    // configurable-oidc-role-map D11: the message no longer names a role.
+    expect(res.json().error.message).toBe("You are not eligible to lock in votes in this session.");
   });
 
   // Task 3.5 — vote locked before role change is preserved (not deleted)
@@ -662,6 +663,170 @@ describe("POST /api/v1/sessions/:sessionId/reveal-latency", () => {
     });
 
     expect(res.statusCode).toBe(422);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// configurable-oidc-role-map (#243), design D11, task 2.1 (E1, E2):
+// application admins are excluded from session participation on the same
+// terms as Engineering Managers. Fixtures give the admin an ACTIVE
+// participant membership so a failure is attributable to the admin check.
+// ---------------------------------------------------------------------------
+const ADMIN_ROLE_ROW = {
+  global_role: "application_admin",
+  membership_role: "participant",
+  membership_removed_at: null,
+  membership_exists: true,
+};
+
+describe("D11: application_admin participant registration (E1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop unconsumed mockResolvedValueOnce values: a rejection returns
+    // before later queued queries are read.
+    mockDbQuery.mockReset();
+    mockDbConnect.mockReset();
+  });
+
+  it.each([["lobby"], ["pre_session"], ["active"]])(
+    "rejects an admin with an active participant membership during %s, auditing actor_global_role=application_admin",
+    async (status) => {
+      mockDbQuery
+        .mockResolvedValueOnce({ rows: [{ id: "s1", team_id: "team-1", status }] })
+        .mockResolvedValueOnce({ rows: [ADMIN_ROLE_ROW] })
+        .mockResolvedValueOnce({ rows: [] }); // INSERT INTO audit_log (rejection)
+
+      const app = await buildApp();
+      const res = await app.inject({ method: "POST", url: "/api/v1/sessions/s1/participants" });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.category).toBe("invalid_request");
+      expect(res.json().error.message).toBe("You are not eligible to participate as a voter in this session.");
+
+      // No session_participants row: the transaction is never opened.
+      expect(mockDbConnect).not.toHaveBeenCalled();
+      const participantInsert = mockDbQuery.mock.calls.find((call) =>
+        (call[0] as string).includes("INSERT INTO session_participants"),
+      );
+      expect(participantInsert).toBeUndefined();
+
+      const auditCall = mockDbQuery.mock.calls.find((call) =>
+        (call[0] as string).includes("INSERT INTO audit_log"),
+      );
+      expect(auditCall).toBeDefined();
+      const params = auditCall![1] as unknown[];
+      expect(params[1]).toBe("application_admin"); // actor_global_role
+      expect(params[3]).toBe("session.participant_registration_rejected");
+
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "session.participant_registration_rejected",
+        expect.objectContaining({ actorGlobalRole: "application_admin", sessionId: "s1", teamId: "team-1" }),
+      );
+    },
+  );
+});
+
+describe("D11: application_admin vote lock-in (E2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop unconsumed mockResolvedValueOnce values: a rejection returns
+    // before later queued queries are read.
+    mockDbQuery.mockReset();
+    mockDbConnect.mockReset();
+  });
+
+  it("rejects an admin with an existing session_participants row and records no vote", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }] })
+      .mockResolvedValueOnce({ rows: [ADMIN_ROLE_ROW] })
+      // A session_participants row exists, but the role check runs first and
+      // rejects before it is read (the row grants nothing to an admin).
+      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/topics/st1/lock-in",
+      payload: { voteValue: 3, voteType: "finger" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.category).toBe("invalid_request");
+    expect(res.json().error.message).toBe("You are not eligible to lock in votes in this session.");
+    expect(mockDbConnect).not.toHaveBeenCalled(); // no vote transaction
+    expect(mockPublishVoteReadinessUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a vote locked in before the user became an admin is kept (no DELETE); a later lock-in is rejected", async () => {
+    const app = await buildApp();
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }] })
+      .mockResolvedValueOnce({ rows: [{ ...ADMIN_ROLE_ROW, global_role: "engineer" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "sp-1" }] });
+    const client = makeMockClient([
+      { rows: [] }, // BEGIN
+      { rows: [{ status: "voting" }] }, // FOR UPDATE
+      { rows: [{ id: "vote-1" }] }, // INSERT votes
+      { rows: [] }, // INSERT audit_log
+      { rows: [] }, // COMMIT
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/topics/st1/lock-in",
+      payload: { voteValue: 3, voteType: "finger" },
+    });
+    expect(first.statusCode).toBe(201);
+
+    // Role becomes application_admin at a re-sign-in.
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ session_status: "active", team_id: "team-1", topic_status: "voting" }] })
+      .mockResolvedValueOnce({ rows: [ADMIN_ROLE_ROW] });
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/topics/st1/lock-in",
+      payload: { voteValue: 2, voteType: "finger" },
+    });
+    expect(second.statusCode).toBe(403);
+
+    const allCalls = [...mockDbQuery.mock.calls, ...client.query.mock.calls];
+    expect(
+      allCalls.some((call) => {
+        const sql = (call[0] as string).toLowerCase();
+        return sql.includes("delete") && sql.includes("vote");
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("D11: application_admin reveal-latency report (E3 grant reuse)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drop unconsumed mockResolvedValueOnce values: a rejection returns
+    // before later queued queries are read.
+    mockDbQuery.mockReset();
+    mockDbConnect.mockReset();
+  });
+
+  it("denies an admin with a participant row and an active membership (403) and never emits the metric", async () => {
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{
+        session_id: "s1", team_id: "team-1", facilitator_id: "someone-else", session_status: "active",
+        global_role: "application_admin", participant_row_id: "p1", membership_role: "participant",
+        membership_removed_at: null, membership_exists: true,
+      }],
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/s1/reveal-latency",
+      payload: { serverTimestamp: "2026-01-01T00:00:00.000Z", observedLatencyMs: 842 },
+    });
+
+    expect(res.statusCode).toBe(403);
     expect(mockEmitAuditEvent).not.toHaveBeenCalled();
   });
 });

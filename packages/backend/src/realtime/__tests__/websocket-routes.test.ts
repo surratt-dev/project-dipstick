@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type * as SubscriberAccessHelperModule from "../../auth/session-subscriber-access-helper.js";
 import type { FastifyInstance } from "fastify";
 import WebSocket from "ws";
 import type { AddressInfo } from "node:net";
@@ -137,6 +138,34 @@ describe("registerWebSocketRoutes", () => {
 
       expect(code).toBe(STALE_SIGNAL_CLOSE_CODE);
       expect(connectionRegistry.candidates("session", "session-unauthorized")).toHaveLength(0);
+    });
+
+    // configurable-oidc-role-map D11 (E3). Runs the REAL
+    // evaluateSessionSubscriberAccess (over the mocked db) rather than a
+    // stubbed null grant, so this fails if the helper ever grants an admin.
+    it("D11: closes the connection with the unauthorized code for an application_admin with a participant row and active membership", async () => {
+      const actual = await vi.importActual<typeof SubscriberAccessHelperModule>(
+        "../../auth/session-subscriber-access-helper.js",
+      );
+      mockEvaluateSessionSubscriberAccess.mockImplementation((userId: string, sessionId: string) =>
+        actual.evaluateSessionSubscriberAccess(userId, sessionId),
+      );
+      mockDbQuery.mockResolvedValueOnce({
+        rows: [{
+          session_id: "session-admin", team_id: "team-1", facilitator_id: "someone-else", session_status: "active",
+          global_role: "application_admin", participant_row_id: "p1", membership_role: "participant",
+          membership_removed_at: null, membership_exists: true,
+        }],
+      });
+      const built = await buildAndListen();
+      app = built.app;
+
+      const socket = connect(built.url, "/ws/sessions/session-admin");
+      const [code] = await waitFor(socket, "close");
+
+      expect(code).toBe(STALE_SIGNAL_CLOSE_CODE);
+      expect(connectionRegistry.candidates("session", "session-admin")).toHaveLength(0);
+      expect(mockPublishParticipantJoined).not.toHaveBeenCalled();
     });
 
     it("registers the connection, capturing sessionCreatedAt, when authorized", async () => {

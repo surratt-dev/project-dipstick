@@ -1,3 +1,5 @@
+import { parseRoleMap, RoleMapConfigError, type MappableRole, type ParsedRoleMap } from "./auth/role-map.js";
+
 const required = [
   "DATABASE_URL",
   "REDIS_URL",
@@ -19,6 +21,14 @@ const optional = [
 type ConfigKey = (typeof required)[number];
 type OptionalConfigKey = (typeof optional)[number];
 type FullConfig = Record<ConfigKey, string> & Partial<Record<OptionalConfigKey, string>>;
+
+// configurable-oidc-role-map (#243), design D1a. The parsed map is carried on
+// the config; the raw OIDC_ROLE_MAP string never is, so logging `config`
+// cannot print the map (R5).
+export type AppConfig = FullConfig & {
+  roleMap: ReadonlyMap<string, MappableRole>;
+  roleMapSource: "configured" | "default";
+};
 
 // Exported for reuse by the persona-login dev gate (routes/auth.ts,
 // GET /auth/dev-login-options) in addition to the production-boot guard
@@ -55,11 +65,14 @@ export function isPrivateAddress(issuer: string): boolean {
   }
 }
 
-function loadConfig(): FullConfig {
+// Exported with an injectable env so tests can call it directly (R6). The
+// module-level `config` below is still computed exactly once per process, so
+// a change to OIDC_ROLE_MAP takes effect only after a restart.
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const missing: string[] = [];
 
   for (const key of required) {
-    if (!process.env[key]) {
+    if (!env[key]) {
       missing.push(key);
     }
   }
@@ -70,14 +83,14 @@ function loadConfig(): FullConfig {
   }
 
   const cfg = Object.fromEntries(
-    required.map((key) => [key, process.env[key] as string])
+    required.map((key) => [key, env[key] as string])
   ) as Record<ConfigKey, string>;
 
   // Add optional config
   const fullConfig: FullConfig = { ...cfg };
   for (const key of optional) {
-    if (process.env[key]) {
-      fullConfig[key] = process.env[key];
+    if (env[key]) {
+      fullConfig[key] = env[key];
     }
   }
 
@@ -99,7 +112,29 @@ function loadConfig(): FullConfig {
     process.exit(1);
   }
 
-  return fullConfig;
+  // OIDC_ROLE_MAP (configurable-oidc-role-map, D1a). Deliberately NOT in the
+  // `optional` list: it is read directly so the raw JSON never lands on
+  // `config`, and so empty/whitespace-only counts as unset and the issuer
+  // gate applies (D6). Runs after the production guards above. Output is
+  // plain console text with a fixed `OIDC_ROLE_MAP:` prefix (pino does not
+  // exist yet at this point).
+  let roleMapResult: ParsedRoleMap;
+  try {
+    roleMapResult = parseRoleMap(env["OIDC_ROLE_MAP"], {
+      nodeEnv: fullConfig.NODE_ENV,
+      issuerIsPrivate: isPrivateAddress(fullConfig.OIDC_ISSUER),
+    });
+  } catch (err) {
+    if (err instanceof RoleMapConfigError) {
+      console.error("FATAL: " + err.message);
+      process.exit(1);
+    }
+    throw err;
+  }
+  for (const warning of roleMapResult.warnings) console.warn(warning);
+  console.info(roleMapResult.summary);
+
+  return { ...fullConfig, roleMap: roleMapResult.map, roleMapSource: roleMapResult.source };
 }
 
 export const config = loadConfig();

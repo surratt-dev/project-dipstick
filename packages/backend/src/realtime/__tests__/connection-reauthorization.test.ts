@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type * as SubscriberAccessHelperModule from "../../auth/session-subscriber-access-helper.js";
 
 const mockDbQuery = vi.fn();
 const mockEvaluateSessionSubscriberAccess = vi.fn();
@@ -135,6 +136,39 @@ describe("scheduleReauthorizationSweep (SEC-25/SEC-27, design.md Decision D2)", 
     await vi.advanceTimersByTimeAsync(REAUTHORIZATION_INTERVAL_MS);
 
     expect(conn.socket.close).toHaveBeenCalledWith(STALE_SIGNAL_CLOSE_CODE);
+  });
+
+  // configurable-oidc-role-map D11 (E3). Uses the REAL
+  // evaluateSessionSubscriberAccess over the mocked db, so the sweep's
+  // revocation is driven by the helper's admin check, not a stubbed null.
+  it("D11: the sweep drops the participant grant of a user whose global_role is now application_admin", async () => {
+    const actual = await vi.importActual<typeof SubscriberAccessHelperModule>(
+      "../../auth/session-subscriber-access-helper.js",
+    );
+    mockEvaluateSessionSubscriberAccess.mockImplementation((userId: string, sessionId: string) =>
+      actual.evaluateSessionSubscriberAccess(userId, sessionId),
+    );
+    mockDbQuery
+      .mockResolvedValueOnce({
+        rows: [{
+          session_id: "session-1", team_id: "team-1", facilitator_id: "someone-else", session_status: "active",
+          global_role: "application_admin", participant_row_id: "p1", membership_role: "participant",
+          membership_removed_at: null, membership_exists: true,
+        }],
+      }) // evaluateSessionSubscriberAccess
+      .mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] }) // actor role lookup
+      .mockResolvedValueOnce({ rows: [{ team_id: "team-1" }] })
+      .mockResolvedValueOnce({ rows: [] }); // INSERT INTO audit_log
+
+    const registry = new ConnectionRegistry();
+    const conn = fakeConn();
+    registry.register("session", "session-1", conn);
+
+    scheduleReauthorizationSweep(conn, "session", "session-1", registry, noopLogger as never);
+    await vi.advanceTimersByTimeAsync(REAUTHORIZATION_INTERVAL_MS);
+
+    expect(conn.socket.close).toHaveBeenCalledWith(STALE_SIGNAL_CLOSE_CODE);
+    expect(registry.candidates("session", "session-1")).toHaveLength(0);
   });
 
   it("a healthy connection receives no message, is not closed, and produces no audit row across multiple intervals", async () => {

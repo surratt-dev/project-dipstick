@@ -469,6 +469,35 @@ describe("joinLinkRoutes", () => {
       expect(res.headers.location).toBe("/session/session-lobby-1");
     });
 
+    // configurable-oidc-role-map D11 regression (task 2.1;
+    // session-participation "Application Admin may still join the team"):
+    // the admin exclusion is scoped to session participation, not team join.
+    it("D11: an application_admin redeeming a valid join link still gets a team membership row", async () => {
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: "link-1", team_id: "team-1", expires_at: new Date(Date.now() + 86400000), revoked_at: null, is_active: true }],
+        })
+        .mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] })
+        .mockResolvedValueOnce({ rows: [] }); // no active session
+      const client = makeMockClient([{ rows: [] }, { rows: [{ id: "membership-1" }] }]);
+      mockDbConnect.mockResolvedValueOnce(client);
+
+      const app = await buildApp();
+      const res = await app.inject({ method: "GET", url: "/api/join/valid-token" });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe("/team/team-1");
+      const membershipInsert = client.query.mock.calls.find(
+        (c) => typeof c[0] === "string" && c[0].includes("INSERT INTO team_memberships"),
+      );
+      expect(membershipInsert).toBeDefined();
+      expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        "join.link_redeemed",
+        expect.objectContaining({ userId: "user-1", teamId: "team-1" }),
+      );
+    });
+
     // auth-events-audit-log-coverage, design.md Decision D5, tasks 6.3-6.7.
     it("6.3: actor_global_role comes from a SELECT on the plain pool, using session.userId", async () => {
       mockDbQuery

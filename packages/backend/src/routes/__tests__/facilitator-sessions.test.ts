@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type * as SubscriberAccessHelperModule from "../../auth/session-subscriber-access-helper.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -2432,6 +2433,70 @@ describe("GET /api/v1/sessions/:sessionId/participants-roster", () => {
     expect(res200.headers["cache-control"]).toBe("no-store");
 
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// configurable-oidc-role-map (#243), design D11, task 2.2 (E3 grant reuse, E4).
+// The admin-caller cases run the REAL evaluateSessionSubscriberAccess over the
+// mocked db, so they fail if the helper ever grants an admin participant
+// access (a stubbed null grant would make them vacuous).
+// ---------------------------------------------------------------------------
+describe("D11: application_admin exclusion on grant-reusing session endpoints", () => {
+  const SESSION = "5e550000-0000-4000-8000-000000000001";
+  const ADMIN_PARTICIPANT_ROW = {
+    session_id: SESSION, team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1",
+    session_status: "pre_session", global_role: "application_admin", participant_row_id: "p1",
+    membership_role: "participant", membership_removed_at: null, membership_exists: true,
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockDbQuery.mockReset();
+    const actual = await vi.importActual<typeof SubscriberAccessHelperModule>(
+      "../../auth/session-subscriber-access-helper.js",
+    );
+    mockEvaluateSessionSubscriberAccess.mockImplementation((userId: string, sessionId: string) =>
+      actual.evaluateSessionSubscriberAccess(userId, sessionId),
+    );
+  });
+
+  afterEach(() => {
+    mockEvaluateSessionSubscriberAccess.mockReset();
+  });
+
+  it("an admin caller with a participant row is denied at action-items-review as a no-grant caller (404)", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [ADMIN_PARTICIPANT_ROW] });
+
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "GET", url: `/api/v1/sessions/${SESSION}/action-items-review` });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.category).toBe("not_found");
+    expect(mockDbQuery).toHaveBeenCalledTimes(1); // only the grant query
+  });
+
+  it("an admin caller with a participant row is denied at participants-roster as a no-grant caller (404)", async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [ADMIN_PARTICIPANT_ROW] });
+
+    const app = await buildApp("admin-1");
+    const res = await app.inject({ method: "GET", url: `/api/v1/sessions/${SESSION}/participants-roster` });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("the roster query excludes application_admin rows (E4)", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ ...ADMIN_PARTICIPANT_ROW, facilitator_id: "facilitator-1", global_role: "facilitator", participant_row_id: null, session_status: "lobby" }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await buildApp("facilitator-1");
+    const res = await app.inject({ method: "GET", url: `/api/v1/sessions/${SESSION}/participants-roster` });
+
+    expect(res.statusCode).toBe(200);
+    const [sql] = mockDbQuery.mock.calls[1] as [string, unknown[]];
+    expect(sql).toMatch(/u\.global_role != 'application_admin'/);
   });
 });
 

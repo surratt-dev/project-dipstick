@@ -5,7 +5,9 @@ import type { DevLoginOption } from "@dipstick/shared";
 
 const mockOptions: DevLoginOption[] = [
   { accountId: "participant-001", roleLabel: "Participant", seeded: true },
-  { accountId: "facilitator-001", roleLabel: "Facilitator", seeded: false },
+  // configurable-oidc-role-map D9: matches the backend's DEV_LOGIN_OPTIONS,
+  // where facilitator-001 is now a real (seeded) facilitator.
+  { accountId: "facilitator-001", roleLabel: "Facilitator", seeded: true },
   { accountId: "manager-001", roleLabel: "Engineering Manager", seeded: true },
   { accountId: "admin-001", roleLabel: "Application Admin", seeded: true },
 ];
@@ -53,6 +55,8 @@ describe("DevLoginPage", () => {
     });
     expect(screen.getByText("Engineering Manager (manager-001)")).toBeInTheDocument();
     expect(screen.getByText("Application Admin (admin-001)")).toBeInTheDocument();
+    expect(screen.getByText("Facilitator (facilitator-001)")).toBeInTheDocument();
+    expect(screen.queryByText(/Role not seeded/)).not.toBeInTheDocument();
   });
 
   it("wires each persona link to /auth/login with loginHint set to that account id", async () => {
@@ -71,19 +75,24 @@ describe("DevLoginPage", () => {
     expect(link).toHaveAttribute("href", "/auth/login?loginHint=participant-001");
   });
 
-  it("labels the unseeded (Facilitator) option by account id alone, with an inline caveat, keyed off seeded === false, not a hardcoded id", async () => {
+  // No real persona is unseeded since facilitator-001 became a real
+  // facilitator (#243), but the caveat is keyed off `seeded === false`, not a
+  // hardcoded id, so it is still exercised with a synthetic option.
+  it("labels an unseeded option by account id alone, with an inline caveat, keyed off seeded === false, not a hardcoded id", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ options: mockOptions }),
+      json: async () => ({
+        options: [...mockOptions, { accountId: "example-unseeded-001", roleLabel: "Example Role", seeded: false }],
+      }),
     } as Response);
 
     render(<DevLoginPage />);
 
     await waitFor(() => {
-      expect(screen.getByText("facilitator-001")).toBeInTheDocument();
+      expect(screen.getByText("example-unseeded-001")).toBeInTheDocument();
     });
     // Role name is NOT shown for the unseeded option.
-    expect(screen.queryByText(/Facilitator \(facilitator-001\)/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Example Role \(example-unseeded-001\)/)).not.toBeInTheDocument();
     expect(screen.getByText(/Role not seeded/)).toBeInTheDocument();
   });
 

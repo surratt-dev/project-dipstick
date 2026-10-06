@@ -45,10 +45,23 @@ const SEEDED_ACCOUNT_IDS = [
 // caveat whenever seeded is false, rather than hardcoding this list itself.
 const DEV_LOGIN_OPTIONS: DevLoginOption[] = [
   { accountId: "participant-001", roleLabel: "Participant", seeded: true },
-  { accountId: "facilitator-001", roleLabel: "Facilitator", seeded: false },
+  // configurable-oidc-role-map D9: a real facilitator under the default map.
+  { accountId: "facilitator-001", roleLabel: "Facilitator", seeded: true },
   { accountId: "manager-001", roleLabel: "Engineering Manager", seeded: true },
   { accountId: "admin-001", roleLabel: "Application Admin", seeded: true },
 ];
+
+// ---------------------------------------------------------------------------
+// configurable-oidc-role-map (#243), design D8/C1: the single firing
+// condition for auth.role_claim_mapped on a returning user. It widens the
+// former `globalRole !== "engineer"` so a demotion to engineer (e.g.
+// facilitator -> engineer after an IdP group change) is audited too. Computed
+// once per callback and used for both the transactional audit_log INSERT and
+// the post-commit structured event, so the two cannot drift.
+// ---------------------------------------------------------------------------
+export function shouldEmitRoleClaimMapped(u: ResolvedUser): boolean {
+  return !u.isNewUser && (u.globalRole !== "engineer" || u.globalRole !== u.previousGlobalRole);
+}
 
 function isSeededAccountId(value: string): value is (typeof SEEDED_ACCOUNT_IDS)[number] {
   return (SEEDED_ACCOUNT_IDS as readonly string[]).includes(value);
@@ -291,8 +304,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // Resolve or create user account.
       // Pass the full claims object so resolveOrCreateAccount can read the
       // configured role claim (OIDC_ROLE_CLAIM) for global_role mapping.
-      // Pass the logger so it can emit warnings on rejected claim values
-      // (rejected claim values must not appear in audit records).
+      // Pass a logger so it can emit value-free warnings about the role claim
+      // (claim values must never appear in logs or audit records).
       //
       // auth-events-audit-log-coverage, design.md Decision D2/D3/D7: this
       // resolution and its accompanying auth.first_access_created /
@@ -314,9 +327,21 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         ),
       };
 
+      // Set inside the transaction callback below, from the same resolved
+      // user the post-commit emission uses (D8: computed once).
+      let emitRoleClaimMapped = false;
       const user: ResolvedUser = await withAuditTransaction(
-        (client) => resolveOrCreateAccount(resolvedClaims, request.log, client),
+        // configurable-oidc-role-map R3/R4: a correlationId-bound child
+        // logger, so every resolver warn line carries correlationId without
+        // the resolver knowing about it, and the startup-validated role map.
+        (client) =>
+          resolveOrCreateAccount(resolvedClaims, {
+            logger: request.log.child({ correlationId }),
+            roleMap: config.roleMap,
+            client,
+          }),
         async (client, resolvedUser) => {
+          emitRoleClaimMapped = shouldEmitRoleClaimMapped(resolvedUser);
           if (resolvedUser.isNewUser) {
             await client.query(
               `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
@@ -333,7 +358,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
                 }),
               ],
             );
-          } else if (resolvedUser.globalRole !== "engineer") {
+          } else if (emitRoleClaimMapped) {
             await client.query(
               `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
                VALUES ($1, $2, $3, 'auth.role_claim_mapped', NULL, $4)`,
@@ -371,17 +396,17 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           sourceIp: request.ip,
           correlationId,
         });
-      } else if (user.globalRole !== "engineer") {
-        // Emit role_claim_mapped for returning users who have a non-default
-        // global_role from the IdP claim (Decision 2). This covers both the
-        // case where the role was already set and the case where it changed.
-        // We emit on every sign-in when the role is non-default so that the
-        // audit trail captures the ongoing claim-to-role mapping for EMs and
-        // admins — not only the first time the claim is applied.
+      } else if (emitRoleClaimMapped) {
+        // Emit role_claim_mapped for returning users with a non-default
+        // global_role on every sign-in (so the audit trail captures the
+        // ongoing claim-to-role mapping), and for any role change, including
+        // a demotion to engineer (configurable-oidc-role-map D8).
+        // previousRole is an internal role name, never a claim value (C1).
         emitAuditEvent(request.log, "auth.role_claim_mapped", {
           userId: user.id,
           oidcSubject: user.oidcSubject,
           globalRole: user.globalRole,
+          previousRole: user.previousGlobalRole,
           sourceIp: request.ip,
           correlationId,
         });

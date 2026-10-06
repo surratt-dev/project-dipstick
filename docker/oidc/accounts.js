@@ -1,10 +1,11 @@
-// The four seeded local-dev accounts. Only manager-001 and admin-001 carry a
-// `role` claim (persona-login design.md D4/D5): global_role for these two
-// flows through the existing OIDC role-claim mapping
-// (packages/backend/src/auth/account-resolver.ts) on every sign-in.
-// facilitator-001 and participant-001 are intentionally left without a role
-// claim -- `facilitator` is not on PERMITTED_GLOBAL_ROLES, and participant's
-// default (`engineer`) already matches its label.
+// The four seeded local-dev accounts. manager-001, admin-001 and
+// facilitator-001 carry a `role` claim (persona-login design.md D4/D5;
+// configurable-oidc-role-map #243 D9). global_role for these flows through the
+// OIDC role-claim mapping (packages/backend/src/auth/role-map.ts, called from
+// account-resolver.ts) on every sign-in. Locally no OIDC_ROLE_MAP is set, so
+// the backend's built-in identity map applies (local issuer, non-production)
+// and each role string maps to itself. participant-001 is intentionally left
+// without a role claim -- its default (`engineer`) already matches its label.
 export const accounts = {
   "participant-001": {
     sub: "participant-001",
@@ -17,6 +18,7 @@ export const accounts = {
     email: "facilitator@example.com",
     name: "Sam Facilitator",
     password: "password",
+    role: "facilitator",
   },
   "manager-001": {
     sub: "manager-001",

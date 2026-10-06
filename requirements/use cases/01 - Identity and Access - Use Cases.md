@@ -223,7 +223,7 @@
 - [x] AC8: A role change applied during an active session does not retroactively invalidate votes already locked in. A lock-in request submitted after the role change is rejected.
 
 ## Out of Scope
-- Facilitator designation (`users.global_role = 'facilitator'`). Out of scope for this UC. **Decided 2026-10-03:** designation happens through the IdP role claim, the same as `engineering_manager` and `application_admin`, with no in-app endpoint (#235). See "Designate a Facilitator — Deferral", Decision section.
+- Facilitator designation (`users.global_role = 'facilitator'`). Out of scope for this UC. **Decided 2026-10-03:** designation happens through the IdP role claim, the same as `engineering_manager` and `application_admin`, with no in-app endpoint (#235). The claim path is delivered by #243 (`OIDC_ROLE_MAP`). See "Designate a Facilitator — Deferral", Decision section.
 - `TEAM-006` (`POST /api/v1/teams/:teamId/managers`) — not called as part of this change. **Corrected (Edit 3, restrict-team-005-em-promotion):** TEAM-005 is sufficient only for demotion and for role changes that were never promotions; establishing a new Engineering Manager relationship requires TEAM-006. TEAM-005 is no longer "sufficient for all `membership_role` writes."
 - Modification of `users.global_role` for any role — this change writes only to `team_memberships.role`.
 - Removing a user from a team — separate use case.
@@ -333,6 +333,7 @@
 - **User is an Engineer attempting to access another team's content:** Access is denied. Engineers see only the content of their own team(s).
 - **User is an Engineering Manager attempting to access content for a team they do not manage:** Access is denied. The manager sees only the teams they are explicitly associated with.
 - **User is a Facilitator attempting to access content for a team they are not facilitating:** Access is denied. A facilitator's access to a team's content is scoped to sessions they are actively facilitating. Within that scope, they may access both the current session and the team's full historical data (session history, trends, action items) to support facilitation.
+- **User is an Application Admin attempting to take part in a live session (added by #243, design D11):** Access is denied, including when the admin is a member of the session's team. An Application Admin cannot register as a session participant (403, the same response an Engineering Manager receives), cannot lock in a vote, and receives no live session events. The admin sees the generic no-access state. Team membership and join-link redemption are unaffected.
 
 ## Postconditions
 - **Success:** The user accesses content appropriate to their role and team relationship.
@@ -349,6 +350,7 @@
 - [ ] Access control is enforced server-side; it is not dependent solely on UI visibility.
 - [ ] Denied access results in a clear error, not a disclosure of existence or content.
 - [ ] An Application Admin with no team membership cannot access session content (votes, trend data, action items) for any team; admin access is limited to administrative data (membership lists, role assignments, EM associations, team metadata).
+- [ ] An Application Admin, with or without team membership, cannot register as a session participant, lock in a vote, or receive live session events (#243, design D11).
 
 ## Out of Scope
 - Authentication itself — that is handled at sign-in.
