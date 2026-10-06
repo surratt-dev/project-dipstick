@@ -3,6 +3,7 @@ import type * as OpenidClientModule from "openid-client";
 import type * as ErrorHandlerModule from "../../auth/error-handler.js";
 import type * as OidcErrorSanitizerModule from "../../auth/oidc-error-sanitizer.js";
 import type * as AccountResolverModule from "../../auth/account-resolver.js";
+import type { GlobalRole } from "../../auth/role-map.js";
 
 const mockDbQuery = vi.fn();
 const mockDbConnect = vi.fn();
@@ -131,6 +132,10 @@ function setupValidCallbackMocks(opts: {
   iss?: string;
   isNewUser?: boolean;
   teamMemberships?: { team_id: string }[];
+  // facilitator-session-entry-point, design D7 / E8: lets a callback test
+  // vary the resolved account's globalRole. Omitted, the resolved account
+  // carries no globalRole, exactly as before.
+  globalRole?: GlobalRole;
 }) {
   const sub = opts.sub ?? "sub-1";
   const iss = opts.iss ?? "https://idp.example.com";
@@ -155,6 +160,7 @@ function setupValidCallbackMocks(opts: {
     displayName: "Alice",
     email: "alice@example.com",
     isNewUser,
+    ...(opts.globalRole !== undefined ? { globalRole: opts.globalRole } : {}),
   });
   mockBuildSessionData.mockReturnValue({
     userId: "user-1",
@@ -1224,6 +1230,31 @@ describe("authRoutes", () => {
 
         expect(res.statusCode).toBe(302);
         expect(res.headers.location).toBe("http://localhost:5173/team/team-abc");
+      });
+
+      // facilitator-session-entry-point (#237), design D7, task 3.1, spec R11:
+      // a returning facilitator with a membership still lands on their team
+      // view, not /sessions/new. The landing code does not read globalRole
+      // today, so this is a regression guard (expected to pass at once, not
+      // test-first) against a future "facilitators land on /sessions/new"
+      // branch on globalRole, which the change rejected. The facilitator
+      // reaches /sessions/new with one click from the team view instead.
+      it("redirects a returning facilitator with a membership to /team/:teamId, not /sessions/new (R11)", async () => {
+        setupValidCallbackMocks({
+          isNewUser: false,
+          globalRole: "facilitator",
+          teamMemberships: [{ team_id: "team-fac" }],
+        });
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "GET",
+          url: "/auth/callback?state=valid&code=abc",
+        });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("http://localhost:5173/team/team-fac");
+        expect(res.headers.location).not.toContain("/sessions/new");
       });
 
       it("uses join flow redirect with ?alreadyMember=true when join token is processed for existing member", async () => {
@@ -2396,6 +2427,26 @@ describe("authRoutes", () => {
       mockDbQuery
         .mockResolvedValueOnce({
           rows: [{ id: "user-1", display_name: "Alice", email: "alice@example.com", global_role: "engineer" }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const app = await buildApp({ sessionCreatedAt: new Date().toISOString() });
+      const res = await app.inject({ method: "GET", url: "/auth/session" });
+
+      expect(res.json().canFacilitateSessions).toBe(false);
+    });
+
+    // facilitator-session-entry-point (#237), design D7, task 3.2: the
+    // backend flag half of R4. A user whose global_role resolved to
+    // engineering_manager (including one also sent the facilitator group;
+    // precedence is covered in role-map.test.ts, account-resolver.test.ts and
+    // role-claim-persistence-integration.test.ts) gets
+    // canFacilitateSessions: false, so the team view renders no Facilitator
+    // block. Regression guard, expected to pass at once.
+    it("returns canFacilitateSessions: false for an engineering_manager caller (R4)", async () => {
+      mockDbQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: "user-1", display_name: "Alice", email: "alice@example.com", global_role: "engineering_manager" }],
         })
         .mockResolvedValueOnce({ rows: [] });
 

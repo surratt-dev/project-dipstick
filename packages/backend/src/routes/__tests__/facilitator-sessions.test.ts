@@ -3490,6 +3490,11 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
     expect(eligibleQueryCall).toBeDefined();
     expect(eligibleQueryCall![0] as string).toContain("LEFT JOIN team_memberships");
     expect(eligibleQueryCall![0] as string).toContain("WHERE tm.id IS NULL");
+    // facilitator-session-entry-point (#237), task 3.4, spec R5 server half:
+    // the exclusion has no membership-role predicate, so a facilitator's
+    // engineering_manager membership excludes that team like any other role.
+    // Regression guard, expected to pass at once.
+    expect(eligibleQueryCall![0] as string).not.toMatch(/tm\.role|membership_role/);
   });
 
   // task 3.8

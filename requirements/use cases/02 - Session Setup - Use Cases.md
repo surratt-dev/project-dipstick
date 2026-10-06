@@ -21,7 +21,7 @@
 - No other session is currently active for the target team (or the application permits concurrent sessions — this is an open question; see Notes).
 
 ## Main Flow
-1. The Facilitator navigates to the session creation screen.
+1. The Facilitator navigates to the session creation screen. *(Entry points: a Facilitator with at least one team membership reaches the screen from the team view, where a Facilitator block offers the link. A Facilitator with no team memberships reaches it through the landing redirect. See change `facilitator-session-entry-point`.)*
 2. The application displays a list of teams available to facilitate (teams the Facilitator is not a member of).
 3. The Facilitator selects an existing team from the list.
 4. The application displays a confirmation screen showing the selected team name and the Facilitator's name.
