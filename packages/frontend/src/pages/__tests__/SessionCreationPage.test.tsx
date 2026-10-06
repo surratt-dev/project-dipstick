@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { SessionCreationPage } from "../SessionCreationPage.js";
-import type { EligibleTeamsResponse, SessionAlreadyExistsResponse, TeamNameCollisionResponse } from "@dipstick/shared";
+import { useAuth } from "../../auth/AuthContext.js";
+import type {
+  AuthSession,
+  EligibleTeamsResponse,
+  SessionAlreadyExistsResponse,
+  TeamNameCollisionResponse,
+} from "@dipstick/shared";
 import type * as ReactRouterDom from "react-router-dom";
 
 // ---------------------------------------------------------------------------
@@ -31,14 +37,18 @@ vi.mock("../../auth/AuthContext.js", () => ({
   }),
 }));
 
-function renderPage() {
-  return render(
+function pageTree() {
+  return (
     <MemoryRouter initialEntries={["/sessions/new"]}>
       <Routes>
         <Route path="/sessions/new" element={<SessionCreationPage />} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderPage() {
+  return render(pageTree());
 }
 
 function mockFetchSequence(...responses: Array<Partial<Response> & { jsonBody?: unknown }>) {
@@ -54,8 +64,32 @@ function mockFetchSequence(...responses: Array<Partial<Response> & { jsonBody?: 
   return fn;
 }
 
+// facilitator-session-entry-point (#237), tasks.md 2.1 harness (E5):
+// vi.clearAllMocks() does not reset mockReturnValue, so a membership or flag
+// override in one test would leak into every later test. setSession() is the
+// only way tests change the auth state, and beforeEach restores the
+// zero-membership facilitator default the module-scope mock started with.
+const mockRefreshSession = vi.fn(async () => {});
+
+const DEFAULT_SESSION: AuthSession = {
+  user: { id: "fac-1", displayName: "Frankie Facilitator", email: "frankie@test.com" },
+  teamMemberships: [],
+  sessionCreatedAt: "",
+  expiresAt: "",
+  canFacilitateSessions: true,
+};
+
+function setSession(overrides: Partial<AuthSession> | null) {
+  vi.mocked(useAuth).mockReturnValue({
+    session: overrides === null ? null : { ...DEFAULT_SESSION, ...overrides },
+    loading: false,
+    refreshSession: mockRefreshSession,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  setSession({});
 });
 
 describe("SessionCreationPage — picker empty states", () => {
@@ -76,7 +110,10 @@ describe("SessionCreationPage — picker empty states", () => {
     renderPage();
 
     await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
-    expect(screen.getByTestId("picker-empty-state").textContent).toMatch(/already a member of every team/i);
+    // facilitator-session-entry-point task 2.1(c): replaces the former
+    // /already a member of every team/ assertion, which defended the copy
+    // defect BA B1 identified (see the "picker copy" describe below).
+    expect(screen.getByTestId("picker-empty-state").textContent).toBe(EMPTY_STATE_WITH_MEMBERSHIPS);
   });
 
   it("renders the eligible teams list when non-empty", async () => {
@@ -436,5 +473,318 @@ describe("http-session-expiry-reauth-parity: SessionCreationPage reauth parity",
     await userEvent.click(screen.getByTestId("confirm-create-session"));
 
     await waitFor(() => expect(screen.getByTestId("confirm-error-membership-conflict")).toBeInTheDocument());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// facilitator-session-entry-point (#237), tasks.md 2.1, design D5/D5a.
+// ---------------------------------------------------------------------------
+
+// REVIEWER NOTE (spec R6/R9, 01c "the chain must not be revealed"): these are
+// the exact shipped strings. They name only the membership rule. After #247,
+// teams in the caller's reporting chain will also be absent from the list, so
+// no string may say or imply "every team", "all other teams" or "no other
+// teams". If you change a string here, re-check it against that rule first.
+const EXCLUSION_COPY =
+  "Your own team isn't listed. Facilitators run sessions for teams they're not on.";
+const EMPTY_STATE_WITH_MEMBERSHIPS =
+  "There are no teams you can facilitate right now. Facilitators run sessions for teams they're not on. Don't see the team you're looking for? Create one to get started.";
+const EMPTY_STATE_WITHOUT_MEMBERSHIPS =
+  "You don't have a home team yet, and there are no teams you can facilitate right now. Don't see your team? Create one to get started.";
+
+const POPULATED_LIST = (callerHasTeamMemberships: boolean): EligibleTeamsResponse => ({
+  eligibleTeams: [{ teamId: "team-2", teamName: "Other", lastSessionAt: null }],
+  callerHasTeamMemberships,
+});
+
+const HOME_MEMBERSHIPS: AuthSession["teamMemberships"] = [
+  { teamId: "home-1", teamName: "Home", role: "participant" },
+  { teamId: "home-2", teamName: "Second", role: "participant" },
+];
+
+const FORBIDDEN_403 = {
+  ok: false,
+  status: 403,
+  jsonBody: { error: { category: "forbidden", message: "Only a facilitator can view eligible teams." } },
+};
+
+function getWayOut() {
+  return screen.getByTestId("picker-way-out");
+}
+
+function getSignOutInWayOut() {
+  return within(getWayOut()).getByRole("button", { name: /sign out/i });
+}
+
+describe("facilitator-session-entry-point: picker copy (D5)", () => {
+  it("(a) shows the own-team exclusion copy when the caller has memberships and the list is non-empty", async () => {
+    mockFetchSequence({ jsonBody: POPULATED_LIST(true) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-own-team-excluded")).toBeInTheDocument());
+  });
+
+  it("(b) omits the exclusion copy when the caller has no memberships", async () => {
+    mockFetchSequence({ jsonBody: POPULATED_LIST(false) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    expect(screen.queryByTestId("picker-own-team-excluded")).toBeNull();
+  });
+
+  it.each([
+    [true, EMPTY_STATE_WITH_MEMBERSHIPS],
+    [false, EMPTY_STATE_WITHOUT_MEMBERSHIPS],
+  ])(
+    "(c) empty list with callerHasTeamMemberships=%s renders the D5 copy, still offers new-team creation, and claims neither 'every' nor 'no other teams'",
+    async (callerHasTeamMemberships, expected) => {
+      mockFetchSequence({ jsonBody: { eligibleTeams: [], callerHasTeamMemberships } });
+      renderPage();
+
+      await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+      const text = screen.getByTestId("picker-empty-state").textContent ?? "";
+      expect(text).toBe(expected);
+      expect(text.toLowerCase()).not.toContain("every");
+      expect(text.toLowerCase()).not.toContain("no other teams");
+      expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument();
+      expect(screen.queryByTestId("picker-own-team-excluded")).toBeNull();
+    },
+  );
+
+  // REVIEWER NOTE: see the note on the string constants above (R6/R9, 01c).
+  it("(d) the exclusion and both empty-state strings are exactly the shipped strings and never say 'every' or 'all other'", async () => {
+    mockFetchSequence({ jsonBody: POPULATED_LIST(true) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-own-team-excluded")).toBeInTheDocument());
+    expect(screen.getByTestId("picker-own-team-excluded").textContent).toBe(EXCLUSION_COPY);
+
+    for (const str of [EXCLUSION_COPY, EMPTY_STATE_WITH_MEMBERSHIPS, EMPTY_STATE_WITHOUT_MEMBERSHIPS]) {
+      expect(str.toLowerCase()).not.toContain("every");
+      expect(str.toLowerCase()).not.toContain("all other");
+    }
+  });
+});
+
+describe("facilitator-session-entry-point: picker way out (D5)", () => {
+  it("(e) a facilitator with memberships sees 'Go to your team' to their first membership and sign-out, both inside picker-way-out", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    mockFetchSequence({ jsonBody: POPULATED_LIST(true) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    const wayOut = getWayOut();
+    const goToTeam = within(wayOut).getByTestId("picker-go-to-team");
+    expect(goToTeam).toHaveAttribute("href", `/team/${HOME_MEMBERSHIPS[0]!.teamId}`);
+    expect(getSignOutInWayOut()).toBeInTheDocument();
+  });
+
+  it("(f) a zero-membership facilitator sees sign-out and no 'Go to your team'", async () => {
+    mockFetchSequence({ jsonBody: POPULATED_LIST(false) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    expect(getSignOutInWayOut()).toBeInTheDocument();
+    expect(screen.queryByTestId("picker-go-to-team")).toBeNull();
+  });
+
+  it("(g) the way out is not rendered on the confirm screen", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    mockFetchSequence({ jsonBody: POPULATED_LIST(true) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+
+    expect(screen.getByTestId("session-creation-confirm")).toBeInTheDocument();
+    expect(screen.queryByTestId("picker-way-out")).toBeNull();
+  });
+
+  it("(g) the way out is not rendered on the new-team screen", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    mockFetchSequence({ jsonBody: POPULATED_LIST(true) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-create-new-team"));
+
+    expect(screen.getByTestId("session-creation-new-team")).toBeInTheDocument();
+    expect(screen.queryByTestId("picker-way-out")).toBeNull();
+  });
+
+  it("(h) while the list is still loading, the way out is already present", () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    global.fetch = vi.fn(() => new Promise<Response>(() => {}));
+    renderPage();
+
+    expect(screen.getByText(/loading teams/i)).toBeInTheDocument();
+    expect(within(getWayOut()).getByTestId("picker-go-to-team")).toBeInTheDocument();
+    expect(getSignOutInWayOut()).toBeInTheDocument();
+  });
+
+  it("(h) after a 403 from eligible-teams, the load error, 'Go to your team' and sign-out are all present", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    mockFetchSequence(FORBIDDEN_403);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(within(getWayOut()).getByTestId("picker-go-to-team")).toBeInTheDocument();
+    expect(getSignOutInWayOut()).toBeInTheDocument();
+  });
+
+  it("(h) after a network error from eligible-teams, the load error, 'Go to your team' and sign-out are all present", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    global.fetch = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(within(getWayOut()).getByTestId("picker-go-to-team")).toBeInTheDocument();
+    expect(getSignOutInWayOut()).toBeInTheDocument();
+  });
+
+  it("(j) with no AuthSession (session null, not loading) the picker renders sign-out only, without throwing", async () => {
+    setSession(null);
+    mockFetchSequence({ jsonBody: POPULATED_LIST(false) });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    expect(getSignOutInWayOut()).toBeInTheDocument();
+    expect(screen.queryByTestId("picker-go-to-team")).toBeNull();
+  });
+});
+
+describe("facilitator-session-entry-point: re-sync on a role-denied picker (D5a)", () => {
+  it("(i) a 403 from eligible-teams calls refreshSession exactly once", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    mockFetchSequence(FORBIDDEN_403);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(mockRefreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("(i) a network error from eligible-teams does not call refreshSession", async () => {
+    global.fetch = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(mockRefreshSession).not.toHaveBeenCalled();
+  });
+
+  it("(i) a 500 from eligible-teams does not call refreshSession", async () => {
+    mockFetchSequence({
+      ok: false,
+      status: 500,
+      jsonBody: { error: { category: "internal_error", message: "boom" } },
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(mockRefreshSession).not.toHaveBeenCalled();
+  });
+
+  it("(i) a 401 session_expired from eligible-teams renders the reauth treatment and does not call refreshSession", async () => {
+    mockFetchSequence({ ok: false, status: 401, jsonBody: SESSION_EXPIRED_BODY });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /log in again/i })).toBeInTheDocument());
+    expect(mockRefreshSession).not.toHaveBeenCalled();
+  });
+
+  // Implementation review, security F-1: the refresh actually produces a new
+  // session object (still a facilitator). A future change that made
+  // loadEligibleTeams depend on `session` would re-fetch and re-refresh here.
+  it("(i) a refresh that yields a new, still-facilitator session does not re-fetch the list or refresh again", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    const fetchMock = mockFetchSequence(FORBIDDEN_403, FORBIDDEN_403);
+    mockRefreshSession.mockImplementationOnce(async () => {
+      setSession({ teamMemberships: [...HOME_MEMBERSHIPS] });
+    });
+    const { rerender } = render(pageTree());
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    await waitFor(() => expect(mockRefreshSession).toHaveBeenCalledTimes(1));
+    rerender(pageTree());
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockRefreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  // Implementation review, architect finding 4: the reason refreshSession is
+  // held in a ref. AuthProvider's refreshSession changes identity on
+  // navigation; a new identity must not re-run loadEligibleTeams.
+  it("(i) a new refreshSession identity from the context does not re-fetch the list or call the new function", async () => {
+    setSession({ teamMemberships: HOME_MEMBERSHIPS });
+    const fetchMock = mockFetchSequence(FORBIDDEN_403, FORBIDDEN_403);
+    const { rerender } = render(pageTree());
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(mockRefreshSession).toHaveBeenCalledTimes(1);
+
+    const refreshB = vi.fn(async () => {});
+    vi.mocked(useAuth).mockReturnValue({
+      session: { ...DEFAULT_SESSION, teamMemberships: HOME_MEMBERSHIPS },
+      loading: false,
+      refreshSession: refreshB,
+    });
+    rerender(pageTree());
+
+    await waitFor(() => expect(screen.getByTestId("picker-error")).toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refreshB).not.toHaveBeenCalled();
+    expect(mockRefreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("(i) negative (A4): a 403 from the confirm screen's POST /draft does not call refreshSession", async () => {
+    mockFetchSequence(
+      { jsonBody: POPULATED_LIST(false) },
+      { ok: false, status: 403, jsonBody: { error: { category: "forbidden", message: "cross-team" } } },
+    );
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+
+    await waitFor(() => expect(screen.getByTestId("confirm-error-membership-conflict")).toBeInTheDocument());
+    expect(mockRefreshSession).not.toHaveBeenCalled();
+  });
+
+  // A2: the gate half of R8's alternative outcome. <Navigate> does not call
+  // the module-mocked useNavigate, so a sentinel "/" route is asserted.
+  it("(i) gate: when the session says canFacilitateSessions is false, the page redirects to /", () => {
+    setSession({ canFacilitateSessions: false });
+    global.fetch = vi.fn(() => new Promise<Response>(() => {}));
+
+    render(
+      <MemoryRouter initialEntries={["/sessions/new"]}>
+        <Routes>
+          <Route path="/" element={<div data-testid="at-landing" />} />
+          <Route path="/sessions/new" element={<SessionCreationPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("at-landing")).toBeInTheDocument();
+    expect(screen.queryByTestId("session-creation-picker")).toBeNull();
+  });
+});
+
+describe("facilitator-session-entry-point: no client pre-selection (G1, R2)", () => {
+  it("(k) incoming navigation state naming an eligible team is ignored: the list renders and nothing is pre-selected", async () => {
+    mockFetchSequence({ jsonBody: POPULATED_LIST(true) });
+
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/sessions/new", state: { teamId: "team-2" } }]}>
+        <Routes>
+          <Route path="/sessions/new" element={<SessionCreationPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    expect(screen.getByTestId("session-creation-picker")).toBeInTheDocument();
+    expect(screen.queryByTestId("session-creation-confirm")).toBeNull();
   });
 });

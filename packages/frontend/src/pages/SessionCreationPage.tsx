@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import type {
   EligibleTeam,
   EligibleTeamsResponse,
@@ -8,6 +8,7 @@ import type {
 } from "@dipstick/shared";
 import { useAuth } from "../auth/AuthContext.js";
 import { ReauthRequiredTreatment } from "../components/ReauthRequiredTreatment.js";
+import { SignOutButton } from "../components/SignOutButton.js";
 import { detectSessionExpiry } from "../http/sessionExpiry.js";
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ type ConfirmError =
 type NewTeamError = { kind: "empty_name" } | { kind: "name_collision"; providedName: string };
 
 export function SessionCreationPage() {
-  const { session, loading: authLoading } = useAuth();
+  const { session, loading: authLoading, refreshSession } = useAuth();
   const navigate = useNavigate();
 
   const [screen, setScreen] = useState<Screen>({ name: "picker" });
@@ -72,6 +73,14 @@ export function SessionCreationPage() {
   // Decision 3.
   const [reauthRequired, setReauthRequired] = useState<{ returnTo: string } | null>(null);
 
+  // facilitator-session-entry-point design D5a: held in a ref so that a new
+  // context value never changes loadEligibleTeams' identity and re-triggers
+  // the fetch below (one 403 -> at most one refresh).
+  const refreshSessionRef = useRef(refreshSession);
+  useEffect(() => {
+    refreshSessionRef.current = refreshSession;
+  }, [refreshSession]);
+
   const loadEligibleTeams = useCallback(async () => {
     setListLoading(true);
     setListError(null);
@@ -86,6 +95,17 @@ export function SessionCreationPage() {
           return;
         }
         setListError("Failed to load teams you can create a session for.");
+        // facilitator-session-entry-point design D5a: this endpoint's only 403
+        // is the role denial, so the server no longer treats the caller as a
+        // facilitator while this tab's AuthSession still does. Re-sync once;
+        // if the refreshed session says canFacilitateSessions is false, the
+        // gate below redirects to "/". Keyed on status, not the body, which
+        // detectSessionExpiry has already read. No loop: this callback does
+        // not depend on `session`. The confirm screen's POST /draft 403 does
+        // not refresh; its "Back" re-fetches this list instead.
+        if (res.status === 403) {
+          void refreshSessionRef.current();
+        }
         return;
       }
       const json = (await res.json()) as EligibleTeamsResponse;
@@ -388,6 +408,12 @@ export function SessionCreationPage() {
     );
   }
 
+  // facilitator-session-entry-point design D5: "your team" is the same
+  // client index AuthenticatedLanding (App.tsx) uses -- no ordering, no
+  // switcher. Null-safe on purpose (E3): the gate above lets the picker
+  // render with session === null when /auth/session failed, so no `!` here.
+  const homeTeam = session?.teamMemberships[0];
+
   return (
     <div
       data-testid="session-creation-picker"
@@ -406,12 +432,27 @@ export function SessionCreationPage() {
       {/* task 6.1: the empty-state message now invites new-team creation
           rather than stating only that no teams are available -- once
           new-team creation ships, an empty eligible-teams list is no longer
-          a dead end. */}
+          a dead end.
+
+          facilitator-session-entry-point design D5 (spec R6/R9): this copy
+          and the exclusion copy below name only the membership rule. Teams
+          can be absent for reasons the copy does not name (deactivation
+          today; the reporting chain after #247, which 01c says must not be
+          revealed), so never say "every team", "all other teams" or "no
+          other teams". */}
       {!listLoading && !listError && listData && listData.eligibleTeams.length === 0 && (
         <p data-testid="picker-empty-state">
           {listData.callerHasTeamMemberships
-            ? "You're already a member of every team in the organization. Don't see the team you're looking for? Create one to get started."
-            : "You don't have a home team yet, and there are no other teams to create a session for right now. Don't see your team? Create one to get started."}
+            ? "There are no teams you can facilitate right now. Facilitators run sessions for teams they're not on. Don't see the team you're looking for? Create one to get started."
+            : "You don't have a home team yet, and there are no teams you can facilitate right now. Don't see your team? Create one to get started."}
+        </p>
+      )}
+
+      {/* design D5 / N1: keyed on the live listData flag, not on
+          session.teamMemberships -- do not "harmonise" the two sources. */}
+      {!listLoading && !listError && listData && listData.callerHasTeamMemberships && listData.eligibleTeams.length > 0 && (
+        <p data-testid="picker-own-team-excluded" style={{ color: "#616161" }}>
+          Your own team isn't listed. Facilitators run sessions for teams they're not on.
         </p>
       )}
 
@@ -449,6 +490,24 @@ export function SessionCreationPage() {
           Create a new team
         </button>
       )}
+
+      {/* facilitator-session-entry-point design D5 (BA B2): the way out of
+          the picker. Outside every list-state conditional so it renders while
+          loading, on a load error (including the 403 after a role change),
+          empty or populated. Picker screen only: confirm and new-team have
+          their own "Back" (BA B3). The reauth early return above replaces
+          the page and owns that path (E4). */}
+      <div
+        data-testid="picker-way-out"
+        style={{ marginTop: "2rem", display: "flex", gap: "0.75rem", alignItems: "center" }}
+      >
+        {homeTeam && (
+          <Link to={`/team/${homeTeam.teamId}`} data-testid="picker-go-to-team">
+            Go to your team
+          </Link>
+        )}
+        <SignOutButton />
+      </div>
     </div>
   );
 }

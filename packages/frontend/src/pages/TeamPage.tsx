@@ -88,6 +88,31 @@ export function TeamPage() {
       )}
 
       <h1>Team</h1>
+
+      {/*
+       * facilitator-session-entry-point (#237), design D1-D4: a facilitator
+       * with memberships reaches session creation in one click from here.
+       * Rendered only when the server-computed flag is true (D2), and absent
+       * from the DOM otherwise. That absence is a UX property, not an access
+       * control; the server authorizes /sessions/new's endpoints.
+       *
+       * D3: do not add team context to this link (no path segment, query
+       * string or `state`). The picker alone decides which teams are offered,
+       * from GET /api/v1/teams/eligible-for-session, which already excludes
+       * this team.
+       */}
+      {session.canFacilitateSessions === true && (
+        <section data-testid="team-facilitator-block">
+          <h2>Facilitator</h2>
+          <Link to="/sessions/new" data-testid="nav-facilitate-session">
+            Facilitate another team's session
+          </Link>
+          <p style={{ marginTop: "0.25rem", color: "#616161" }}>
+            You can't facilitate your own team.
+          </p>
+        </section>
+      )}
+
       <h2>Members</h2>
       <ul>
         {session.teamMemberships.map((m) => (
