@@ -13,7 +13,20 @@ vi.mock("../../config.js", () => ({
   },
 }));
 
-import { resolveOrCreateAccount } from "../account-resolver.js";
+import { resolveOrCreateAccount, type IdTokenClaims } from "../account-resolver.js";
+import { DEFAULT_ROLE_MAP, type MappableRole } from "../role-map.js";
+
+// configurable-oidc-role-map (#243) task 3.2: resolveOrCreateAccount now
+// takes an options object { logger, roleMap, client }. This wrapper keeps the
+// identity-resolution tests below focused on what they test.
+type ResolveOpts = Partial<Parameters<typeof resolveOrCreateAccount>[1]>;
+function resolve(claims: IdTokenClaims, o: ResolveOpts = {}) {
+  return resolveOrCreateAccount(claims, {
+    logger: o.logger ?? { warn: vi.fn() },
+    roleMap: o.roleMap ?? DEFAULT_ROLE_MAP,
+    client: o.client,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Helper — builds a complete DB row for the upsert RETURNING clause.
@@ -52,7 +65,7 @@ describe("resolveOrCreateAccount", () => {
   it("should return isNewUser=true when user does not exist", async () => {
     mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ is_new_user: true })] });
 
-    const result = await resolveOrCreateAccount({
+    const result = await resolve({
       sub: "sub-123",
       iss: "https://idp.example.com",
       name: "Alice",
@@ -70,7 +83,7 @@ describe("resolveOrCreateAccount", () => {
       rows: [makeUserRow({ display_name: "Alice Updated", is_new_user: false })],
     });
 
-    const result = await resolveOrCreateAccount({
+    const result = await resolve({
       sub: "sub-123",
       iss: "https://idp.example.com",
       name: "Alice Updated",
@@ -92,7 +105,7 @@ describe("resolveOrCreateAccount", () => {
       ],
     });
 
-    const result = await resolveOrCreateAccount({
+    const result = await resolve({
       sub: "sub-456",
       iss: "https://idp.example.com",
     });
@@ -114,7 +127,7 @@ describe("resolveOrCreateAccount", () => {
       rows: [makeUserRow({ display_name: "bob@example.com", email: "bob@example.com", is_new_user: true })],
     });
 
-    await resolveOrCreateAccount({
+    await resolve({
       sub: "sub-789",
       iss: "https://idp.example.com",
       email: "bob@example.com",
@@ -129,7 +142,7 @@ describe("resolveOrCreateAccount", () => {
       rows: [makeUserRow({ id: "user-A", oidc_subject: "sub-A", is_new_user: true })],
     });
 
-    const resultA = await resolveOrCreateAccount({
+    const resultA = await resolve({
       sub: "sub-A",
       iss: "https://idp.example.com",
       name: "Alice",
@@ -140,7 +153,7 @@ describe("resolveOrCreateAccount", () => {
       rows: [makeUserRow({ id: "user-B", oidc_subject: "sub-B", is_new_user: true })],
     });
 
-    const resultB = await resolveOrCreateAccount({
+    const resultB = await resolve({
       sub: "sub-B",
       iss: "https://idp.example.com",
       name: "Alice",
@@ -163,7 +176,7 @@ describe("resolveOrCreateAccount", () => {
       rows: [makeUserRow({ email: "new-email@example.com", is_new_user: false })],
     });
 
-    const result = await resolveOrCreateAccount({
+    const result = await resolve({
       sub: "sub-123",
       iss: "https://idp.example.com",
       name: "Alice",
@@ -217,8 +230,8 @@ describe("resolveOrCreateAccount", () => {
       email: "carol@example.com",
     };
 
-    const result1 = await resolveOrCreateAccount(claims);
-    const result2 = await resolveOrCreateAccount(claims);
+    const result1 = await resolve(claims);
+    const result2 = await resolve(claims);
 
     expect(result1.id).toBe("user-concurrent");
     expect(result2.id).toBe("user-concurrent");
@@ -238,7 +251,7 @@ describe("resolveOrCreateAccount", () => {
         rows: [makeUserRow({ global_role: "engineering_manager", is_new_user: true })],
       });
 
-      const result = await resolveOrCreateAccount({
+      const result = await resolve({
         sub: "sub-em",
         iss: "https://idp.example.com",
         name: "Eve",
@@ -259,7 +272,7 @@ describe("resolveOrCreateAccount", () => {
         rows: [makeUserRow({ global_role: "application_admin", is_new_user: true })],
       });
 
-      const result = await resolveOrCreateAccount({
+      const result = await resolve({
         sub: "sub-admin",
         iss: "https://idp.example.com",
         name: "Admin",
@@ -277,7 +290,7 @@ describe("resolveOrCreateAccount", () => {
       // Task 2.3: absent claim → default role, not an error
       mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ is_new_user: true })] });
 
-      const result = await resolveOrCreateAccount({
+      const result = await resolve({
         sub: "sub-no-claim",
         iss: "https://idp.example.com",
         name: "Frank",
@@ -297,15 +310,15 @@ describe("resolveOrCreateAccount", () => {
 
       mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ is_new_user: true })] });
 
-      const result = await resolveOrCreateAccount(
+      const result = await resolve(
         {
           sub: "sub-bad-claim",
           iss: "https://idp.example.com",
           name: "Greta",
           email: "greta@example.com",
-          role: "superuser", // not on allowlist
+          role: "superuser", // not a map key
         },
-        mockLogger,
+        { logger: mockLogger },
       );
 
       expect(result.globalRole).toBe("engineer");
@@ -313,12 +326,13 @@ describe("resolveOrCreateAccount", () => {
       const upsertCall = mockQuery.mock.calls[0];
       expect(upsertCall[1][4]).toBe("engineer");
 
-      // Warning must be emitted — but must NOT include the raw claim value
+      // Warning must be emitted — but must NOT include the raw claim value.
+      // pino argument order (R2): fields object first, message second.
       expect(mockLogger.warn).toHaveBeenCalledTimes(1);
-      const warnCall = mockLogger.warn.mock.calls[0];
-      // Confirm the warning message and fields do not include 'superuser'
-      expect(String(warnCall[0])).not.toContain("superuser");
-      expect(JSON.stringify(warnCall[1] ?? {})).not.toContain("superuser");
+      const warnCall = mockLogger.warn.mock.calls[0]!;
+      expect(warnCall[0]).toEqual({ claimName: "role" });
+      expect(typeof warnCall[1]).toBe("string");
+      expect(JSON.stringify(warnCall)).not.toContain("superuser");
     });
 
     it("re-evaluates global_role on every authentication — returning user's role updates when claim changes", async () => {
@@ -329,7 +343,7 @@ describe("resolveOrCreateAccount", () => {
         rows: [makeUserRow({ id: "user-em", global_role: "engineering_manager", is_new_user: false })],
       });
 
-      const result = await resolveOrCreateAccount({
+      const result = await resolve({
         sub: "sub-em-returning",
         iss: "https://idp.example.com",
         name: "Hana",
@@ -358,7 +372,7 @@ describe("resolveOrCreateAccount", () => {
         rows: [makeUserRow({ id: "user-em-new", global_role: "engineering_manager", is_new_user: true })],
       });
 
-      const result = await resolveOrCreateAccount({
+      const result = await resolve({
         sub: "sub-em-new",
         iss: "https://idp.example.com",
         name: "Ivan",
@@ -386,7 +400,7 @@ describe("resolveOrCreateAccount", () => {
         rows: [makeUserRow({ is_new_user: true, previous_global_role: null } as never)],
       });
 
-      const result = await resolveOrCreateAccount({
+      const result = await resolve({
         sub: "sub-new",
         iss: "https://idp.example.com",
       });
@@ -406,7 +420,7 @@ describe("resolveOrCreateAccount", () => {
         ],
       });
 
-      const result = await resolveOrCreateAccount({
+      const result = await resolve({
         sub: "sub-123",
         iss: "https://idp.example.com",
         role: "engineering_manager",
@@ -422,7 +436,7 @@ describe("resolveOrCreateAccount", () => {
         rows: [makeUserRow({ is_new_user: false, previous_global_role: "engineer" } as never)],
       });
 
-      await resolveOrCreateAccount({ sub: "sub-123", iss: "https://idp.example.com" });
+      await resolve({ sub: "sub-123", iss: "https://idp.example.com" });
 
       const upsertSql = (mockQuery.mock.calls[0][0] as string).toLowerCase();
       expect(upsertSql).toContain("with prior as");
@@ -435,14 +449,115 @@ describe("resolveOrCreateAccount", () => {
       });
       const mockClient = { query: mockClientQuery } as never;
 
-      await resolveOrCreateAccount(
-        { sub: "sub-123", iss: "https://idp.example.com" },
-        undefined,
-        mockClient,
-      );
+      await resolve({ sub: "sub-123", iss: "https://idp.example.com" }, { client: mockClient });
 
       expect(mockClientQuery).toHaveBeenCalledTimes(1);
       expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+  // -------------------------------------------------------------------------
+  // configurable-oidc-role-map (#243) task 3.2: map injection
+  // -------------------------------------------------------------------------
+  describe("role map injection (task 3.2)", () => {
+    it.each([
+      ["engineering_manager", "engineering_manager"],
+      ["application_admin", "application_admin"],
+      ["facilitator", "facilitator"],
+      ["senior_engineer", "senior_engineer"],
+      ["engineer", "engineer"],
+    ])("default map: role claim %s resolves to %s", async (claim, expected) => {
+      mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ global_role: expected })] });
+      await resolve({ sub: "s", iss: "i", role: claim });
+      expect(mockQuery.mock.calls[0]![1][4]).toBe(expected);
+    });
+
+    it("uses the injected custom map (array claim, precedence)", async () => {
+      const roleMap = new Map<string, MappableRole>([
+        ["Retro-Facilitators", "facilitator"],
+        ["Seniors", "senior_engineer"],
+      ]);
+      mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ global_role: "facilitator" })] });
+      await resolve({ sub: "s", iss: "i", role: ["Seniors", "Retro-Facilitators"] }, { roleMap });
+      expect(mockQuery.mock.calls[0]![1][4]).toBe("facilitator");
+    });
+
+    it("an internal role string is unmapped under a custom map that does not list it", async () => {
+      const roleMap = new Map<string, MappableRole>([["Eng-Managers", "engineering_manager"]]);
+      mockQuery.mockResolvedValueOnce({ rows: [makeUserRow()] });
+      await resolve({ sub: "s", iss: "i", role: "application_admin" }, { roleMap });
+      expect(mockQuery.mock.calls[0]![1][4]).toBe("engineer");
+    });
+
+    it("throws when roleMap is missing (no silent fallback to the default map)", async () => {
+      await expect(
+        resolveOrCreateAccount(
+          { sub: "s", iss: "i", role: "application_admin" },
+          { logger: { warn: vi.fn() } } as unknown as Parameters<typeof resolveOrCreateAccount>[1],
+        ),
+      ).rejects.toThrow(/roleMap/);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+  // -------------------------------------------------------------------------
+  // configurable-oidc-role-map (#243) task 3.3: sign-in logging (D7, R2, S1,
+  // S8). Every assertion checks pino argument order: calls[i][0] is the
+  // fields object, calls[i][1] the message string. No line carries a claim
+  // value or a map key.
+  // -------------------------------------------------------------------------
+  describe("sign-in logging (task 3.3)", () => {
+    const MAP = new Map<string, MappableRole>([
+      ["Dipstick-Admins", "application_admin"],
+      ["Eng-Managers", "engineering_manager"],
+      ["Retro-Facilitators", "facilitator"],
+    ]);
+    const VALUES = ["Dipstick-Admins", "Eng-Managers", "Retro-Facilitators", "All-Staff"];
+
+    async function signIn(claims: Partial<IdTokenClaims>, opts: { isNewUser?: boolean; globalRole?: string } = {}) {
+      const logger = { warn: vi.fn() };
+      mockQuery.mockResolvedValueOnce({
+        rows: [makeUserRow({ is_new_user: opts.isNewUser ?? false, global_role: opts.globalRole ?? "engineer" })],
+      });
+      await resolve({ sub: "s", iss: "i", ...claims } as IdTokenClaims, { logger, roleMap: MAP });
+      for (const call of logger.warn.mock.calls) {
+        expect(typeof call[0]).toBe("object");
+        expect(typeof call[1]).toBe("string");
+        for (const v of VALUES) expect(JSON.stringify(call)).not.toContain(v);
+      }
+      return logger.warn.mock.calls;
+    }
+
+    it("missing claim with an own _claim_names entry warns once with reason claim_overage (S8)", async () => {
+      const calls = await signIn({ _claim_names: { role: "src1" } });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]![0]).toEqual({ claimName: "role", reason: "claim_overage" });
+    });
+
+    it("wholly unmapped claim warns once with the claim name only", async () => {
+      const calls = await signIn({ role: ["All-Staff"] });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]![0]).toEqual({ claimName: "role" });
+    });
+
+    it.each([
+      ["[admin, facilitator] returning", ["Dipstick-Admins", "Retro-Facilitators"], "application_admin", ["facilitator"], false],
+      ["[admin, facilitator] first sign-in", ["Dipstick-Admins", "Retro-Facilitators"], "application_admin", ["facilitator"], true],
+      ["[engineering_manager, facilitator] returning", ["Eng-Managers", "Retro-Facilitators"], "engineering_manager", ["facilitator"], false],
+      ["[admin, engineering_manager] returning (S1)", ["Dipstick-Admins", "Eng-Managers"], "application_admin", ["engineering_manager"], false],
+      ["[admin, engineering_manager, facilitator]", VALUES.slice(0, 3), "application_admin", ["engineering_manager", "facilitator"], false],
+    ])("%s logs exactly one precedence-discard line", async (_label, claim, resolvedRole, discardedRoles, isNewUser) => {
+      const calls = await signIn({ role: claim }, { isNewUser, globalRole: resolvedRole });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]![0]).toEqual({ claimName: "role", resolvedRole, discardedRoles });
+    });
+
+    it.each([
+      ["a missing claim", {}],
+      ["a partial match", { role: ["Eng-Managers", "All-Staff"] }],
+      ["an array with no non-empty strings", { role: ["", 42, null] }],
+      ["a facilitator-only claim", { role: ["Retro-Facilitators"] }],
+      ["_claim_names for a different claim", { _claim_names: { groups: "src1" } }],
+    ])("%s logs nothing", async (_label, claims) => {
+      expect(await signIn(claims as Partial<IdTokenClaims>)).toHaveLength(0);
     });
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type * as OpenidClientModule from "openid-client";
 import type * as ErrorHandlerModule from "../../auth/error-handler.js";
 import type * as OidcErrorSanitizerModule from "../../auth/oidc-error-sanitizer.js";
+import type * as AccountResolverModule from "../../auth/account-resolver.js";
 
 const mockDbQuery = vi.fn();
 const mockDbConnect = vi.fn();
@@ -43,6 +44,9 @@ const { mockConfig, mockIsPrivateAddress } = vi.hoisted(() => ({
     OIDC_REDIRECT_URI: "http://localhost:3000/auth/callback",
     NODE_ENV: "test" as string,
     APP_ORIGIN: "http://localhost:5173",
+    // configurable-oidc-role-map A7: a sentinel map, so the route-wiring test
+    // can assert identity (toBe) rather than pass vacuously on undefined.
+    roleMap: new Map([["sentinel", "facilitator"]]) as ReadonlyMap<string, string>,
   },
   mockIsPrivateAddress: vi.fn(),
 }));
@@ -279,7 +283,8 @@ describe("authRoutes", () => {
       expect(mockIsPrivateAddress).toHaveBeenCalledWith(mockConfig.OIDC_ISSUER);
       const body = res.json() as { options: Array<{ accountId: string; seeded: boolean }> };
       expect(body.options).toHaveLength(4);
-      expect(body.options.find((o) => o.accountId === "facilitator-001")?.seeded).toBe(false);
+      // configurable-oidc-role-map D9: facilitator-001 is a real facilitator.
+      expect(body.options.find((o) => o.accountId === "facilitator-001")?.seeded).toBe(true);
       expect(body.options.find((o) => o.accountId === "manager-001")?.seeded).toBe(true);
       expect(body.options.find((o) => o.accountId === "admin-001")?.seeded).toBe(true);
       expect(body.options.find((o) => o.accountId === "participant-001")?.seeded).toBe(true);
@@ -2533,6 +2538,276 @@ describe("validateReturnTo", () => {
       expect(validateReturnTo(sessionValue, log)).toBe(sessionValue);
       expect(validateReturnTo(teamValue, log)).toBe(teamValue);
       expect(log.debug).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// configurable-oidc-role-map (#243): route wiring (3.3), audit firing
+// condition (4.1) and no discard flag in audit metadata (4.2).
+// ---------------------------------------------------------------------------
+describe("GET /auth/callback — configurable OIDC role map", () => {
+  interface SpyLogger {
+    bindings: Record<string, unknown>;
+    children: SpyLogger[];
+    child: ReturnType<typeof vi.fn>;
+    [method: string]: unknown;
+  }
+  const LOG_METHODS = ["info", "warn", "error", "debug", "trace", "fatal"] as const;
+
+  function makeSpyLogger(bindings: Record<string, unknown> = {}): SpyLogger {
+    const logger: SpyLogger = {
+      bindings,
+      children: [],
+      level: "info",
+      child: vi.fn((b: Record<string, unknown>) => {
+        const c = makeSpyLogger({ ...bindings, ...b });
+        logger.children.push(c);
+        return c;
+      }),
+    };
+    for (const m of LOG_METHODS) logger[m] = vi.fn();
+    logger["silent"] = vi.fn();
+    return logger;
+  }
+
+  /** Every argument passed to every log method on the logger and its children. */
+  function allLogged(logger: SpyLogger): unknown[][] {
+    const own = LOG_METHODS.flatMap((m) => (logger[m] as ReturnType<typeof vi.fn>).mock.calls);
+    return [...own, ...logger.children.flatMap(allLogged)];
+  }
+
+  function buildAppWithLogger(spy: SpyLogger) {
+    const app = Fastify();
+    app.decorateRequest("session", null);
+    app.addHook("onRequest", async (request) => {
+      (request as unknown as Record<string, unknown>).session = {
+        userId: "user-1",
+        sessionCreatedAt: new Date().toISOString(),
+        sessionId: "sess-1",
+        destroy: vi.fn((cb?: () => void) => cb?.()),
+        regenerate: vi.fn(async () => {}),
+        save: vi.fn(async () => {}),
+        touch: vi.fn(),
+      };
+      (request as unknown as { log: unknown }).log = spy;
+    });
+    app.register(authRoutes, { prefix: "/auth" });
+    return app.ready().then(() => app);
+  }
+
+  function setupCallback(claims: Record<string, unknown>) {
+    mockRedisGetdel.mockResolvedValue(
+      JSON.stringify({ nonce: "n", codeVerifier: "cv", createdAt: new Date().toISOString() }),
+    );
+    mockHandleCallback.mockResolvedValue({
+      claims: () => ({ sub: "sub-1", iss: "https://idp.example.com", ...claims }),
+      access_token: "at",
+      expires_in: 3600,
+    });
+    mockBuildSessionData.mockReturnValue({
+      userId: "user-1",
+      sessionCreatedAt: new Date().toISOString(),
+      encryptedAccessToken: "enc(at)",
+      tokenExpiresAt: 9999999999,
+    });
+  }
+
+  function resolvedUser(o: { isNewUser: boolean; globalRole: string; previousGlobalRole: string | null }) {
+    return {
+      id: "user-1",
+      oidcSubject: "sub-1",
+      oidcIssuer: "https://idp.example.com",
+      displayName: "Alice",
+      email: "alice@example.com",
+      ...o,
+    };
+  }
+
+  /** A transaction client whose users UPSERT returns the given row. */
+  function upsertClient(row: { global_role: string; is_new_user: boolean; previous_global_role: string | null }) {
+    const query = vi.fn((sql: string, _params?: unknown[]) => {
+      if (typeof sql === "string" && sql.includes("INSERT INTO users")) {
+        return Promise.resolve({
+          rows: [{
+            id: "user-1", oidc_subject: "sub-1", oidc_issuer: "https://idp.example.com",
+            display_name: "Alice", email: "alice@example.com", ...row,
+          }],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    return { query, release: vi.fn() };
+  }
+
+  async function useRealResolver() {
+    const actual = await vi.importActual<typeof AccountResolverModule>("../../auth/account-resolver.js");
+    mockResolveOrCreateAccount.mockImplementation(actual.resolveOrCreateAccount as (...args: unknown[]) => unknown);
+  }
+
+  const originalRoleMap = mockConfig.roleMap;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveOrCreateAccount.mockReset();
+    mockConfig.roleMap = originalRoleMap;
+    mockConfig.NODE_ENV = "test";
+    mockIsPrivateAddress.mockReturnValue(false);
+    mockSanitizeOidcError.mockReturnValue({ errorClass: "MockSanitized" });
+    mockDbQuery.mockResolvedValue({ rows: [] });
+    mockDbConnect.mockImplementation(() => Promise.resolve(makeMockClient()));
+    mockWriteFailOpenAuditRow.mockResolvedValue(undefined);
+  });
+
+  // 3.3 (R3, A7)
+  it("passes a request.log.child({ correlationId }) logger and config.roleMap (by identity) to the resolver", async () => {
+    setupCallback({});
+    mockResolveOrCreateAccount.mockResolvedValue(resolvedUser({ isNewUser: false, globalRole: "engineer", previousGlobalRole: "engineer" }));
+    const spy = makeSpyLogger();
+    const app = await buildAppWithLogger(spy);
+
+    const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+    expect(res.statusCode).toBe(302);
+
+    const callbackReceived = mockEmitAuditEvent.mock.calls.find((c: unknown[]) => c[1] === "auth.callback_received");
+    const correlationId = (callbackReceived![2] as Record<string, unknown>).correlationId;
+    const options = mockResolveOrCreateAccount.mock.calls[0]![1] as { logger: unknown; roleMap: unknown };
+    expect(options.roleMap).toBe(mockConfig.roleMap);
+    expect(spy.child).toHaveBeenCalledWith({ correlationId });
+    const childIndex = spy.child.mock.calls.findIndex((c) => (c[0] as Record<string, unknown>).correlationId === correlationId);
+    expect(options.logger).toBe(spy.child.mock.results[childIndex]!.value);
+  });
+
+  // 3.3 (BA S13): first-access "Group-style array claim is mapped"
+  it("an array `groups` claim reaches the resolver intact", async () => {
+    setupCallback({ groups: ["Eng-Managers", "Retro-Facilitators"] });
+    mockResolveOrCreateAccount.mockResolvedValue(resolvedUser({ isNewUser: false, globalRole: "engineering_manager", previousGlobalRole: "engineering_manager" }));
+    const app = await buildApp();
+
+    await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+    const claims = mockResolveOrCreateAccount.mock.calls[0]![0] as Record<string, unknown>;
+    expect(claims["groups"]).toEqual(["Eng-Managers", "Retro-Facilitators"]);
+  });
+
+  // 3.3 (S7): no logger method, at any level, on the request logger or any
+  // child, receives a claim value or map key during the whole callback.
+  it("no logged argument contains a claim value or a map key (real resolver)", async () => {
+    await useRealResolver();
+    setupCallback({ role: ["All-Staff-Secret"] });
+    mockDbConnect.mockImplementation(() =>
+      Promise.resolve(upsertClient({ global_role: "engineer", is_new_user: false, previous_global_role: "engineer" })),
+    );
+    const spy = makeSpyLogger();
+    const app = await buildAppWithLogger(spy);
+
+    const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+    expect(res.statusCode).toBe(302);
+
+    const logged = allLogged(spy);
+    // Non-vacuous: the unmapped warn did fire, carrying correlationId via the child.
+    const warnChild = spy.children.find((c) => (c["warn"] as ReturnType<typeof vi.fn>).mock.calls.length > 0);
+    expect(warnChild).toBeDefined();
+    expect(warnChild!.bindings).toHaveProperty("correlationId");
+    expect((warnChild!["warn"] as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toEqual({ claimName: "role" });
+
+    const text = JSON.stringify([logged, mockEmitAuditEvent.mock.calls.map((c) => c.slice(1))]);
+    expect(text).not.toContain("All-Staff-Secret");
+    expect(text).not.toContain("sentinel");
+  });
+
+  // 4.1 (D8, C1)
+  it("facilitator -> engineer emits auth.role_claim_mapped with previousRole on both the audit row and the structured event", async () => {
+    setupCallback({});
+    mockResolveOrCreateAccount.mockResolvedValue(resolvedUser({ isNewUser: false, globalRole: "engineer", previousGlobalRole: "facilitator" }));
+    const client = { query: vi.fn().mockResolvedValue({ rows: [] }), release: vi.fn() };
+    mockDbConnect.mockResolvedValueOnce(client);
+    const app = await buildApp();
+
+    await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+    const insert = client.query.mock.calls.find((c) => typeof c[0] === "string" && c[0].includes("'auth.role_claim_mapped'"));
+    expect(insert).toBeDefined();
+    const params = insert![1] as unknown[];
+    expect(params[1]).toBe("engineer");
+    expect(JSON.parse(params[3] as string)).toMatchObject({ globalRole: "engineer", previousRole: "facilitator" });
+
+    expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      "auth.role_claim_mapped",
+      expect.objectContaining({ globalRole: "engineer", previousRole: "facilitator" }),
+    );
+  });
+
+  it("engineer -> engineer emits neither the audit row nor the structured event", async () => {
+    setupCallback({});
+    mockResolveOrCreateAccount.mockResolvedValue(resolvedUser({ isNewUser: false, globalRole: "engineer", previousGlobalRole: "engineer" }));
+    const client = { query: vi.fn().mockResolvedValue({ rows: [] }), release: vi.fn() };
+    mockDbConnect.mockResolvedValueOnce(client);
+    const app = await buildApp();
+
+    await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+    expect(client.query.mock.calls.some((c) => String(c[0]).includes("auth.role_claim_mapped"))).toBe(false);
+    expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(expect.anything(), "auth.role_claim_mapped", expect.anything());
+  });
+
+  // 4.2 (D8): a precedence discard is logged, never audited. Uses the real
+  // resolver with a map where the discard actually happens.
+  describe("no discard flag in audit metadata (task 4.2)", () => {
+    const MAP = new Map([
+      ["Dipstick-Admins", "application_admin"],
+      ["Eng-Managers", "engineering_manager"],
+      ["Retro-Facilitators", "facilitator"],
+    ]);
+
+    it.each([
+      ["[admin, facilitator]", ["Dipstick-Admins", "Retro-Facilitators"]],
+      ["[admin, engineering_manager]", ["Dipstick-Admins", "Eng-Managers"]],
+    ])("returning user %s: auth.role_claim_mapped metadata keys are unchanged plus previousRole", async (_label, groups) => {
+      await useRealResolver();
+      mockConfig.roleMap = MAP;
+      setupCallback({ role: groups });
+      const client = upsertClient({ global_role: "application_admin", is_new_user: false, previous_global_role: "application_admin" });
+      mockDbConnect.mockResolvedValueOnce(client);
+      const spy = makeSpyLogger();
+      const app = await buildAppWithLogger(spy);
+
+      await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+      // The discard was logged (so this test is not vacuous) ...
+      expect(allLogged(spy).some((c) => JSON.stringify(c[0]).includes("discardedRoles"))).toBe(true);
+      // ... but not audited.
+      const insert = client.query.mock.calls.find((c) => String(c[0]).includes("'auth.role_claim_mapped'"));
+      expect(Object.keys(JSON.parse((insert![1] as unknown[])[3] as string)).sort()).toEqual(
+        ["correlationId", "globalRole", "oidcSubject", "previousRole"],
+      );
+      const event = mockEmitAuditEvent.mock.calls.find((c: unknown[]) => c[1] === "auth.role_claim_mapped");
+      expect(Object.keys(event![2] as object).sort()).toEqual(
+        ["correlationId", "globalRole", "oidcSubject", "previousRole", "sourceIp", "userId"],
+      );
+    });
+
+    it("first sign-in [admin, facilitator]: auth.first_access_created metadata is unchanged", async () => {
+      await useRealResolver();
+      mockConfig.roleMap = MAP;
+      setupCallback({ role: ["Dipstick-Admins", "Retro-Facilitators"] });
+      const client = upsertClient({ global_role: "application_admin", is_new_user: true, previous_global_role: null });
+      mockDbConnect.mockResolvedValueOnce(client);
+      const spy = makeSpyLogger();
+      const app = await buildAppWithLogger(spy);
+
+      await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+      expect(allLogged(spy).some((c) => JSON.stringify(c[0]).includes("discardedRoles"))).toBe(true);
+      const insert = client.query.mock.calls.find((c) => String(c[0]).includes("'auth.first_access_created'"));
+      expect(Object.keys(JSON.parse((insert![1] as unknown[])[3] as string)).sort()).toEqual(
+        ["correlationId", "globalRole", "oidcIssuer", "oidcSubject"],
+      );
+      const event = mockEmitAuditEvent.mock.calls.find((c: unknown[]) => c[1] === "auth.first_access_created");
+      expect(Object.keys(event![2] as object).sort()).toEqual(
+        ["correlationId", "globalRole", "oidcIssuer", "oidcSubject", "sourceIp", "userId"],
+      );
     });
   });
 });

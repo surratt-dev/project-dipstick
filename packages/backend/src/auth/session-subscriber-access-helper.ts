@@ -157,7 +157,11 @@ export async function evaluateSessionSubscriberAccess(
     row.membership_exists &&
     row.membership_removed_at === null &&
     row.global_role !== "engineering_manager" &&
-    row.membership_role !== "engineering_manager"
+    row.membership_role !== "engineering_manager" &&
+    // configurable-oidc-role-map D11 (E3): application admins do not receive
+    // live session events as participants, on the same terms as EMs. Only
+    // this participant path changes; the facilitator path above does not.
+    row.global_role !== "application_admin"
   ) {
     return {
       path: "participant",

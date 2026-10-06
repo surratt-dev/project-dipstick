@@ -20,7 +20,7 @@ Record a pass/fail and notes for each step in the [results table](#results) at t
 
 ## Setup
 
-The persona accounts have no teams, and `facilitator-001` signs in as an `engineer` (see `docs/local-development.md`). The SQL below creates four test teams and temporarily promotes `facilitator-001` to `facilitator`. **No team lists `facilitator-001` as a member**, which the add form requires.
+The persona accounts have no teams. `facilitator-001` signs in as a real `facilitator` through the default role map (see `docs/local-development.md`). The SQL below creates four test teams. Its `UPDATE` of `facilitator-001` to `facilitator` is now a no-op, kept for older checkouts. **No team lists `facilitator-001` as a member**, which the add form requires.
 
 | Team | State | Used for |
 |---|---|---|
@@ -43,7 +43,7 @@ The app runs at http://localhost:5173.
 
 Open http://localhost:5173 and click the **facilitator-001** persona button. You'll land on `/no-team`, which is expected at this point. Signing in creates the `users` row the setup needs.
 
-> **Order matters.** The backend resets `global_role` from the identity provider on **every** sign-in, and `facilitator-001` has no role claim. Run the setup **after** signing in. If you sign out and back in, re-run only the `UPDATE users …` line.
+> **Order matters.** Signing in creates the `users` row the setup needs, so run the setup **after** signing in. The backend resets `global_role` from the identity provider on **every** sign-in. `facilitator-001` now carries the `facilitator` role claim, so it stays a facilitator across sign-ins.
 
 ### 3. Create the test data
 
@@ -59,7 +59,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Promote facilitator-001 (reverted on next sign-in; re-run this line after signing in again).
+-- Ensure facilitator-001 is a facilitator (a no-op since #243: the stub's role claim already makes it one).
 UPDATE users SET global_role = 'facilitator' WHERE oidc_subject = 'facilitator-001';
 
 -- Four test teams. facilitator-001 is deliberately NOT a member of any.

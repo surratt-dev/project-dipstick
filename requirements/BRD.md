@@ -200,7 +200,7 @@ Requirements are marked **[HARD]** where the behavior is non-negotiable and cann
 - **Participant:** A team member eligible to vote in sessions for their assigned team.
 - **Facilitator:** A user who leads sessions for teams other than their own. A facilitator may also be a Participant for their own team.
 - **Engineering Manager (EM):** A user associated with a team who has read-only access to session history and trend data for that team. Within session history, an EM sees anonymous vote distributions (counts per value per topic) rather than individual vote attribution. An EM may not vote.
-- **Application Administrator:** A user who may manage team definitions, assign members, and assign facilitators across all teams.
+- **Application Administrator:** A user who may manage team definitions, assign members, and assign facilitators across all teams. An Application Administrator does not take part in sessions: they cannot register as a session participant, lock in votes, or receive live session events, even for a team they belong to. They may still hold team membership. *(Added by #243, configurable OIDC role map, design D11.)*
 
 **FR-1.4** [HARD] The application shall prevent any user assigned the EM role for a given team from casting votes in sessions for that team.
 
@@ -220,7 +220,9 @@ Requirements are marked **[HARD]** where the behavior is non-negotiable and cann
 
 **FR-2.3** [HARD] Upon session creation, the application shall generate a unique, non-guessable join link. The facilitator is responsible for distributing this link to participants out-of-band.
 
-**FR-2.4** [HARD] Any authenticated user who accesses the join link and is a registered member of the target team shall be admitted to the session as a Participant. Users who are not members of the target team shall be denied entry with an explanatory message.
+**FR-2.4** [HARD] Any authenticated user who accesses the join link and is a registered member of the target team shall be admitted to the session as a Participant, with one exception: Application Administrators are not admitted as Participants, even when they are team members (see FR-1.3 and Constraint 2). Users who are not members of the target team shall be denied entry with an explanatory message.
+
+*Rationale (added by #243, configurable OIDC role map, design D11):* with group-based role mapping, a person in both the manager and the admin IdP groups resolves to Application Administrator under the fixed role precedence. Excluding administrators from session participation means such a person cannot get around the no-manager rule. For this release a refused administrator sees the generic no-access state. Admin-specific explanatory copy is a follow-up.
 
 **FR-2.5** [PREF] The session lobby should display a real-time list of participants who have joined, visible to the facilitator only.
 
@@ -645,7 +647,7 @@ The following constraints are non-negotiable. They reflect organizational policy
 Session data, vote history, trend charts, and action items for a given team are visible only to the engineers on that team, the team's Engineering Manager, and the facilitator assigned to a given session. No cross-team visibility. No aggregate views that expose team-level scores to individuals outside the reporting chain.
 
 **Constraint 2: Engineering Managers have read-only access and cannot participate as session voters.**
-Engineering Managers may view their team's trend history, session summaries, and action item backlog. They may not join a session as a participant, cast votes, or take actions that affect session flow. This constraint must be enforced at the application layer, not governed by convention.
+Engineering Managers may view their team's trend history, session summaries, and action item backlog. They may not join a session as a participant, cast votes, or take actions that affect session flow. This constraint must be enforced at the application layer, not governed by convention. Application Administrators are excluded from session participation on the same terms (no registration, voting or live session events), so that a manager who is also an administrator cannot bypass this constraint (#243, design D11). They may still hold team membership.
 
 **Constraint 3: Session history is retained for 15 months.**
 Session data, vote records, trend data, and action items are retained for 15 months (five quarters) from their creation date. This window is sufficient to support meaningful longitudinal trend analysis across a full annual cycle and one quarter of additional context. Any change to the retention period requires explicit review and approval by the executive sponsor before implementation.

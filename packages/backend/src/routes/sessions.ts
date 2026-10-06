@@ -48,6 +48,8 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
   // Rejects any user who is an Engineering Manager by either:
   //   - users.global_role = 'engineering_manager'
   //   - team_memberships.role = 'engineering_manager' for this session's team
+  // and any application admin (users.global_role = 'application_admin',
+  // configurable-oidc-role-map D11).
   //
   // (Task 3.1, 3.2 — reads from DB, not cache)
   // -------------------------------------------------------------------------
@@ -144,11 +146,16 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     // (D2 correction: membership_exists is required, not just EM-exclusion
     // -- a user with no team_memberships row at all previously passed
     // because the LEFT JOIN yielded membership_role = null).
+    //
+    // configurable-oidc-role-map D11 (E1): application admins are excluded on
+    // the same terms as Engineering Managers (binding user decision on S1 --
+    // an EM who is also in the admin group resolves to application_admin).
     const isEligible =
       membership_exists &&
       membership_removed_at === null &&
       global_role !== "engineering_manager" &&
-      membership_role !== "engineering_manager";
+      membership_role !== "engineering_manager" &&
+      global_role !== "application_admin";
 
     if (!isEligible) {
       // Synchronous audit write, no transaction needed (no paired state
@@ -376,17 +383,21 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       // A user promoted to EM after the connection was opened is caught here.
       // A vote they submitted BEFORE the promotion is already in the votes table
       // and is NOT removed by this check — it will be counted at reveal.
+      //
+      // configurable-oidc-role-map D11 (E2): application admins are rejected
+      // too, so the message no longer names a role.
       if (
         !membership_exists ||
         membership_removed_at !== null ||
         global_role === "engineering_manager" ||
-        membership_role === "engineering_manager"
+        membership_role === "engineering_manager" ||
+        global_role === "application_admin"
       ) {
         return reply.code(403).send({
           error: {
             category: "invalid_request" as const,
             message:
-              "Engineering Managers cannot lock in votes.",
+              "You are not eligible to lock in votes in this session.",
             correlationId: crypto.randomUUID(),
           },
         });

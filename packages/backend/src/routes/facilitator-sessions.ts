@@ -1297,6 +1297,8 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
          AND tm.removed_at IS NULL
          AND u.global_role != 'engineering_manager'
          AND tm.role != 'engineering_manager'
+         -- configurable-oidc-role-map D11 (E4): admins are not listed.
+         AND u.global_role != 'application_admin'
        ORDER BY u.display_name ASC`,
       [sessionId, grant.teamId],
     );

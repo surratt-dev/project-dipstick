@@ -1270,7 +1270,7 @@ Validates a session join token, confirms the user is an eligible team member, re
 
 **Auth:** Protected.
 
-**Authorization:** The authenticated user must be an active `participant` member of the session's team (`team_memberships.role = 'participant' AND removed_at IS NULL`). Engineering Managers who are team members cannot join as participants (FR-1.4).
+**Authorization:** The authenticated user must be an active `participant` member of the session's team (`team_memberships.role = 'participant' AND removed_at IS NULL`). Engineering Managers who are team members cannot join as participants (FR-1.4). Application Admins (`users.global_role = 'application_admin'`) cannot join as participants either, even when they are team members (BRD FR-2.4, Constraint 2; added by #243, design D11).
 
 **Request Body**
 
@@ -1311,7 +1311,7 @@ interface JoinSessionResponse {
 | Status | When |
 |---|---|
 | `401 Unauthorized` | No valid session cookie |
-| `403 Forbidden` | Authenticated user is an active team member with `engineering_manager` role; or user is not a member of the team at all |
+| `403 Forbidden` | Authenticated user is an active team member with `engineering_manager` role; or has `global_role = 'engineering_manager'` or `'application_admin'` (#243); or user is not a member of the team at all |
 | `404 Not Found` | Token does not match any session |
 | `409 Conflict` | Session exists but is not in a joinable state (`status = 'complete'` or `'abandoned'`) — use `410` for completed/ended sessions |
 | `410 Gone` | Session has ended (`status = 'complete'` or `'abandoned'`) |
@@ -1321,6 +1321,18 @@ interface JoinSessionResponse {
 - An Engineering Manager following the join link receives `403` with a message explaining why they cannot participate. They should be directed to the read-only history view.
 - After a successful join, the client should open a WebSocket connection to receive real-time updates. This HTTP endpoint is the gate; the WebSocket is the live channel.
 - Redis `session_participants` hash and `joined_users` set are updated after the PostgreSQL INSERT succeeds.
+
+**As built: Application Admin exclusion from live sessions (#243, configurable OIDC role map, design D11).** With group-based role mapping, a person in both the manager and admin IdP groups resolves to `application_admin`. Application Admins are therefore excluded from session participation on the same terms as Engineering Managers. Each check reads `users.global_role` live from the database. The error shapes are the ones the manager denial already uses; there are no new error codes.
+
+| Implemented endpoint / channel | Admin outcome |
+|---|---|
+| `POST /api/v1/sessions/:sessionId/participants` (participant registration) | `403`, category `invalid_request`, message `"You are not eligible to participate as a voter in this session."`. No `session_participants` row. An `audit_log` row and structured event `session.participant_registration_rejected` record `actor_global_role = 'application_admin'`. |
+| `POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in` (vote lock-in) | `403`, category `invalid_request`. The message is now `"You are not eligible to lock in votes in this session."` for every rejected caller, replacing the former `"Engineering Managers cannot lock in votes."`. No vote is recorded. Votes locked in before the user became an admin are kept and counted at reveal. |
+| `/ws/sessions/:sessionId` (session WebSocket): subscription, per-event delivery, periodic re-authorization | No participant grant. The connection closes with the existing undisclosed close code, and events are not delivered. The session-facilitator grant is unchanged. |
+| `GET /api/v1/sessions/:sessionId/action-items-review`, `GET /api/v1/sessions/:sessionId/participants-roster`, `POST /api/v1/sessions/:sessionId/reveal-latency` (reuse the session-subscriber grant) | Denied exactly as for a caller with no grant (`404` / `404` / `403` respectively). |
+| Participant roster contents | Application Admins are not listed. |
+
+Team membership and join-link redemption are not affected: an admin may still hold a team membership.
 
 ---
 
@@ -3053,13 +3065,13 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Customization lock enforced (FR-8.2) |
 | TOPIC-007 | No | Yes (non-member teams, post-lock) | No | **No** (`403 NOT_A_FACILITATOR`) | Facilitator-only (BRD FR-8.7); customization lock enforced (`409`) |
 | SESSION-001 | No | Yes (non-member teams) | No | Yes | Cross-team check re-enforced |
-| SESSION-002 | If participant | If facilitator | No | Yes | Live sessions only |
-| SESSION-003 | Yes (team member, participant role) | No | No | Yes | EM role blocked |
+| SESSION-002 | If participant | If facilitator | No | No (#243 D11) | Live sessions only |
+| SESSION-003 | Yes (team member, participant role) | No | No | No (#243 D11) | EM role and App Admin blocked, even as team members |
 | SESSION-004 to SESSION-006 | No | Session facilitator only | No | Yes | |
 | SESSION-007 | Own team | Teams in read window ([def](#facilitator-read-window)) | Managed teams | All | ADR-007 |
 | SESSION-008 | Own team (full votes) | Facilitated teams (full votes) | Managed teams (aggregates only) | All | EM filter enforced server-side |
 | SESSION-009 to SESSION-011 | No | Session facilitator / any facilitator (011) | No | Yes | |
-| VOTE-001 | Session participant | Session facilitator | No | Yes | |
+| VOTE-001 | Session participant | Session facilitator | No | No (#243 D11) | Reuses the session-subscriber grant |
 | VOTE-002 | Own items only | Any item (active session) | No | Yes | |
 | VOTE-003 | Session participant | Session facilitator | Aggregates only | Yes | Pre-reveal: 403 |
 | VOTE-004 | No | Yes (active session) | No | Yes | |
@@ -3098,7 +3110,7 @@ The following open questions must be resolved before the affected endpoints can 
 
 | Behavior | Trigger / WebSocket message | Rationale |
 |---|---|---|
-| Submit and lock in a vote | `vote.submit` (WebSocket only — no REST trigger) | HTTP polling would expose vote timing to observers |
+| Submit and lock in a vote | `vote.submit` (WebSocket only — no REST trigger). *As built:* `POST /api/v1/sessions/:sessionId/topics/:sessionTopicId/lock-in`; Engineering Managers and Application Admins receive `403` (see SESSION-003, "Application Admin exclusion") | HTTP polling would expose vote timing to observers |
 | Trigger the vote reveal | REST trigger: `POST /api/v1/teams/:teamId/sessions/:sessionId/reveal`. WebSocket broadcast: `vote_revealed`, published to every session subscriber only after the reveal write's transaction commits | Simultaneous delivery is achieved by the single post-commit broadcast, not by the trigger's transport — an authenticated REST action from the facilitator is the correct trigger for this privileged action |
 | Advance to next topic | REST trigger: `POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance` (`SESSION-012`). WebSocket broadcast: `topic_history_update`, published to the team's subscribers only after the advance write's transaction commits | Same pattern as the reveal trigger above — an authenticated REST action performs and commits the write; the post-commit broadcast is what achieves simultaneous delivery |
 | Participant join/leave notification | `participant.joined` / `participant.left` | Real-time push required |

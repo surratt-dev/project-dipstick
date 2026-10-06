@@ -1,6 +1,6 @@
 # Deferral: Designate a Facilitator
 
-**Status:** **Decided: Option A, facilitator designation through the IdP role claim** (2026-10-03, PR #230 Follow-up 8). Implementation is tracked in #235. The in-app designation endpoint described below is **not required** and is kept only as a possible later convenience.
+**Status:** **Decided: Option A, facilitator designation through the IdP role claim** (2026-10-03, PR #230 Follow-up 8). **The claim path is delivered by #243** (configurable OIDC role map): a deployment maps its IdP claim values, such as a `groups` entry, to `facilitator` through `OIDC_ROLE_MAP`, and the local stub's `facilitator-001` is a real facilitator. #235 still tracks the role-set work (storing several roles per user). The in-app designation endpoint described below is **not required** and is kept only as a possible later convenience.
 **Follow-on owner:** Marcus Delgado (Business Analyst)
 **Confirmed deferred:** Yes. The in-app UI and endpoint stay out of scope (design.md Decision 1 of `assign-role-to-team-member`). Designation itself is now provided by the IdP; see the Decision section below.
 
@@ -11,6 +11,8 @@
 **The problem it resolves.** `users.global_role` is re-mapped from the IdP role claim on every sign-in (first-access Decision 2), and the claim allowlist (`PERMITTED_GLOBAL_ROLES`, `account-resolver.ts`) did not include `facilitator`. So no supported path could produce a facilitator who stays one past their next sign-in. A manual `UPDATE users` is undone at the next sign-in. Because FR-2.1 [HARD] limits session creation to Facilitators, that blocks running a real Health Check.
 
 **What was decided.** `facilitator` is assigned the same way as `engineering_manager` and `application_admin`. An IdP administrator gives the user the `facilitator` value in the configured role claim (`OIDC_ROLE_CLAIM`). The application adds `facilitator` to the claim allowlist, along with `senior_engineer`, which had the same gap. The application itself never writes `global_role = 'facilitator'`.
+
+**As implemented (#243).** The allowlist was replaced by a per-deployment role map (`OIDC_ROLE_MAP`, see `docs/deployment.md`) rather than extended. The IdP administrator puts the user in a group or role that the deployment's map translates to `facilitator`. `senior_engineer` is mappable the same way. Precedence across several mapped values is fixed: `application_admin > engineering_manager > facilitator > senior_engineer > engineer`.
 
 **Why:**
 - **One writer for `global_role`.** The IdP sets it and the application re-reads it at every sign-in. No precedence rule is needed between an app-assigned value and the IdP claim.
