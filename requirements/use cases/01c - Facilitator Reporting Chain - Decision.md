@@ -1,6 +1,6 @@
 # Decision: Facilitator Reporting Chain
 
-**The rule.** The application models which managers sit in each team's reporting chain. A facilitator may not run a session for, or reach the standing topics of, a team whose reporting chain includes them. **Why.** "Not a member of the team" and "not in the team's reporting chain" are different properties. Only the first is enforced today; the second rests on IdP group hygiene that the deployment docs do not even ask for. **When.** This gates first-team launch: no team goes live until the check ships.
+**The rule.** The application models which managers sit in each team's reporting chain. A facilitator may not run a session for, or reach the standing topics of, a team whose reporting chain includes them. **Why.** "Not a member of the team" and "not in the team's reporting chain" are different properties. Only the first is enforced today; the second rests on IdP group hygiene that the deployment docs do not even ask for. **When.** Deferred. Building it does **not** gate launch. Until it ships, and for any team with no recorded chain afterwards, the membership check and an operator rule in the deployment docs apply, so a new team needs nothing beyond its join link to run its first session.
 
 ---
 
@@ -10,7 +10,7 @@
 **Follow-on owner:** the Business Analyst.
 **VP of Engineering:** acknowledgment *pending* (owner: the product owner). #238 names the VP as co-owner, and reporting-line data is VP territory. Record the acknowledgment here.
 **Implementation:** #247. Not yet built.
-**Launch gate:** yes. No team goes live until #247 ships (user decision, 2026-10-05).
+**Launch gate:** none. Revised 2026-10-06 by the product owner: making the first sessions easy (create a team, share the join link, run a session) matters more than enforcing reporting lines from day one. #247 is deferred and not scheduled.
 
 **Traceability:**
 - `Summary.md:12`: the facilitator is "a senior engineer from *another* team … **not in the team's reporting chain**" (the intent).
@@ -50,22 +50,29 @@ What the model must deliver (requirements for #247; the *how* is left to its des
    - The draft refusal gets its own error code and its own audit operation (for example `session.draft_denied_reporting_chain`). The response must not reveal the chain.
    - Auditing standing-access refusals is new scope; the design decides it.
    - The membership check and its audit stay unchanged. The design states which refusal wins when both apply.
-4. **Fails closed.** If T has no recorded chain, or the chain cannot be evaluated (source unavailable, a cycle, depth exceeded, a manager with no account), session creation for T is **refused**. The refusal is audited and visible to an Application Admin. A warning that lets the request through does not meet this; per BRD §13 the rule is structural. Only how the problem is surfaced to admins is left to design.
+4. **No setup required to start.** Recording a chain is optional for a team. A team with **no recorded chain** runs sessions under the membership check alone, exactly as before #247, with no prompt or extra step for the facilitator or members. Teams without a chain must be visible to an Application Admin, so the gap is never silent. Once a team **has** a recorded chain that cannot be evaluated (source unavailable, a cycle, depth exceeded), session creation for it is refused and audited: an admin chose to record that chain, so a broken one is not passed through. (Revised 2026-10-06. It replaces "fails closed for teams with no chain", which would have made recording a chain a prerequisite for every new team.)
 5. **Manager relationships only.** Store the manager's identity (who may have no Dipstick account), the relationship, its source and an as-of time. Store no title, level, org name, or HR identifier beyond the join key. The design defines who can read and who can change the chain, and changes are audited.
 
 **Open design questions** (for #247, not decided here):
 - **Source of truth.** IdP-supplied (for example a `manager` attribute or manager-hierarchy groups) or recorded in the application by an Application Admin (extending TEAM-006). The 2026-10-03 decision made the IdP the single writer of `global_role` (01b, Decision section). Whether that principle also applies to reporting lines needs to be settled.
 - **Depth.** The full chain to the top of engineering, or a bounded number of levels.
 - **Staleness.** How quickly a reorg reaches the check (compare the ~90-minute bound on role changes).
-- **New teams.** A team created through `POST /api/v1/teams` has no chain at first, so under requirement 4 nobody can facilitate it yet. Who records its chain, and when?
+- **New teams.** A team created through `POST /api/v1/teams` has no chain at first and runs under the membership check (requirement 4). Who records its chain later, and is the admin prompted to?
 - **Sessions already in progress.** #235 Decision 12 re-reads the role when a draft moves to the lobby, and only lobby-or-later sessions stay with their facilitator. Does that draft → lobby re-check also apply `inChain`?
 - **Dual-claim audit (#235 Security review S4).** Should `discardedRoles` also go in the `auth.role_claim_mapped` audit row, as durable evidence of who was sent both `engineering_manager` and `facilitator`?
 
 ---
 
-## 4. Until the model ships
+## 4. Until the model ships (deferred, no launch gate)
 
-No team goes live until #247 ships. That gate is how the "no team goes live" rule is checked: the first-team launch checklist must list #247 as closed. Before launch, the membership check and the #243 precedence are the only controls. They are **not** accepted as a standing approximation of "not in the reporting chain". For skip-level managers and facilitator-only managers there is effectively no control (section 2).
+Teams go live on today's controls:
+- **The membership check** (FR-2.2): a facilitator cannot run a session for a team they belong to, including as a recorded manager.
+- **The #243 precedence**: anyone the IdP sends both `engineering_manager` and `facilitator` resolves to manager and cannot facilitate.
+- **An operator rule in `docs/deployment.md`** ("Group hygiene checklist"): do not put any manager in the facilitator group, including skip-level managers and directors, and pick facilitators who are not in the target team's reporting chain. This covers the gap section 2 describes, by process rather than by the application.
+
+These are an **interim** control, not a standing approximation of "not in the reporting chain". The decision to model the chain stands.
+
+**When to schedule #247:** the product owner decides. Natural triggers are a rollout beyond the first teams, or evidence (an audit or a report) of a facilitator in a team's chain.
 
 ---
 
@@ -86,7 +93,7 @@ That record went into PR #242, which was closed unmerged when the product owner 
 
 ## 6. Follow-up
 
-- **#247:** the reporting-chain model and the facilitator-eligibility check (section 3). Gates first-team launch.
+- **#247:** the reporting-chain model and the facilitator-eligibility check (section 3). Deferred; no launch gate.
 - **#235 Follow-up 2:** #235's proposal was never merged to `main`, so the link to this record is a comment on #235.
 
 **Revisit** only by a new product-owner decision, recorded here.

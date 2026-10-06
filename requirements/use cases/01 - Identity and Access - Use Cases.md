@@ -224,7 +224,7 @@
 
 ## Out of Scope
 - Facilitator designation (`users.global_role = 'facilitator'`). Out of scope for this UC. **Decided 2026-10-03:** designation happens through the IdP role claim, the same as `engineering_manager` and `application_admin`, with no in-app endpoint (#235). The claim path is delivered by #243 (`OIDC_ROLE_MAP`). See "Designate a Facilitator — Deferral", Decision section.
-- Facilitator reporting-chain eligibility (Summary.md:12, "not in the team's reporting chain"). **Decided 2026-10-05:** the application will model manager-to-team reporting relationships and refuse facilitators in a team's chain; gates first-team launch (#238). See "Facilitator Reporting Chain — Decision".
+- Facilitator reporting-chain eligibility (Summary.md:12, "not in the team's reporting chain"). **Decided 2026-10-05:** the application will model manager-to-team reporting relationships and refuse facilitators in a team's chain (#238). Deferred to #247; no launch gate (revised 2026-10-06). See "Facilitator Reporting Chain — Decision".
 - `TEAM-006` (`POST /api/v1/teams/:teamId/managers`) — not called as part of this change. **Corrected (Edit 3, restrict-team-005-em-promotion):** TEAM-005 is sufficient only for demotion and for role changes that were never promotions; establishing a new Engineering Manager relationship requires TEAM-006. TEAM-005 is no longer "sufficient for all `membership_role` writes."
 - Modification of `users.global_role` for any role — this change writes only to `team_memberships.role`.
 - Removing a user from a team — separate use case.

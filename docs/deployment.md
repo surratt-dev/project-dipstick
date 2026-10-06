@@ -213,6 +213,7 @@ The summary line shows the source (`configured` or `default`) and how many keys 
 
 - [ ] At least one group maps to `facilitator`. Without one, nobody can run a session.
 - [ ] People who facilitate are **not** also in the admin or manager groups. They resolve to the higher role and cannot run a session.
+- [ ] **No manager is in the facilitator group**, including skip-level managers and directors who are not in the manager group. A facilitator must not be in the reporting chain of the team they facilitate. The application only refuses a facilitator who is a member of the team; it does not know reporting lines yet (#247), so this rule is yours to keep. See `requirements/use cases/01c - Facilitator Reporting Chain - Decision.md`.
 - [ ] **People in the manager group are not also in the admin group.** They resolve to `application_admin`, so they cannot be associated with teams as managers or use the manager views, and, like every admin, cannot take part in sessions.
 - [ ] The admin group holds only people who administer Dipstick. **Application admins cannot join, vote in or receive live events of any session**, even in teams they belong to.
 - [ ] Find conflicts by searching sign-in logs for `discardedRoles`; join to the sign-in by `correlationId`.
