@@ -8,7 +8,7 @@
 
 **Status:** **Decided 2026-10-05 by the user (product owner)** (#238). Supersedes the 2026-10-04 decision recorded in closed, unmerged PR #242; see section 5.
 **Follow-on owner:** the Business Analyst.
-**VP of Engineering:** acknowledgment *accepted* (owner: the product owner). this would be in impedement to adoption because it would require full integration of the reporting heirarchy
+**VP of Engineering:** acknowledgment *accepted* 2026-10-06 (owner: the product owner). This would be an impediment to adoption because it would require full integration of the reporting hierarchy.
 **Implementation:** #247. Not yet built.
 **Launch gate:** none. Revised 2026-10-06 by the product owner: making the first sessions easy (create a team, share the join link, run a session) matters more than enforcing reporting lines from day one. #247 is deferred and not scheduled.
 
