@@ -20,7 +20,7 @@ Record a pass/fail and notes for each step in the [results table](#results) at t
 
 ## Setup
 
-The persona accounts have no teams. `facilitator-001` signs in as a real `facilitator` through the default role map (see `docs/local-development.md`). The SQL below creates four test teams. Its `UPDATE` of `facilitator-001` to `facilitator` is now a no-op, kept for older checkouts. **No team lists `facilitator-001` as a member**, which the add form requires.
+The persona accounts have no teams. `facilitator-001` signs in as a real `facilitator` through the default role map (see `docs/local-development.md`). The SQL below creates four test teams. **No team lists `facilitator-001` as a member**, which the add form requires.
 
 | Team | State | Used for |
 |---|---|---|
@@ -41,9 +41,7 @@ The app runs at http://localhost:5173.
 
 ### 2. Sign in once as the facilitator
 
-Open http://localhost:5173 and click the **facilitator-001** persona button. You'll land on `/no-team`, which is expected at this point. Signing in creates the `users` row the setup needs.
-
-> **Order matters.** Signing in creates the `users` row the setup needs, so run the setup **after** signing in. The backend resets `global_role` from the identity provider on **every** sign-in. `facilitator-001` now carries the `facilitator` role claim, so it stays a facilitator across sign-ins.
+Open http://localhost:5173 and click the **facilitator-001** persona button. You'll land on **/sessions/new**, the facilitator landing page, which confirms the role claim was applied. If you land on `/no-team` instead, the stub's role claim didn't take effect; see `docs/local-development.md`. Signing in also creates the `users` row the setup needs, so run the setup **after** signing in.
 
 ### 3. Create the test data
 
@@ -58,9 +56,6 @@ DO $$ BEGIN
     RAISE EXCEPTION 'Sign in once as facilitator-001 before running this script';
   END IF;
 END $$;
-
--- Ensure facilitator-001 is a facilitator (a no-op since #243: the stub's role claim already makes it one).
-UPDATE users SET global_role = 'facilitator' WHERE oidc_subject = 'facilitator-001';
 
 -- Four test teams. facilitator-001 is deliberately NOT a member of any.
 INSERT INTO teams (id, name, created_by_user_id)
@@ -108,7 +103,7 @@ SQL
 
 ### 4. Reload
 
-Reload the browser. You should be redirected to **/sessions/new**, the facilitator landing page, which confirms the promotion took effect. The test teams aren't linked from anywhere a non-member can see, so open them by URL:
+Reload the browser. You should still be on **/sessions/new**: the test teams don't make `facilitator-001` a member of anything. The test teams aren't linked from anywhere a non-member can see, so open them by URL:
 
 | Team | URL |
 |---|---|
@@ -202,8 +197,6 @@ Admins can view this screen but can't add topics until #176 is fixed.
 3. **Empty With Archived:** **This team has no active topics.** with only **Show archived topics (2)**.
 4. **Empty Unlocked:** **This team has no active topics. Topics can't be added from this account yet.** with no buttons.
 
-Signing in as admin doesn't affect `facilitator-001`'s promotion, but signing back in as `facilitator-001` resets it. Re-run the `UPDATE users …` line if you go back.
-
 ---
 
 ## Results
@@ -228,7 +221,7 @@ Record the outcome on PR #196, and file any copy fixes or the H4 decision as iss
 
 ## Cleanup
 
-This removes the test teams and everything attached to them, and resets `facilitator-001` to `engineer`. It affects only rows whose team ID starts with `55555555-0000-4000-8000-`.
+This removes the test teams and everything attached to them. It affects only rows whose team ID starts with `55555555-0000-4000-8000-`.
 
 ```bash
 docker exec -i project-dipstick-postgres-1 psql -U dipstick -d dipstick -v ON_ERROR_STOP=1 <<'SQL'
@@ -237,7 +230,6 @@ DELETE FROM audit_log WHERE team_id::text LIKE '55555555-0000-4000-8000-%';
 DELETE FROM topics    WHERE team_id::text LIKE '55555555-0000-4000-8000-%';
 DELETE FROM sessions  WHERE team_id::text LIKE '55555555-0000-4000-8000-%';
 DELETE FROM teams     WHERE id::text      LIKE '55555555-0000-4000-8000-%';
-UPDATE users SET global_role = 'engineer' WHERE oidc_subject = 'facilitator-001';
 COMMIT;
 SQL
 ```
