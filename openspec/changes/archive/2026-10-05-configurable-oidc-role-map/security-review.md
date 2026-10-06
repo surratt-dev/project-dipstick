@@ -40,24 +40,24 @@ One warn `{ claimName, resolvedRole, discardedRoles }` per sign-in, value-free, 
 
 S1 (EM + admin resolving to `application_admin`) is closed by the admin live-session exclusion (D11, E1–E4; tasks 2.1, 2.2, 3.5).
 
-**Status:**
+**Status:** accepted
 
 ## Deferred decisions (from `design-review-security.md`)
 
 ### D-1. Discard is logged, not audited (durable record deferred to #241)
-**Status:**
+**Status:** accepted
 
 ### D-2. Mid-session facilitator demotion (task 2.3 findings below)
-**Status:**
+**Status:** accepted
 
 ### D-4. ~90-minute revocation bound (pinned by task 4.3, `middleware.test.ts`)
-**Status:**
+**Status:** accepted
 
 ### D-5. Duplicate-key scanner cut (only if it happened)
-**Status:**
+**Status:** accepted
 
 ### D-7. #235 reconciliation re-runs S1 and S4 against the merged resolver
-**Status:**
+**Status:** accepted
 
 ## Implementation findings
 
