@@ -31,6 +31,12 @@ function resolve(claims: IdTokenClaims, o: ResolveOpts = {}) {
 // ---------------------------------------------------------------------------
 // Helper — builds a complete DB row for the upsert RETURNING clause.
 // global_role defaults to 'engineer' to match the DB column default.
+//
+// store-idp-role-set (#245) task 5.1: the upsert reads roles::text[] and
+// (SELECT roles::text[] FROM prior), which node-postgres returns as string
+// arrays, so the mock does too. roles defaults to [global_role]; a returning
+// row's previous_global_role defaults to 'engineer' and previous_roles to
+// [previous_global_role] (null when previous_global_role is null).
 // ---------------------------------------------------------------------------
 function makeUserRow(overrides: Partial<{
   id: string;
@@ -40,15 +46,25 @@ function makeUserRow(overrides: Partial<{
   email: string;
   global_role: string;
   is_new_user: boolean;
+  roles: unknown;
+  previous_global_role: string | null;
+  previous_roles: unknown;
 }> = {}) {
+  const globalRole = overrides.global_role ?? "engineer";
+  const isNewUser = overrides.is_new_user ?? true;
+  const previousGlobalRole =
+    "previous_global_role" in overrides ? overrides.previous_global_role! : isNewUser ? null : "engineer";
   return {
     id: "user-1",
     oidc_subject: "sub-123",
     oidc_issuer: "https://idp.example.com",
     display_name: "Alice",
     email: "alice@example.com",
-    global_role: "engineer",
-    is_new_user: true,
+    global_role: globalRole,
+    is_new_user: isNewUser,
+    roles: [globalRole],
+    previous_global_role: previousGlobalRole,
+    previous_roles: previousGlobalRole === null ? null : [previousGlobalRole],
     ...overrides,
   };
 }
@@ -397,7 +413,7 @@ describe("resolveOrCreateAccount", () => {
   describe("previousGlobalRole / optional client parameter", () => {
     it("previousGlobalRole is null for a brand-new user", async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [makeUserRow({ is_new_user: true, previous_global_role: null } as never)],
+        rows: [makeUserRow({ is_new_user: true, previous_global_role: null })],
       });
 
       const result = await resolve({
@@ -416,7 +432,7 @@ describe("resolveOrCreateAccount", () => {
             is_new_user: false,
             global_role: "engineering_manager",
             previous_global_role: "engineer",
-          } as never),
+          }),
         ],
       });
 
@@ -433,7 +449,7 @@ describe("resolveOrCreateAccount", () => {
 
     it("the UPSERT statement captures the prior global_role via a CTE", async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [makeUserRow({ is_new_user: false, previous_global_role: "engineer" } as never)],
+        rows: [makeUserRow({ is_new_user: false, previous_global_role: "engineer" })],
       });
 
       await resolve({ sub: "sub-123", iss: "https://idp.example.com" });
@@ -445,7 +461,7 @@ describe("resolveOrCreateAccount", () => {
 
     it("runs the UPSERT on the provided client instead of the pool when one is passed", async () => {
       const mockClientQuery = vi.fn().mockResolvedValueOnce({
-        rows: [makeUserRow({ is_new_user: true, previous_global_role: null } as never)],
+        rows: [makeUserRow({ is_new_user: true, previous_global_role: null })],
       });
       const mockClient = { query: mockClientQuery } as never;
 
@@ -546,8 +562,27 @@ describe("resolveOrCreateAccount", () => {
       ["[admin, engineering_manager, facilitator]", VALUES.slice(0, 3), "application_admin", ["engineering_manager", "facilitator"], false],
     ])("%s logs exactly one precedence-discard line", async (_label, claim, resolvedRole, discardedRoles, isNewUser) => {
       const calls = await signIn({ role: claim }, { isNewUser, globalRole: resolvedRole });
+      // store-idp-role-set (#245) task 5.4: fields and scope unchanged.
       expect(calls).toHaveLength(1);
       expect(calls[0]![0]).toEqual({ claimName: "role", resolvedRole, discardedRoles });
+      // ... while the outranked roles are kept in the written set.
+      const written = (mockQuery.mock.calls[0]![1] as unknown[])[5] as string[];
+      expect(written).toEqual([resolvedRole, ...discardedRoles]);
+    });
+
+    it.each([
+      ["facilitator only", ["Retro-Facilitators"], ["facilitator"]],
+      ["facilitator + senior", ["Retro-Facilitators", "Seniors"], ["facilitator", "senior_engineer"]],
+      ["admin + senior", ["Seniors", "Dipstick-Admins"], ["application_admin", "senior_engineer"]],
+    ])("%s logs no discard line, and roles still holds every mapped role", async (_label, claim, roles) => {
+      const logger = { warn: vi.fn() };
+      mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ is_new_user: false, global_role: roles[0]! })] });
+      await resolve({ sub: "s", iss: "i", role: claim } as IdTokenClaims, {
+        logger,
+        roleMap: new Map([...MAP, ["Seniors", "senior_engineer" as MappableRole]]),
+      });
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect((mockQuery.mock.calls[0]![1] as unknown[])[5]).toEqual(roles);
     });
 
     it.each([
@@ -558,6 +593,90 @@ describe("resolveOrCreateAccount", () => {
       ["_claim_names for a different claim", { _claim_names: { groups: "src1" } }],
     ])("%s logs nothing", async (_label, claims) => {
       expect(await signIn(claims as Partial<IdTokenClaims>)).toHaveLength(0);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // store-idp-role-set (#245) task 5.1, design D4/D5
+  // -------------------------------------------------------------------------
+  describe("role set (store-idp-role-set D4/D5)", () => {
+    const MAP = new Map<string, MappableRole>([
+      ["Dipstick-Admins", "application_admin"],
+      ["Eng-Managers", "engineering_manager"],
+      ["Retro-Facilitators", "facilitator"],
+    ]);
+
+    it("writes the full set as $6::user_role[] with global_role = roles[0], and reads both sets as text[]", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          makeUserRow({
+            is_new_user: false,
+            global_role: "engineering_manager",
+            roles: ["engineering_manager", "facilitator"],
+            previous_global_role: "facilitator",
+            previous_roles: ["facilitator"],
+          }),
+        ],
+      });
+
+      const result = await resolve(
+        { sub: "sub-123", iss: "https://idp.example.com", role: ["Retro-Facilitators", "Eng-Managers"] },
+        { roleMap: MAP },
+      );
+
+      const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(sql).toContain("$6::user_role[]");
+      expect(sql).toContain("roles = EXCLUDED.roles");
+      expect(sql).toContain("SELECT global_role, roles FROM users");
+      expect(sql).toContain("roles::text[] AS roles");
+      expect(sql).toContain("(SELECT roles::text[] FROM prior) AS previous_roles");
+      expect(params[4]).toBe("engineering_manager");
+      expect(params[5]).toEqual(["engineering_manager", "facilitator"]);
+
+      expect(result.roles).toEqual(["engineering_manager", "facilitator"]);
+      expect(result.previousRoles).toEqual(["facilitator"]);
+      expect(Object.isFrozen(result.roles)).toBe(true);
+      expect(Object.isFrozen(result.previousRoles)).toBe(true);
+    });
+
+    it("a first sign-in has previousRoles null", async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ is_new_user: true })] });
+      const result = await resolve({ sub: "s", iss: "i" });
+      expect(result.roles).toEqual(["engineer"]);
+      expect(result.previousRoles).toBeNull();
+      expect(result.previousGlobalRole).toBeNull();
+    });
+
+    it("the concurrent-first-sign-in race passes both previous values through as null", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [makeUserRow({ is_new_user: false, previous_global_role: null, previous_roles: null })],
+      });
+      const result = await resolve({ sub: "s", iss: "i" });
+      expect(result.isNewUser).toBe(false);
+      expect(result.previousGlobalRole).toBeNull();
+      expect(result.previousRoles).toBeNull();
+    });
+
+    it("throws (integrity error) when a prior row has global_role but no roles", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [makeUserRow({ is_new_user: false, previous_global_role: "facilitator", previous_roles: null })],
+      });
+      await expect(resolve({ sub: "s", iss: "i" })).rejects.toThrow(/integrity|no roles/);
+    });
+
+    it.each([
+      ["the raw enum-array string", "{engineer}"],
+      ["an empty array", []],
+      ["an unknown element", ["toString"]],
+    ])("fails the sign-in closed when the stored roles is %s", async (_label, roles) => {
+      mockQuery.mockResolvedValueOnce({ rows: [makeUserRow({ is_new_user: true, roles })] });
+      await expect(resolve({ sub: "s", iss: "i" })).rejects.toThrow();
+    });
+
+    it("fails the sign-in closed when previous_roles is malformed", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [makeUserRow({ is_new_user: false, previous_global_role: "engineer", previous_roles: "{engineer}" })],
+      });
+      await expect(resolve({ sub: "s", iss: "i" })).rejects.toThrow();
     });
   });
 });

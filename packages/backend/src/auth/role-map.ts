@@ -314,18 +314,56 @@ export interface RoleResolution {
   outcome: "missing" | "unmapped" | "mapped";
 }
 
+/**
+ * store-idp-role-set (#245) design D1/D4: the full mapped role set, de-
+ * duplicated and sorted highest precedence first, so `role` (= roles[0]) is
+ * the effective global_role. `{engineer}` when nothing maps.
+ */
+export interface RoleSetResolution extends RoleResolution {
+  roles: readonly GlobalRole[];
+}
+
 const DISCARDABLE: readonly DiscardableRole[] = ["engineering_manager", "facilitator"];
 
-export function resolveGlobalRole(claim: unknown, map: ReadonlyMap<string, MappableRole>): RoleResolution {
-  const values = normalizeClaim(claim);
-  if (values.length === 0) return { role: FALLBACK_ROLE, discardedRoles: [], outcome: "missing" };
-  const mapped = mapValues(values, map);
-  if (mapped.length === 0) return { role: FALLBACK_ROLE, discardedRoles: [], outcome: "unmapped" };
+/** Descending precedence. Never a bare or string .sort(): see resolveRoleSet. */
+const byPrecedenceDesc = (a: MappableRole, b: MappableRole): number => RANK.get(b)! - RANK.get(a)!;
 
-  let role = mapped[0]!;
-  for (const r of mapped) if (RANK.get(r)! > RANK.get(role)!) role = r;
-  const discardedRoles = DISCARDABLE.filter((r) => mapped.includes(r) && RANK.get(role)! > RANK.get(r)!);
-  return { role, discardedRoles, outcome: "mapped" };
+export function resolveRoleSet(claim: unknown, map: ReadonlyMap<string, MappableRole>): RoleSetResolution {
+  const values = normalizeClaim(claim);
+  // A freshly built array per call, so no caller can share (or mutate) another's set.
+  if (values.length === 0) return { roles: [FALLBACK_ROLE], role: FALLBACK_ROLE, discardedRoles: [], outcome: "missing" };
+  const mapped = mapValues(values, map);
+  if (mapped.length === 0) return { roles: [FALLBACK_ROLE], role: FALLBACK_ROLE, discardedRoles: [], outcome: "unmapped" };
+
+  // mapValues never yields `engineer` (it is not a permitted target, and
+  // PERMITTED_TARGETS = RANK's keys), so every RANK.get below is defined.
+  // The explicit comparator is load-bearing (security S-a): today the four
+  // mappable labels' alphabetical order happens to equal descending
+  // precedence, so a comparator-less sort would pass every test and break
+  // silently when a label is added.
+  const roles: MappableRole[] = [...new Set(mapped)].sort(byPrecedenceDesc);
+  const role = roles[0]!;
+  const discardedRoles = DISCARDABLE.filter((r) => roles.includes(r) && RANK.get(role)! > RANK.get(r)!);
+  return { roles, role, discardedRoles, outcome: "mapped" };
+}
+
+/**
+ * store-idp-role-set (#245) design D5: validates a role array read back from
+ * Postgres (`roles::text[]`, which node-postgres parses into a JS array; a raw
+ * `user_role[]` would arrive as the string "{a,b}"). It must be a non-empty
+ * array whose every element is a GLOBAL_ROLES label; anything else throws,
+ * which fails the sign-in closed. Returns a frozen copy.
+ */
+export function parseRoleArray(value: unknown): readonly GlobalRole[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("role array is not a non-empty array");
+  }
+  for (const element of value) {
+    if (typeof element !== "string" || !(GLOBAL_ROLES as readonly string[]).includes(element)) {
+      throw new Error("role array contains a value that is not a global role");
+    }
+  }
+  return Object.freeze([...(value as GlobalRole[])]);
 }
 
 /**

@@ -193,10 +193,10 @@ The summary line shows the source (`configured` or `default`) and how many keys 
 
    ```bash
    docker exec -i <postgres-container> psql -U dipstick -d dipstick -c \
-     "UPDATE users SET global_role = 'engineer' WHERE id = '<id from step 1>';"
+     "UPDATE users SET global_role = 'engineer', roles = '{engineer}' WHERE id = '<id from step 1>';"
    ```
 
-   At the user's next sign-in the role is re-resolved from the IdP, which by then no longer carries the group. **This manual update writes no `audit_log` row**, so record it in your change log.
+   Set both `global_role` and `roles` (#245): `roles` holds the user's full role set and must stay consistent with `global_role`. At the user's next sign-in the role is re-resolved from the IdP, which by then no longer carries the group. **This manual update writes no `audit_log` row**, so record it in your change log.
 
 3. **Optionally sign the user out now.** Session keys are named by session id (`dipstick:session:<sessionId>`), not by user, so scan them and delete the ones whose value carries that user's id:
 
@@ -216,9 +216,19 @@ The summary line shows the source (`configured` or `default`) and how many keys 
 - [ ] **No manager is in the facilitator group**, including skip-level managers and directors who are not in the manager group. A facilitator must not be in the reporting chain of the team they facilitate. The application only refuses a facilitator who is a member of the team; it does not know reporting lines yet (#247), so this rule is yours to keep. See `requirements/use cases/01c - Facilitator Reporting Chain - Decision.md`.
 - [ ] **People in the manager group are not also in the admin group.** They resolve to `application_admin`, so they cannot be associated with teams as managers or use the manager views, and, like every admin, cannot take part in sessions.
 - [ ] The admin group holds only people who administer Dipstick. **Application admins cannot join, vote in or receive live events of any session**, even in teams they belong to.
-- [ ] Find conflicts by searching sign-in logs for `discardedRoles`; join to the sign-in by `correlationId`.
+- [ ] Find conflicts. For sign-ins after migration 21 (#245), run the "conflict query" below, which lists sign-ins whose IdP claim mapped to both the manager and the facilitator role. It covers only sign-ins after migration 21 was applied: earlier audit rows carry no `roles` field. For earlier sign-ins, search sign-in logs for `discardedRoles` and join to the sign-in by `correlationId`.
 - [ ] After a map or group change, affected users must sign in again (or wait out the ~90-minute bound above).
 - [ ] Do not change the map while sessions are live. A facilitator demoted mid-session is not removed from the session they are running (follow-up 1).
+
+Conflict query (asserted by `sign-in-audit-role-set-integration.test.ts`):
+
+```sql
+SELECT timestamp, actor_user_id, operation, metadata->'roles' AS roles
+FROM audit_log
+WHERE operation IN ('auth.first_access_created', 'auth.role_claim_mapped')
+  AND metadata->'roles' @> '["engineering_manager", "facilitator"]'::jsonb
+ORDER BY timestamp DESC;
+```
 
 #### Upgrading
 
@@ -238,14 +248,23 @@ The summary line shows the source (`configured` or `default`) and how many keys 
    - **Identity map** (your IdP already sends the internal role strings): rollback is safe. Users granted `facilitator` or `senior_engineer` by this release drop back to `engineer` at their next sign-in.
    - **Translating map** (keys are your IdP's group or role names, e.g. `OIDC_ROLE_CLAIM=groups`): **rollback demotes every mapped user to `engineer` at their next sign-in, including every manager and every admin.** Managers are then admitted to live sessions as engineers, with no error and no audit signal, which re-opens the no-manager rule. Admins lose admin access. **Do not roll back** such a deployment until the IdP has been switched to send the internal strings (`engineering_manager`, `application_admin`) on the configured claim for the right people. Safe procedure: (1) configure the IdP to emit `engineering_manager` or `application_admin` for the members of the mapped groups as a **single string value** on a claim (the previous release does not understand array claims such as `groups`), and point `OIDC_ROLE_CLAIM` at that claim; (2) verify on the current release, with that claim and an identity map, that managers and admins still resolve correctly (boot line, then a manager signs in and the `auth.role_claim_mapped` audit row shows `engineering_manager`); (3) only then redeploy the previous release. If you must roll back immediately, stop running sessions until managers can be re-verified.
 
+**Storing the IdP role set (#245): migrations 21 and 22.** This release adds `users.roles` (the full set of roles the IdP claim maps to) and `audit_log.actor_roles`. It changes nothing users see or can do: every check still reads `global_role`, and facilitators refused today are still refused. No configuration change is needed.
+
+1. **The normal procedure is unchanged.** Apply the migrations as usual (see "Database migrations" below, with `--no-single-transaction`), before or during the rollout. The previous build keeps working against the migrated schema: migration 21 adds a transitional trigger (`users_roles_fill_legacy`) that fills `roles` for a build that writes only `global_role`. It is the first trigger on `users` and stays until follow-up F1 removes it.
+2. **Locking.** Migration 21 holds a lock on `users` for at most 1 s (measured: under 0.1 s on 10,000 users) and waits at most 5 s to get it, so a sign-in during the migration can wait up to about 6 s, once; live votes and open rooms are unaffected. Migration 22 waits at most 200 ms for `audit_log`, below the audit write timeouts, so no request fails because of it. If either migration fails on a lock timeout, the command exits non-zero and rolls that migration back; re-run it (already-applied migrations are skipped). Running outside session hours is recommended, not required.
+3. **Rollback order is mandatory.** First redeploy the previous build and confirm no instance of this build is still serving. Then, optionally, run the down migrations, 22 first, then 21. Never the reverse: running 21's down while this build serves breaks sign-in, and 22's down breaks its sign-in audit write. The previous build runs correctly on the migrated schema, so the down migrations are not required. They drop only the new columns, the constraint, the trigger and its functions; `global_role` is untouched.
+4. **For auditors.** Existing users are backfilled to `roles = {global_role}`, which can under-record their real set. Each user's first `auth.role_claim_mapped` row after migration 21 therefore shows the backfilled set as `previousRoles`: that difference reflects the backfill, not an IdP change. The next sign-in records the full set.
+
 ### Database migrations
 
 Migrations must be run before starting the application after an upgrade. From a machine with access to the database:
 
 ```bash
 DATABASE_URL=postgresql://user:pass@db-host:5432/dipstick \
-  npx node-pg-migrate -m migrations up
+  npx node-pg-migrate -m migrations up --no-single-transaction
 ```
+
+Keep `--no-single-transaction` (as `npm run db:migrate` does): without it every pending migration runs in one transaction, so migrations 21 and 22 share one lock window and an audit write can queue behind the `users` lock.
 
 Or exec into the running container if it includes the migration files:
 
@@ -269,7 +288,7 @@ A `200` response means PostgreSQL and Redis are both reachable.
 
 Audit events are emitted via `emitAuditEvent` (`packages/backend/src/auth/audit-logger.ts`) at the `info` level, with the child logger's level explicitly overridden so application-wide log-level changes (e.g. raising Fastify's logger to `warn`) cannot suppress them. **This override does not protect against transport-level filtering.** If you configure a pino transport (a log shipper, a `pino-*` destination, anything set via `transport` in Fastify's `logger` option) that applies its own level filter below `info`, audit events will be silently dropped downstream of this logger, with no indication in the application that anything was lost.
 
-Many audit events also write an `audit_log` database row in the same transaction as the state change — that row is the authoritative audit record and is unaffected by log transport configuration (role changes, rate-limit breaches, action-item status changes, EM data-access reads, admin reads, and most session/WebSocket-lifecycle events all fall in this category). Most of the `auth.*`/`join.*` trail now also falls in this category (`auth-events-audit-log-coverage`): `auth.success`, `auth.session_created`, `auth.first_access_created`, `auth.role_claim_mapped`, `auth.idp_logout_failed`, `join.link_created`, and `join.link_redeemed` each write a durable `audit_log` row — the fail-open group (`auth.success`, `auth.session_created`, `auth.idp_logout_failed`) via a bounded-timeout write that never blocks the triggering response, the transactional group (`auth.first_access_created`, `auth.role_claim_mapped`, `join.link_created`, `join.link_redeemed`) in the same transaction as the domain write it accompanies. See `openspec/specs/auth-error-handling/spec.md` and `openspec/specs/join-link/spec.md` for the exact mechanism and field shapes.
+Many audit events also write an `audit_log` database row in the same transaction as the state change — that row is the authoritative audit record and is unaffected by log transport configuration (role changes, rate-limit breaches, action-item status changes, EM data-access reads, admin reads, and most session/WebSocket-lifecycle events all fall in this category). Most of the `auth.*`/`join.*` trail now also falls in this category (`auth-events-audit-log-coverage`): `auth.success`, `auth.session_created`, `auth.first_access_created`, `auth.role_claim_mapped`, `auth.idp_logout_failed`, `join.link_created`, and `join.link_redeemed` each write a durable `audit_log` row — the fail-open group (`auth.success`, `auth.session_created`, `auth.idp_logout_failed`) via a bounded-timeout write that never blocks the triggering response, the transactional group (`auth.first_access_created`, `auth.role_claim_mapped`, `join.link_created`, `join.link_redeemed`) in the same transaction as the domain write it accompanies. See `openspec/specs/auth-error-handling/spec.md` and `openspec/specs/join-link/spec.md` for the exact mechanism and field shapes. Since migration 22 (#245), `audit_log.actor_roles` holds the actor's full role set on `auth.first_access_created` and `auth.role_claim_mapped` rows only. **NULL in `actor_roles` means the actor's role set was not captured for that operation, not that the actor had no roles.**
 
 **What remains log-only, with no database backing anywhere in this codebase:** `auth.session_invalidated` remains a partial exception as before (marked below); four events remain deferred pending a volume/latency determination that no queryable data source exists to answer today (tracked as GitHub issue #156, filed during `auth-events-audit-log-coverage`'s proposal stage) — `auth.authorization_initiated`, `auth.callback_received`, `auth.failure` (all three call sites), and `join.link_rejected` (all five call sites). `auth.audit_write_failed` is deliberately never DB-backed (see the footnote below). Seven further events are also log-only: the two `auth.token_refresh_*` events and five unrelated to the auth/join trail. In total, 13 events remain at risk if a filtering transport is introduced:
 

@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import type { FastifyBaseLogger } from "fastify";
 import { db } from "../db.js";
 import { config } from "../config.js";
-import { isClaimOverage, resolveGlobalRole, type GlobalRole, type MappableRole } from "./role-map.js";
+import { isClaimOverage, parseRoleArray, resolveRoleSet, type GlobalRole, type MappableRole } from "./role-map.js";
 
 export interface IdTokenClaims {
   sub: string;
@@ -34,6 +34,21 @@ export interface ResolvedUser {
    * when `isNewUser` is true -- there is no prior row.
    */
   previousGlobalRole: GlobalRole | null;
+  /**
+   * store-idp-role-set (#245) design D1/D5: the full mapped role set as
+   * stored in users.roles, highest precedence first (roles[0] = globalRole).
+   * Frozen, so the audit row and the structured event cannot differ. Not an
+   * authorization input in this step.
+   */
+  roles: readonly GlobalRole[];
+  /**
+   * users.roles immediately before this sign-in's upsert, from the same
+   * `prior` CTE as previousGlobalRole. Null if and only if previousGlobalRole
+   * is null: a first sign-in, or the concurrent-first-sign-in race
+   * (isNewUser false, no prior row visible to the statement). Never
+   * defaulted (D5).
+   */
+  previousRoles: readonly GlobalRole[] | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,8 +99,10 @@ export async function resolveOrCreateAccount(
 
   // Map the IdP role claim to a global_role value (design D7). Read from the
   // signed ID token only; re-evaluated at every interactive sign-in.
-  const resolution = resolveGlobalRole(claims[ROLE_CLAIM_NAME], roleMap);
-  const globalRole = resolution.role;
+  // store-idp-role-set (#245) D4: the full set; global_role is its first
+  // element (no separate max computation).
+  const resolution = resolveRoleSet(claims[ROLE_CLAIM_NAME], roleMap);
+  const globalRole = resolution.roles[0]!;
   // Sign-in logging (D7). pino order: fields object first, message second.
   // Only the claim NAME and internal role names are ever logged — never a
   // claim value or a map key. Partial matches log nothing.
@@ -136,23 +153,34 @@ export async function resolveOrCreateAccount(
   // the UPDATE applies -- no extra round trip, since it's computed in the
   // same statement already running. `previous_global_role` is NULL for a
   // brand-new user (no prior row to have selected).
+  //
+  // store-idp-role-set (#245) design D5: roles is written alongside
+  // global_role (same statement, same race-freedom) and `prior` also captures
+  // the pre-update set. Enum arrays are read back as text[] (node-postgres
+  // does not know the user_role[] OID and would return the raw "{a,b}"
+  // string) and validated by parseRoleArray, which throws on anything
+  // unexpected so the sign-in fails closed. Written with an explicit
+  // ::user_role[] cast.
   const queryExecutor = client ?? db;
   const result = await queryExecutor.query(
     `WITH prior AS (
-       SELECT global_role FROM users WHERE oidc_subject = $1 AND oidc_issuer = $2
+       SELECT global_role, roles FROM users WHERE oidc_subject = $1 AND oidc_issuer = $2
      )
-     INSERT INTO users (oidc_subject, oidc_issuer, display_name, email, global_role)
-     VALUES ($1, $2, $3, $4, $5)
+     INSERT INTO users (oidc_subject, oidc_issuer, display_name, email, global_role, roles)
+     VALUES ($1, $2, $3, $4, $5, $6::user_role[])
      ON CONFLICT (oidc_subject, oidc_issuer)
      DO UPDATE SET
        display_name = EXCLUDED.display_name,
        email = EXCLUDED.email,
        global_role = EXCLUDED.global_role,
+       roles = EXCLUDED.roles,
        updated_at = NOW()
      RETURNING id, oidc_subject, oidc_issuer, display_name, email, global_role,
+               roles::text[] AS roles,
                (xmax = 0) AS is_new_user,
-               (SELECT global_role FROM prior) AS previous_global_role`,
-    [claims.sub, claims.iss, displayName, email, globalRole],
+               (SELECT global_role FROM prior) AS previous_global_role,
+               (SELECT roles::text[] FROM prior) AS previous_roles`,
+    [claims.sub, claims.iss, displayName, email, globalRole, [...resolution.roles]],
   );
 
   const row = result.rows[0] as {
@@ -162,9 +190,22 @@ export async function resolveOrCreateAccount(
     display_name: string;
     email: string;
     global_role: GlobalRole;
+    roles: unknown;
     is_new_user: boolean;
     previous_global_role: GlobalRole | null;
+    previous_roles: unknown;
   };
+
+  const previousGlobalRole = row.is_new_user ? null : row.previous_global_role;
+  let previousRoles: readonly GlobalRole[] | null = null;
+  if (previousGlobalRole !== null) {
+    // NOT NULL plus the migration 21 backfill and shim make a prior row
+    // without a role set impossible; treat it as an integrity error.
+    if (row.previous_roles === null || row.previous_roles === undefined) {
+      throw new Error("resolveOrCreateAccount: prior users row has global_role but no roles");
+    }
+    previousRoles = parseRoleArray(row.previous_roles);
+  }
 
   return {
     id: row.id,
@@ -174,6 +215,8 @@ export async function resolveOrCreateAccount(
     email: row.email,
     globalRole: row.global_role,
     isNewUser: row.is_new_user,
-    previousGlobalRole: row.is_new_user ? null : row.previous_global_role,
+    previousGlobalRole,
+    roles: parseRoleArray(row.roles),
+    previousRoles,
   };
 }

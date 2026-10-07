@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyBaseLogger } from "fastify";
+import type { PoolClient } from "pg";
 import { randomBytes } from "node:crypto";
 import * as oidcClient from "openid-client";
 import { redis } from "../redis.js";
@@ -59,8 +60,57 @@ const DEV_LOGIN_OPTIONS: DevLoginOption[] = [
 // once per callback and used for both the transactional audit_log INSERT and
 // the post-commit structured event, so the two cannot drift.
 // ---------------------------------------------------------------------------
+//
+// store-idp-role-set (#245) design D7: the third disjunct (role set changed)
+// adds no firing case today: a set change that ends in {engineer} must start
+// from a non-engineer global_role, which the first two disjuncts already
+// catch. It is here for contract step 2, which drops global_role and must
+// delete the first two disjuncts; this one then carries the rule.
+// sameRoles(x, null) is false (treated as changed): previousRoles is null only
+// in the concurrent-first-sign-in race, where the second disjunct fires anyway.
+// ---------------------------------------------------------------------------
 export function shouldEmitRoleClaimMapped(u: ResolvedUser): boolean {
-  return !u.isNewUser && (u.globalRole !== "engineer" || u.globalRole !== u.previousGlobalRole);
+  return (
+    !u.isNewUser &&
+    (u.globalRole !== "engineer" || u.globalRole !== u.previousGlobalRole || !sameRoles(u.roles, u.previousRoles))
+  );
+}
+
+function sameRoles(a: readonly string[], b: readonly string[] | null): boolean {
+  if (b === null) return false;
+  return a.length === b.length && a.every((role, i) => role === b[i]);
+}
+
+// ---------------------------------------------------------------------------
+// store-idp-role-set (#245) task 6.1, design D6: the two sign-in audit_log
+// rows, written inside the /auth/callback withAuditTransaction. Exported so a
+// real-Postgres test can drive the exact statement. The operation is one of a
+// fixed pair, each with its own constant SQL (no operation text is ever
+// interpolated). actor_roles is last in the column list so the existing
+// parameter positions ($1-$4) are unchanged; it is fed from the same frozen
+// array as metadata.roles and the post-commit event, so they cannot differ.
+// ---------------------------------------------------------------------------
+const SIGN_IN_AUDIT_SQL = {
+  "auth.first_access_created": `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata, actor_roles)
+               VALUES ($1, $2, $3, 'auth.first_access_created', NULL, $4, $5::text[])`,
+  "auth.role_claim_mapped": `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata, actor_roles)
+               VALUES ($1, $2, $3, 'auth.role_claim_mapped', NULL, $4, $5::text[])`,
+} as const;
+
+export type SignInAuditOperation = keyof typeof SIGN_IN_AUDIT_SQL;
+
+export async function insertSignInAuditRow(
+  client: Pick<PoolClient, "query">,
+  args: { user: ResolvedUser; operation: SignInAuditOperation; ip: string; metadata: Record<string, unknown> },
+): Promise<void> {
+  const { user, operation, ip, metadata } = args;
+  await client.query(SIGN_IN_AUDIT_SQL[operation], [
+    user.id,
+    user.globalRole,
+    ip,
+    JSON.stringify(metadata),
+    [...user.roles],
+  ]);
 }
 
 function isSeededAccountId(value: string): value is (typeof SEEDED_ACCOUNT_IDS)[number] {
@@ -343,37 +393,32 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         async (client, resolvedUser) => {
           emitRoleClaimMapped = shouldEmitRoleClaimMapped(resolvedUser);
           if (resolvedUser.isNewUser) {
-            await client.query(
-              `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
-               VALUES ($1, $2, $3, 'auth.first_access_created', NULL, $4)`,
-              [
-                resolvedUser.id,
-                resolvedUser.globalRole,
-                request.ip,
-                JSON.stringify({
-                  oidcSubject: resolvedUser.oidcSubject,
-                  oidcIssuer: resolvedUser.oidcIssuer,
-                  globalRole: resolvedUser.globalRole,
-                  correlationId,
-                }),
-              ],
-            );
+            await insertSignInAuditRow(client, {
+              user: resolvedUser,
+              operation: "auth.first_access_created",
+              ip: request.ip,
+              metadata: {
+                oidcSubject: resolvedUser.oidcSubject,
+                oidcIssuer: resolvedUser.oidcIssuer,
+                globalRole: resolvedUser.globalRole,
+                roles: resolvedUser.roles,
+                correlationId,
+              },
+            });
           } else if (emitRoleClaimMapped) {
-            await client.query(
-              `INSERT INTO audit_log (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
-               VALUES ($1, $2, $3, 'auth.role_claim_mapped', NULL, $4)`,
-              [
-                resolvedUser.id,
-                resolvedUser.globalRole,
-                request.ip,
-                JSON.stringify({
-                  oidcSubject: resolvedUser.oidcSubject,
-                  globalRole: resolvedUser.globalRole,
-                  previousRole: resolvedUser.previousGlobalRole,
-                  correlationId,
-                }),
-              ],
-            );
+            await insertSignInAuditRow(client, {
+              user: resolvedUser,
+              operation: "auth.role_claim_mapped",
+              ip: request.ip,
+              metadata: {
+                oidcSubject: resolvedUser.oidcSubject,
+                globalRole: resolvedUser.globalRole,
+                roles: resolvedUser.roles,
+                previousRole: resolvedUser.previousGlobalRole,
+                previousRoles: resolvedUser.previousRoles,
+                correlationId,
+              },
+            });
           }
           // else: neither firing condition is met — no audit_log row, matching
           // the existing structured-log gating exactly.
@@ -393,6 +438,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           oidcSubject: user.oidcSubject,
           oidcIssuer: user.oidcIssuer,
           globalRole: user.globalRole,
+          roles: user.roles,
           sourceIp: request.ip,
           correlationId,
         });
@@ -406,7 +452,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           userId: user.id,
           oidcSubject: user.oidcSubject,
           globalRole: user.globalRole,
+          roles: user.roles,
           previousRole: user.previousGlobalRole,
+          previousRoles: user.previousRoles,
           sourceIp: request.ip,
           correlationId,
         });

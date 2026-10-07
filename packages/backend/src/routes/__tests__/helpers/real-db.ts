@@ -3,6 +3,7 @@ import { Redis } from "ioredis";
 import pg from "pg";
 import Fastify, { type FastifyInstance, type RouteOptions } from "fastify";
 import { DEFAULT_TOPICS_TEAM_ID } from "../../../sessions/default-topics.js";
+import type { GlobalRole } from "../../../auth/role-map.js";
 
 // ---------------------------------------------------------------------------
 // Shared real-Postgres test harness — session-topics-snapshot-at-creation
@@ -174,15 +175,25 @@ export class Fixture {
 
   constructor(private readonly db: Db) {}
 
-  async user(globalRole = "facilitator"): Promise<string> {
-    const id = randomUUID();
-    await this.db.query(
-      `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
-       VALUES ($1, $2, 'test-issuer', $3, $4, $5)`,
-      [id, `sub-${id}`, `Snapshot Test ${id.slice(-6)}`, `${id}@example.com`, globalRole],
-    );
+  /**
+   * A user row. A string keeps the pre-#245 behaviour (global_role only; the
+   * migration 21 legacy-writer shim fills roles = {global_role}). An array is
+   * the full role set, highest precedence first (store-idp-role-set D1/D3):
+   * it is written to users.roles and global_role is its first element, so the
+   * row passes users_roles_consistent exactly as the sign-in upsert's would.
+   */
+  async user(roleOrRoles: string | readonly GlobalRole[] = "facilitator"): Promise<string> {
+    const id =
+      typeof roleOrRoles === "string"
+        ? await insertUser(this.db, { globalRole: roleOrRoles })
+        : await insertUser(this.db, { roles: roleOrRoles });
     this.userIds.push(id);
     return id;
+  }
+
+  /** Replaces a user's role set; global_role becomes roles[0], in one statement. */
+  async setRoles(id: string, roles: readonly GlobalRole[]): Promise<void> {
+    await setUserRoles(this.db, id, roles);
   }
 
   async team(creatorId: string): Promise<string> {
@@ -281,6 +292,60 @@ export class Fixture {
     this.teamIds.length = 0;
     this.userIds.length = 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// store-idp-role-set (#245) design D3: the one way new tests create users
+// with a role set. Fixture.user / Fixture.setRoles wrap these; insertUser is
+// exported for files that do not use Fixture (the caller then deletes the
+// row itself). No helper can write an invalid row on purpose: negative CHECK
+// tests use raw SQL in a rolled-back transaction.
+// ---------------------------------------------------------------------------
+
+type QueryRunner = Pick<Db, "query">;
+
+export async function insertUser(
+  db: QueryRunner,
+  opts: {
+    /** Full role set, highest precedence first; global_role = roles[0]. */
+    roles?: readonly GlobalRole[];
+    /** Pre-#245 shape: global_role only (the shim fills roles). Ignored when roles is given. */
+    globalRole?: string;
+    id?: string;
+    oidcSubject?: string;
+    oidcIssuer?: string;
+    displayName?: string;
+    email?: string;
+  } = {},
+): Promise<string> {
+  const id = opts.id ?? randomUUID();
+  const subject = opts.oidcSubject ?? `sub-${id}`;
+  const issuer = opts.oidcIssuer ?? "test-issuer";
+  const displayName = opts.displayName ?? `Snapshot Test ${id.slice(-6)}`;
+  const email = opts.email ?? `${id}@example.com`;
+  if (opts.roles !== undefined) {
+    await db.query(
+      `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role, roles)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::user_role[])`,
+      [id, subject, issuer, displayName, email, opts.roles[0], [...opts.roles]],
+    );
+  } else {
+    await db.query(
+      `INSERT INTO users (id, oidc_subject, oidc_issuer, display_name, email, global_role)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, subject, issuer, displayName, email, opts.globalRole ?? "facilitator"],
+    );
+  }
+  return id;
+}
+
+/** Updates users.roles and users.global_role (= roles[0]) in one statement. */
+export async function setUserRoles(db: QueryRunner, id: string, roles: readonly GlobalRole[]): Promise<void> {
+  await db.query(`UPDATE users SET global_role = $2, roles = $3::user_role[], updated_at = NOW() WHERE id = $1`, [
+    id,
+    roles[0],
+    [...roles],
+  ]);
 }
 
 export interface SessionTopicRow {

@@ -33,10 +33,17 @@ CREATE TYPE user_role AS ENUM (
     'application_admin'
 );
 
--- A user may have multiple roles if they are both a facilitator and an engineer on their own team.
--- The role column on users captures their primary/global role. Team-specific role overrides
--- (e.g., an engineer who is also assigned as EM for a particular team) are handled through
--- team_memberships.
+-- A user may have multiple global roles: users.roles holds every role the IdP claim maps to
+-- (e.g. engineering_manager and facilitator), highest precedence first, and users.global_role
+-- is its first element, the effective role every authorization check reads today (#245).
+-- Team-specific roles (e.g. an engineer who is assigned as EM for a particular team, or a
+-- member's participant role) are a separate concept, held in team_memberships.
+--
+-- The declaration order above is load-bearing: it is the precedence order, and
+-- users_roles_consistent requires users.roles to be strictly descending in it. A future
+-- migration that changes user_role (ADD VALUE ... BEFORE/AFTER) changes what that CHECK
+-- accepts for existing rows without revalidating them, so it must re-check existing rows
+-- itself (drop and re-add the constraint, or a verifying SELECT that fails the migration).
 
 -- Vote type, configured per topic
 CREATE TYPE vote_type AS ENUM (
@@ -101,10 +108,18 @@ CREATE TABLE users (
     global_role         user_role       NOT NULL DEFAULT 'engineer',
     created_at          timestamptz     NOT NULL DEFAULT now(),
     updated_at          timestamptz     NOT NULL DEFAULT now(),
-    deactivated_at      timestamptz     NULL       -- NULL means active; set when user is removed from org
+    deactivated_at      timestamptz     NULL,      -- NULL means active; set when user is removed from org
+    roles               user_role[]     NOT NULL,  -- migration 21 (#245); no DEFAULT, see below
 
-    CONSTRAINT users_oidc_unique UNIQUE (oidc_subject, oidc_issuer)
+    CONSTRAINT users_oidc_unique UNIQUE (oidc_subject, oidc_issuer),
+    CONSTRAINT users_roles_consistent CHECK (users_roles_well_formed(roles, global_role) IS TRUE)
 );
+
+-- Transitional (migration 21, removed by follow-up F1): fills roles for a writer that
+-- predates #245 and writes global_role only.
+CREATE TRIGGER users_roles_fill_legacy
+    BEFORE INSERT OR UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION users_roles_fill_legacy();
 
 -- Index: identity lookup on every authentication
 -- Every request with a valid session cookie resolves the OIDC subject+issuer pair to a user record.
@@ -120,7 +135,13 @@ The combination of `oidc_subject` + `oidc_issuer` is the unique stable identifie
 
 `deactivated_at` enables soft-delete. When a user leaves the organization, their record is deactivated rather than deleted. This preserves referential integrity for historical sessions, votes, and action items that reference the user.
 
-`global_role` captures the user's application-level role. Most authorization decisions also require consulting `team_memberships` for team-specific context.
+`global_role` captures the user's application-level role. Most authorization decisions also require consulting `team_memberships` for team-specific context. Since migration 21 a writer is meant to state `roles` as well. While the legacy-writer trigger below exists, an INSERT that omits `roles` is filled with `ARRAY[global_role]` (so omitting both columns still yields `engineer` / `{engineer}`); once follow-up F1 drops the trigger, omitting `roles` fails `NOT NULL` and `global_role`'s `DEFAULT 'engineer'` can no longer stand in for the role.
+
+`roles` (migration 21, #245) is the full set of internal roles the IdP role claim mapped to at the user's latest sign-in, de-duplicated and ordered highest precedence first (`application_admin`, `engineering_manager`, `facilitator`, `senior_engineer`), so `roles[1] = global_role`. A user with no mapped role has exactly `{engineer}`; `engineer` never appears with another role. Existing users were backfilled to `ARRAY[global_role]`, which can under-record (e.g. a backfilled `engineering_manager` may also hold `facilitator`) until their next sign-in writes the full set. No authorization check reads `roles` yet; it is never cached in the session or sent to the client.
+
+`users_roles_consistent` calls `users_roles_well_formed(roles, global_role)`, a `plpgsql` function whose checks run in a fixed order and return `true` or `false`, never NULL (a CHECK passes on NULL, so the call is also wrapped in `IS TRUE`): the array has one dimension, lower bound 1 and no NULL element; `roles[1] = global_role`; `engineer` appears only as the sole element; the elements are strictly descending in enum order (which implies uniqueness). Every violation fails with SQLSTATE `23514`. There is deliberately no `DEFAULT` on `roles`: once `global_role` is dropped (follow-up F2) a default would silently turn any writer that forgets `roles` into an engineer.
+
+`users_roles_fill_legacy` is the schema's first trigger, a transitional shim for the upgrade window (a pre-#245 build still serving after migration 21). On INSERT with `roles` NULL it sets `roles = ARRAY[global_role]`; on an UPDATE that changes `global_role` without changing `roles` it does the same. It only ever writes the one-element set the backfill writes, so it never adds a role, and this application's own upsert always states `roles`, so it never fires for it. Postgres fires BEFORE triggers in name order: this one must fire before any future trigger that reads `roles`. Follow-up F1's first migration drops it, after which an INSERT omitting `roles` fails `NOT NULL` (`23502`). Both functions pin `search_path = pg_catalog, public` and schema-qualify `public.user_role`, so a `pg_dump` restore validates the CHECK correctly.
 
 ---
 
@@ -578,6 +599,21 @@ CREATE UNIQUE INDEX idx_outlier_overrides_team_active
 **Design rationale:**
 
 Keeping overrides in a separate table rather than adding a nullable column to `teams` makes it explicit that this is optional configuration. The active override for a team is determined at query time: if a record exists in this table with `deactivated_at IS NULL`, it takes precedence over the application-level setting.
+
+---
+
+### `audit_log` (role-set column only)
+
+The full `audit_log` table is defined by migration 8 (`packages/backend/migrations/8_audit_log.sql`); this section records only the column #245 adds.
+
+```sql
+-- Migration 22 (#245)
+ALTER TABLE audit_log ADD COLUMN actor_roles TEXT[] NULL;
+```
+
+**Design rationale:**
+
+`actor_roles` is the actor's full role set, highest precedence first, in the same order as `users.roles`. It is `TEXT[]`, not `user_role[]`, for the same reason `actor_global_role` is `TEXT`: audit history must survive enum changes. As of migration 22 it is written only on `auth.first_access_created` and `auth.role_claim_mapped` rows, where it equals the row's `metadata->'roles'`. **NULL means the actor's role set was not captured for that operation; it does not mean the actor had no roles** (the column comment says the same). Its content is guaranteed by the application, not enforced by the database.
 
 ---
 
