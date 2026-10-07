@@ -100,7 +100,8 @@ vi.mock("openid-client", async () => {
 
 import Fastify from "fastify";
 import type { FastifyBaseLogger } from "fastify";
-import { authRoutes, validateReturnTo } from "../auth.js";
+import type { ResolvedUser } from "../../auth/account-resolver.js";
+import { authRoutes, shouldEmitRoleClaimMapped, validateReturnTo } from "../auth.js";
 import { ResponseBodyError } from "openid-client";
 
 function buildApp(sessionOverrides: Record<string, unknown> = {}) {
@@ -124,6 +125,31 @@ function buildApp(sessionOverrides: Record<string, unknown> = {}) {
 
   app.register(authRoutes, { prefix: "/auth" });
   return app.ready().then(() => app);
+}
+
+/**
+ * store-idp-role-set (#245) task 2.2: the one way this file builds a
+ * ResolvedUser, so a field added to the interface is added here once.
+ * Overrides win; a test that needs a field absent passes it as undefined.
+ */
+function makeResolvedUser(overrides: Partial<ResolvedUser> = {}): ResolvedUser {
+  // roles / previousRoles (task 5.1) default to the one-element sets that
+  // match globalRole / previousGlobalRole, as the backfill would leave them.
+  const globalRole = overrides.globalRole ?? "engineer";
+  const previousGlobalRole = overrides.previousGlobalRole ?? null;
+  return {
+    id: "user-1",
+    oidcSubject: "sub-1",
+    oidcIssuer: "https://idp.example.com",
+    displayName: "Alice",
+    email: "alice@example.com",
+    globalRole,
+    isNewUser: false,
+    previousGlobalRole,
+    roles: [globalRole],
+    previousRoles: previousGlobalRole === null ? null : [previousGlobalRole],
+    ...overrides,
+  };
 }
 
 /** Shared setup for callback tests that need a valid state/token exchange. */
@@ -153,7 +179,7 @@ function setupValidCallbackMocks(opts: {
     id_token: "it",
     expires_in: 3600,
   });
-  mockResolveOrCreateAccount.mockResolvedValue({
+  mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
     id: "user-1",
     oidcSubject: sub,
     oidcIssuer: iss,
@@ -161,7 +187,7 @@ function setupValidCallbackMocks(opts: {
     email: "alice@example.com",
     isNewUser,
     ...(opts.globalRole !== undefined ? { globalRole: opts.globalRole } : {}),
-  });
+  }));
   mockBuildSessionData.mockReturnValue({
     userId: "user-1",
     sessionCreatedAt: new Date().toISOString(),
@@ -196,14 +222,14 @@ function setupValidCallbackMocksNoMembershipFallback(opts: {
     id_token: "it",
     expires_in: 3600,
   });
-  mockResolveOrCreateAccount.mockResolvedValue({
+  mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
     id: "user-1",
     oidcSubject: sub,
     oidcIssuer: iss,
     displayName: "Alice",
     email: "alice@example.com",
     isNewUser,
-  });
+  }));
   mockBuildSessionData.mockReturnValue({
     userId: "user-1",
     sessionCreatedAt: new Date().toISOString(),
@@ -629,7 +655,7 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
@@ -637,7 +663,7 @@ describe("authRoutes", () => {
         email: "alice@example.com",
         isNewUser: false,
         globalRole: "engineer",
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -756,14 +782,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-new",
         oidcSubject: "sub-new",
         oidcIssuer: "https://idp.example.com",
         displayName: "New User",
         email: "new@example.com",
         isNewUser: true,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-new",
         sessionCreatedAt: new Date().toISOString(),
@@ -833,15 +859,15 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-admin",
         oidcSubject: "sub-admin",
         oidcIssuer: "https://idp.example.com",
         displayName: "Admin User",
         email: "admin@example.com",
         isNewUser: false,
-        globalRole: "admin",
-      });
+        globalRole: "application_admin",
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-admin",
         sessionCreatedAt: new Date().toISOString(),
@@ -866,7 +892,7 @@ describe("authRoutes", () => {
       expect(auditFields).toMatchObject({
         userId: "user-admin",
         oidcSubject: "sub-admin",
-        globalRole: "admin",
+        globalRole: "application_admin",
         sourceIp: expect.any(String),
         correlationId: expect.any(String),
       });
@@ -895,7 +921,7 @@ describe("authRoutes", () => {
     // auth-events-audit-log-coverage, design.md Decisions D2/D3/D7, tasks 3.4-3.6.
     // -------------------------------------------------------------------------
     describe("transactional group: auth.first_access_created / auth.role_claim_mapped (tasks 3.4-3.6)", () => {
-      function setupPreCommitMocks(opts: { isNewUser: boolean; globalRole?: string }) {
+      function setupPreCommitMocks(opts: { isNewUser: boolean; globalRole?: GlobalRole }) {
         mockRedisGetdel.mockResolvedValue(
           JSON.stringify({ nonce: "n", codeVerifier: "cv", createdAt: new Date().toISOString() }),
         );
@@ -904,7 +930,7 @@ describe("authRoutes", () => {
           access_token: "at",
           expires_in: 3600,
         });
-        mockResolveOrCreateAccount.mockResolvedValue({
+        mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
           id: "user-1",
           oidcSubject: "sub-1",
           oidcIssuer: "https://idp.example.com",
@@ -913,7 +939,7 @@ describe("authRoutes", () => {
           isNewUser: opts.isNewUser,
           globalRole: opts.globalRole ?? "engineer",
           previousGlobalRole: opts.isNewUser ? null : "engineer",
-        });
+        }));
         mockBuildSessionData.mockReturnValue({
           userId: "user-1",
           sessionCreatedAt: new Date().toISOString(),
@@ -1272,14 +1298,14 @@ describe("authRoutes", () => {
           access_token: "at",
           expires_in: 3600,
         });
-        mockResolveOrCreateAccount.mockResolvedValue({
+        mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
           id: "user-1",
           oidcSubject: "sub-1",
           oidcIssuer: "https://idp.example.com",
           displayName: "Alice",
           email: "alice@example.com",
           isNewUser: true,
-        });
+        }));
         mockBuildSessionData.mockReturnValue({
           userId: "user-1",
           sessionCreatedAt: new Date().toISOString(),
@@ -1521,14 +1547,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -1594,14 +1620,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -1655,14 +1681,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -1711,14 +1737,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -1775,14 +1801,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -1842,14 +1868,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -1901,14 +1927,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -1950,14 +1976,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -2013,14 +2039,14 @@ describe("authRoutes", () => {
         access_token: "at",
         expires_in: 3600,
       });
-      mockResolveOrCreateAccount.mockResolvedValue({
+      mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
         id: "user-1",
         oidcSubject: "sub-1",
         oidcIssuer: "https://idp.example.com",
         displayName: "Alice",
         email: "alice@example.com",
         isNewUser: false,
-      });
+      }));
       mockBuildSessionData.mockReturnValue({
         userId: "user-1",
         sessionCreatedAt: new Date().toISOString(),
@@ -2078,7 +2104,7 @@ describe("authRoutes", () => {
           access_token: "at",
           expires_in: 3600,
         });
-        mockResolveOrCreateAccount.mockResolvedValue({
+        mockResolveOrCreateAccount.mockResolvedValue(makeResolvedUser({
           id: "user-1",
           oidcSubject: "sub-1",
           oidcIssuer: "https://idp.example.com",
@@ -2087,7 +2113,7 @@ describe("authRoutes", () => {
           isNewUser: false,
           globalRole: "engineer",
           previousGlobalRole: "engineer",
-        });
+        }));
         mockBuildSessionData.mockReturnValue({
           userId: "user-1",
           sessionCreatedAt: new Date().toISOString(),
@@ -2665,24 +2691,27 @@ describe("GET /auth/callback — configurable OIDC role map", () => {
   }
 
   function resolvedUser(o: { isNewUser: boolean; globalRole: string; previousGlobalRole: string | null }) {
-    return {
-      id: "user-1",
-      oidcSubject: "sub-1",
-      oidcIssuer: "https://idp.example.com",
-      displayName: "Alice",
-      email: "alice@example.com",
-      ...o,
-    };
+    return makeResolvedUser(o as Partial<ResolvedUser>);
   }
 
   /** A transaction client whose users UPSERT returns the given row. */
-  function upsertClient(row: { global_role: string; is_new_user: boolean; previous_global_role: string | null }) {
-    const query = vi.fn((sql: string, _params?: unknown[]) => {
+  function upsertClient(row: {
+    global_role: string;
+    is_new_user: boolean;
+    previous_global_role: string | null;
+    previous_roles?: string[] | null;
+  }) {
+    const query = vi.fn((sql: string, params?: unknown[]) => {
       if (typeof sql === "string" && sql.includes("INSERT INTO users")) {
+        // roles::text[] comes back as a string array (store-idp-role-set D5):
+        // the set the resolver wrote ($6) is echoed back, as the upsert does.
         return Promise.resolve({
           rows: [{
             id: "user-1", oidc_subject: "sub-1", oidc_issuer: "https://idp.example.com",
-            display_name: "Alice", email: "alice@example.com", ...row,
+            display_name: "Alice", email: "alice@example.com",
+            roles: (params?.[5] as string[] | undefined) ?? [row.global_role],
+            previous_roles: row.previous_global_role === null ? null : [row.previous_global_role],
+            ...row,
           }],
         });
       }
@@ -2812,10 +2841,12 @@ describe("GET /auth/callback — configurable OIDC role map", () => {
       ["Retro-Facilitators", "facilitator"],
     ]);
 
+    // store-idp-role-set (#245) task 6.3: the outranked role is now in
+    // `roles` (the full set), but there is still no discard-like key.
     it.each([
-      ["[admin, facilitator]", ["Dipstick-Admins", "Retro-Facilitators"]],
-      ["[admin, engineering_manager]", ["Dipstick-Admins", "Eng-Managers"]],
-    ])("returning user %s: auth.role_claim_mapped metadata keys are unchanged plus previousRole", async (_label, groups) => {
+      ["[admin, facilitator]", ["Dipstick-Admins", "Retro-Facilitators"], ["application_admin", "facilitator"]],
+      ["[admin, engineering_manager]", ["Dipstick-Admins", "Eng-Managers"], ["application_admin", "engineering_manager"]],
+    ])("returning user %s: auth.role_claim_mapped metadata keys are unchanged plus previousRole, roles, previousRoles", async (_label, groups, roles) => {
       await useRealResolver();
       mockConfig.roleMap = MAP;
       setupCallback({ role: groups });
@@ -2830,16 +2861,21 @@ describe("GET /auth/callback — configurable OIDC role map", () => {
       expect(allLogged(spy).some((c) => JSON.stringify(c[0]).includes("discardedRoles"))).toBe(true);
       // ... but not audited.
       const insert = client.query.mock.calls.find((c) => String(c[0]).includes("'auth.role_claim_mapped'"));
-      expect(Object.keys(JSON.parse((insert![1] as unknown[])[3] as string)).sort()).toEqual(
-        ["correlationId", "globalRole", "oidcSubject", "previousRole"],
+      const metadata = JSON.parse((insert![1] as unknown[])[3] as string) as Record<string, unknown>;
+      expect(Object.keys(metadata).sort()).toEqual(
+        ["correlationId", "globalRole", "oidcSubject", "previousRole", "previousRoles", "roles"],
       );
+      expect(metadata["roles"]).toEqual(roles);
+      expect(metadata["previousRoles"]).toEqual(["application_admin"]);
+      expect(JSON.stringify(metadata)).not.toMatch(/discard/i);
+      expect((insert![1] as unknown[])[4]).toEqual(roles); // actor_roles
       const event = mockEmitAuditEvent.mock.calls.find((c: unknown[]) => c[1] === "auth.role_claim_mapped");
       expect(Object.keys(event![2] as object).sort()).toEqual(
-        ["correlationId", "globalRole", "oidcSubject", "previousRole", "sourceIp", "userId"],
+        ["correlationId", "globalRole", "oidcSubject", "previousRole", "previousRoles", "roles", "sourceIp", "userId"],
       );
     });
 
-    it("first sign-in [admin, facilitator]: auth.first_access_created metadata is unchanged", async () => {
+    it("first sign-in [admin, facilitator]: auth.first_access_created metadata gains roles only, and one discard line is logged", async () => {
       await useRealResolver();
       mockConfig.roleMap = MAP;
       setupCallback({ role: ["Dipstick-Admins", "Retro-Facilitators"] });
@@ -2850,15 +2886,212 @@ describe("GET /auth/callback — configurable OIDC role map", () => {
 
       await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
 
-      expect(allLogged(spy).some((c) => JSON.stringify(c[0]).includes("discardedRoles"))).toBe(true);
+      expect(allLogged(spy).filter((c) => JSON.stringify(c[0]).includes("discardedRoles"))).toHaveLength(1);
       const insert = client.query.mock.calls.find((c) => String(c[0]).includes("'auth.first_access_created'"));
-      expect(Object.keys(JSON.parse((insert![1] as unknown[])[3] as string)).sort()).toEqual(
-        ["correlationId", "globalRole", "oidcIssuer", "oidcSubject"],
-      );
+      const metadata = JSON.parse((insert![1] as unknown[])[3] as string) as Record<string, unknown>;
+      expect(Object.keys(metadata).sort()).toEqual(["correlationId", "globalRole", "oidcIssuer", "oidcSubject", "roles"]);
+      expect(metadata["roles"]).toEqual(["application_admin", "facilitator"]);
+      expect(JSON.stringify(metadata)).not.toMatch(/discard/i);
       const event = mockEmitAuditEvent.mock.calls.find((c: unknown[]) => c[1] === "auth.first_access_created");
       expect(Object.keys(event![2] as object).sort()).toEqual(
-        ["correlationId", "globalRole", "oidcIssuer", "oidcSubject", "sourceIp", "userId"],
+        ["correlationId", "globalRole", "oidcIssuer", "oidcSubject", "roles", "sourceIp", "userId"],
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // store-idp-role-set (#245) tasks 6.2-6.4: role set on the sign-in audit
+  // rows and events, and the explicit set clause of the firing condition.
+  // -------------------------------------------------------------------------
+  describe("role set on sign-in audit (store-idp-role-set)", () => {
+    async function callbackWith(user: ResolvedUser) {
+      setupCallback({});
+      mockResolveOrCreateAccount.mockResolvedValue(user);
+      const client = { query: vi.fn().mockResolvedValue({ rows: [] }), release: vi.fn() };
+      mockDbConnect.mockResolvedValueOnce(client);
+      const app = await buildApp();
+      await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+      const insert = client.query.mock.calls.find((c) => String(c[0]).includes("INSERT INTO audit_log"));
+      return { client, insert };
+    }
+
+    describe("shouldEmitRoleClaimMapped (task 6.2, D7)", () => {
+      it("{admin, facilitator} → {admin} fires", () => {
+        expect(
+          shouldEmitRoleClaimMapped(
+            makeResolvedUser({
+              globalRole: "application_admin",
+              roles: ["application_admin"],
+              previousGlobalRole: "application_admin",
+              previousRoles: ["application_admin", "facilitator"],
+            }),
+          ),
+        ).toBe(true);
+      });
+
+      it("{facilitator} → {engineer} fires", () => {
+        expect(
+          shouldEmitRoleClaimMapped(
+            makeResolvedUser({
+              globalRole: "engineer",
+              roles: ["engineer"],
+              previousGlobalRole: "facilitator",
+              previousRoles: ["facilitator"],
+            }),
+          ),
+        ).toBe(true);
+      });
+
+      it("engineer → engineer with differing sets fires through the set clause alone (hand-built; the resolver cannot produce it)", () => {
+        expect(
+          shouldEmitRoleClaimMapped(
+            makeResolvedUser({
+              globalRole: "engineer",
+              roles: ["engineer"],
+              previousGlobalRole: "engineer",
+              previousRoles: ["facilitator"] as never,
+            }),
+          ),
+        ).toBe(true);
+      });
+
+      it("identical sets with an unchanged non-engineer role still fire (first disjunct)", () => {
+        expect(
+          shouldEmitRoleClaimMapped(
+            makeResolvedUser({
+              globalRole: "engineering_manager",
+              roles: ["engineering_manager", "facilitator"],
+              previousGlobalRole: "engineering_manager",
+              previousRoles: ["engineering_manager", "facilitator"],
+            }),
+          ),
+        ).toBe(true);
+      });
+
+      it("identical {engineer} sets do not fire", () => {
+        expect(
+          shouldEmitRoleClaimMapped(
+            makeResolvedUser({ globalRole: "engineer", previousGlobalRole: "engineer" }),
+          ),
+        ).toBe(false);
+      });
+
+      it("the concurrent-first-sign-in race shape fires, with previousRoles and previousRole null on row and event", async () => {
+        const race = makeResolvedUser({
+          isNewUser: false,
+          globalRole: "facilitator",
+          roles: ["facilitator"],
+          previousGlobalRole: null,
+          previousRoles: null,
+        });
+        expect(shouldEmitRoleClaimMapped(race)).toBe(true);
+
+        const { insert } = await callbackWith(race);
+        expect(String(insert![0])).toContain("'auth.role_claim_mapped'");
+        const metadata = JSON.parse((insert![1] as unknown[])[3] as string) as Record<string, unknown>;
+        expect(metadata).toHaveProperty("previousRoles", null);
+        expect(metadata).toHaveProperty("previousRole", null);
+        expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+          expect.anything(),
+          "auth.role_claim_mapped",
+          expect.objectContaining({ previousRoles: null, previousRole: null }),
+        );
+      });
+    });
+
+    describe("audit rows and events (task 6.3, D6)", () => {
+      it("auth.first_access_created carries roles (row, actor_roles, event) and no previousRoles / previousRole key", async () => {
+        const user = makeResolvedUser({
+          isNewUser: true,
+          globalRole: "engineering_manager",
+          roles: Object.freeze(["engineering_manager", "facilitator"] as const),
+        });
+        const { insert } = await callbackWith(user);
+
+        expect(String(insert![0])).toContain("'auth.first_access_created'");
+        expect(String(insert![0])).toMatch(/metadata, actor_roles\)/);
+        const params = insert![1] as unknown[];
+        const metadata = JSON.parse(params[3] as string) as Record<string, unknown>;
+        expect(metadata["roles"]).toEqual(["engineering_manager", "facilitator"]);
+        expect(metadata).not.toHaveProperty("previousRoles");
+        expect(metadata).not.toHaveProperty("previousRole");
+        expect(params[4]).toEqual(["engineering_manager", "facilitator"]);
+
+        const event = mockEmitAuditEvent.mock.calls.find((c: unknown[]) => c[1] === "auth.first_access_created");
+        const fields = event![2] as Record<string, unknown>;
+        expect(fields["roles"]).toEqual(metadata["roles"]);
+        expect(fields).not.toHaveProperty("previousRoles");
+        expect(fields).not.toHaveProperty("previousRole");
+      });
+
+      it("auth.role_claim_mapped always has a previousRoles key; row, actor_roles and event carry identical arrays", async () => {
+        const user = makeResolvedUser({
+          isNewUser: false,
+          globalRole: "engineering_manager",
+          roles: ["engineering_manager", "facilitator"],
+          previousGlobalRole: "facilitator",
+          previousRoles: ["facilitator"],
+        });
+        const { insert } = await callbackWith(user);
+
+        const params = insert![1] as unknown[];
+        const metadata = JSON.parse(params[3] as string) as Record<string, unknown>;
+        expect(metadata).toMatchObject({
+          roles: ["engineering_manager", "facilitator"],
+          previousRoles: ["facilitator"],
+          previousRole: "facilitator",
+          globalRole: "engineering_manager",
+        });
+        expect(params[4]).toEqual(metadata["roles"]);
+
+        const event = mockEmitAuditEvent.mock.calls.find((c: unknown[]) => c[1] === "auth.role_claim_mapped");
+        const fields = event![2] as Record<string, unknown>;
+        expect(fields["roles"]).toEqual(metadata["roles"]);
+        expect(fields["previousRoles"]).toEqual(metadata["previousRoles"]);
+      });
+
+      it("auth.success (another operation) does not set actor_roles", async () => {
+        await callbackWith(makeResolvedUser({ isNewUser: false, globalRole: "facilitator", roles: ["facilitator"] }));
+        const success = mockWriteFailOpenAuditRow.mock.calls.find((c: unknown[]) =>
+          JSON.stringify(c).includes("auth.success"),
+        );
+        expect(success).toBeDefined();
+        expect(JSON.stringify(success)).not.toContain("actor_roles");
+        expect(JSON.stringify(success)).not.toContain("actorRoles");
+      });
+    });
+
+    // task 6.4: the #243 S7 spy test, extended to the role set fields.
+    it("no log line, audit metadata or actor_roles value contains a claim value or a map key (real resolver)", async () => {
+      await useRealResolver();
+      mockConfig.roleMap = new Map([
+        ["Secret-Admins-Key", "application_admin"],
+        ["Secret-Facilitators-Key", "facilitator"],
+      ]);
+      setupCallback({ role: ["Secret-Admins-Key", "Secret-Facilitators-Key", "All-Staff-Secret"] });
+      const client = upsertClient({ global_role: "application_admin", is_new_user: false, previous_global_role: "facilitator" });
+      mockDbConnect.mockResolvedValueOnce(client);
+      const spy = makeSpyLogger();
+      const app = await buildAppWithLogger(spy);
+
+      const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+      expect(res.statusCode).toBe(302);
+
+      const insert = client.query.mock.calls.find((c) => String(c[0]).includes("'auth.role_claim_mapped'"));
+      expect(insert).toBeDefined();
+      const params = insert![1] as unknown[];
+      // Non-vacuous: the set was resolved and written.
+      expect(params[4]).toEqual(["application_admin", "facilitator"]);
+
+      const text = JSON.stringify([
+        allLogged(spy),
+        mockEmitAuditEvent.mock.calls.map((c) => c.slice(1)),
+        params,
+        client.query.mock.calls.filter((c) => String(c[0]).includes("audit_log")),
+      ]);
+      for (const secret of ["Secret-Admins-Key", "Secret-Facilitators-Key", "All-Staff-Secret"]) {
+        expect(text).not.toContain(secret);
+      }
     });
   });
 });

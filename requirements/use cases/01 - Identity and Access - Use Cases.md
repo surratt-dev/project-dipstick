@@ -269,7 +269,7 @@
 
 ## Alternate Flows
 - **Engineering Manager account does not exist:** The Engineering Manager has never signed in. The Application Admin cannot complete the association. The Application Admin must ask the Engineering Manager to sign in first, then retry.
-- **Engineering Manager lacks `global_role = 'engineering_manager'`:** TEAM-006 returns 409 Conflict with a machine-readable error code identifying the `global_role` precondition failure. The Application Admin must ensure the Engineering Manager's IdP role claim is correctly configured and the EM has re-authenticated before retrying.
+- **Engineering Manager lacks `global_role = 'engineering_manager'`:** TEAM-006 returns 409 Conflict with a machine-readable error code identifying the `global_role` precondition failure. The Application Admin must ensure the Engineering Manager's IdP role claim is correctly configured and the EM has re-authenticated before retrying. A user whose IdP claim maps to both `application_admin` and `engineering_manager` is correctly configured but still receives this 409 until follow-up F1 (#245) moves the precondition to the stored role set; the operator can confirm this case with `SELECT id FROM users WHERE roles @> '{application_admin,engineering_manager}'`.
 - **Relationship already exists:** The application recognizes the existing relationship (idempotent behavior). Returns 200 OK with the same response body as a new creation.
 - **Unauthorized actor attempts this action:** The application rejects the request with 403. Facilitators, Engineers, and Engineering Managers who view the team administration page see a plain-language explanation: "Associating an Engineering Manager requires Application Admin access. Contact your admin to complete this before the session."
 

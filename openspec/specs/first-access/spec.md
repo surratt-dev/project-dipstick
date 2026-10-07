@@ -134,12 +134,12 @@ During the OIDC authentication flow, the application SHALL read a designated rol
 
 3. **Absent claim behavior:** When the role claim is absent from the token (the claim key is not present, or the value is undefined/null, an empty string, an array with no non-empty string elements, or a non-string non-array value), the user receives the default role: `engineer`. A missing claim is not an error — it is the normal case for non-EM users. The application MUST NOT reject authentication when the role claim is absent, and MUST NOT log a warning for it, except the single `claim_overage` warning defined in `oidc-role-mapping` ("Role claim warnings at sign-in") when the token signals the claim was omitted for overage.
 
-4. **Mapping, precedence and default:** The claim is normalized to a list of string values, and each value is looked up by exact, case-sensitive match against the keys of the deployment's role map (`OIDC_ROLE_MAP`, or the built-in identity default outside production). The only roles the map can produce are `application_admin`, `engineering_manager`, `facilitator` and `senior_engineer`. Values with no mapping are ignored. If several values map, the highest role wins in the fixed order `application_admin` > `engineering_manager` > `facilitator` > `senior_engineer` > `engineer`. If nothing maps, the user receives the default role (`engineer`), which is fixed and not configurable. A claim with at least one value but no mapped value produces exactly one structured-log warning per sign-in attempt that names the claim, carries the sign-in's `correlationId`, and contains no claim value (never an audit record — claim values may be attacker-controlled). A claim value of `'root'`, `'admin'`, or any other string the map does not contain is treated as absent.
+4. **Mapping, precedence and default:** The claim is normalized to a list of string values, and each value is looked up by exact, case-sensitive match against the keys of the deployment's role map (`OIDC_ROLE_MAP`, or the built-in identity default outside production). The only roles the map can produce are `application_admin`, `engineering_manager`, `facilitator` and `senior_engineer`. Values with no mapping are ignored. If several values map, the highest role wins in the fixed order `application_admin` > `engineering_manager` > `facilitator` > `senior_engineer` > `engineer`. If nothing maps, the user receives the default role (`engineer`), which is fixed and not configurable. Every mapped role is also stored in `users.roles`, once each and highest first, so a role outranked for `global_role` is not lost; when nothing maps, `users.roles` is `{engineer}`. A claim with at least one value but no mapped value produces exactly one structured-log warning per sign-in attempt that names the claim, carries the sign-in's `correlationId`, and contains no claim value (never an audit record — claim values may be attacker-controlled). A claim value of `'root'`, `'admin'`, or any other string the map does not contain is treated as absent.
 
-5. **Re-evaluation on each interactive sign-in:** The role mapping is re-evaluated at every interactive sign-in (the OIDC callback), whether first or returning. It is NOT re-evaluated at token refresh: refresh replaces the access and refresh tokens only and does not call `resolveOrCreateAccount`. The `resolveOrCreateAccount` upsert sets `global_role` from the claim on every call. If an IdP administrator removes a user's EM role, the application reflects that change at the user's next interactive sign-in, which the 90-minute absolute session lifetime forces at the latest (see `oidc-role-mapping`, "Role map changes take effect at next sign-in"). The `global_role` value in the database is not a permanently fixed value; it tracks the IdP claim, as translated by the role map, at each interactive sign-in. `users.global_role` holds exactly one value.
+5. **Re-evaluation on each interactive sign-in:** The role mapping is re-evaluated at every interactive sign-in (the OIDC callback), whether first or returning. It is NOT re-evaluated at token refresh: refresh replaces the access and refresh tokens only and does not call `resolveOrCreateAccount`. The `resolveOrCreateAccount` upsert sets `global_role` from the claim on every call. If an IdP administrator removes a user's EM role, the application reflects that change at the user's next interactive sign-in, which the 90-minute absolute session lifetime forces at the latest (see `oidc-role-mapping`, "Role map changes take effect at next sign-in"). The `global_role` value in the database is not a permanently fixed value; it tracks the IdP claim, as translated by the role map, at each interactive sign-in. `users.global_role` holds exactly one value, the highest-precedence member of `users.roles`; `users.roles` holds every mapped role, or `{engineer}` when nothing maps (see `oidc-role-mapping`). Both columns are written by the same upsert at each interactive sign-in. In this step no authorization check reads `users.roles`.
 
 **Constraints:**
-- The mechanism is audited: every non-`engineer` role assignment via the claim mapping, and every role change including a change back to `engineer`, produces an audit log entry (`auth.first_access_created` for new accounts; `auth.role_claim_mapped` for returning users with a non-default role or whose role changed, including a change back to `engineer`)
+- The mechanism is audited: every non-`engineer` role assignment via the claim mapping, and every role change including a change back to `engineer`, produces an audit log entry (`auth.first_access_created` for new accounts; `auth.role_claim_mapped` for returning users with a non-default role or whose role or role set changed, including a change back to `engineer`)
 - The mechanism is access-controlled: only the identity provider can cause a user to have `global_role = 'engineering_manager'` — the claim must come from a signed ID token, not from any application-layer input
 - Teams MUST NOT be promised EM history access until the end-to-end path is verified by a passing CI test (the resolver tests in `account-resolver.test.ts` and the OIDC-callback route tests in `routes/__tests__/auth.test.ts`)
 
@@ -194,7 +194,7 @@ During the OIDC authentication flow, the application SHALL read a designated rol
 #### Scenario: Group-style array claim is mapped through the deployment's role map
 
 - **WHEN** `OIDC_ROLE_CLAIM=groups`, `OIDC_ROLE_MAP` maps `Eng-Managers` to `engineering_manager`, and a valid ID token carries `groups: ["All-Staff", "Eng-Managers"]`
-- **THEN** `users.global_role` is set to `'engineering_manager'`
+- **THEN** `users.global_role` is set to `'engineering_manager'` and `users.roles` to `{engineering_manager}`
 - **AND** TEAM-006's `global_role` precondition is satisfied for this user
 
 #### Scenario: Facilitator role arrives through the role claim
@@ -208,9 +208,16 @@ During the OIDC authentication flow, the application SHALL read a designated rol
 - **WHEN** a user previously had `global_role = 'engineering_manager'` (claim was present on prior sign-in)
 - **AND** the IdP administrator removes the role claim from the user's account
 - **AND** the user signs in again
-- **THEN** `users.global_role` is updated to `'engineer'` at sign-in
-- **AND** `auth.role_claim_mapped` records the change with `previousRole = 'engineering_manager'` and `globalRole = 'engineer'`
+- **THEN** `users.global_role` is updated to `'engineer'` and `users.roles` to `{engineer}` at sign-in
+- **AND** `auth.role_claim_mapped` records the change with `previousRole = 'engineering_manager'` and `globalRole = 'engineer'`, and with `previousRoles` and `roles` showing the same change
 - **AND** the user's TEAM-006-established `team_memberships` rows are not automatically removed (those require an explicit TEAM-006 removal operation)
+
+#### Scenario: Manager who is also an admin is recorded as a manager in the role set
+
+- **WHEN** a valid ID token's role claim maps to both `application_admin` and `engineering_manager`
+- **THEN** `users.global_role` is `'application_admin'`, unchanged from today
+- **AND** `users.roles` is `{application_admin, engineering_manager}`, so the account's manager status is durably recorded
+- **AND** TEAM-006's precondition outcome for this user is unchanged, because no check reads `users.roles` in this step
 
 ---
 

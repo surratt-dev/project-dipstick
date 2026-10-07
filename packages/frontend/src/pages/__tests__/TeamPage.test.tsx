@@ -286,7 +286,7 @@ describe("TeamPage — facilitator entry point (facilitator-session-entry-point)
   // reports canFacilitateSessions: false and this is the state the page sees.
   // The backend half is covered by:
   //   - auth.test.ts: "returns canFacilitateSessions: false for an engineering_manager caller (R4)"
-  //   - role-map.test.ts: the resolveGlobalRole precedence row
+  //   - role-map.test.ts: the resolveRoleSet precedence row
   //     ["Eng-Managers", "Retro-Facilitators"] -> engineering_manager
   //   - account-resolver.test.ts: "[engineering_manager, facilitator] returning"
   //   - role-claim-persistence-integration.test.ts: "a user sent both the

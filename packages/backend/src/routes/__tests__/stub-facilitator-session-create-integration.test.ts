@@ -4,7 +4,7 @@ import { probeInfra, requireInfraOrThrow, loadModules, buildApp, Fixture } from 
 import type { Mods } from "./helpers/real-db.js";
 // @ts-expect-error -- plain-JS fixture of the stub IdP; it ships no type declarations.
 import { accounts } from "../../../../../docker/oidc/accounts.js";
-import { DEFAULT_ROLE_MAP, resolveGlobalRole } from "../../auth/role-map.js";
+import { DEFAULT_ROLE_MAP, resolveRoleSet } from "../../auth/role-map.js";
 
 // ---------------------------------------------------------------------------
 // configurable-oidc-role-map (#243) task 5.2(b), design D9/C8 — the gate half
@@ -34,7 +34,7 @@ describe.skipIf(!infraUp)("stub facilitator-001 can create a draft session (real
   });
 
   it("POST /api/v1/teams/:teamId/sessions/draft returns 201 and creates a draft row", async () => {
-    const role = resolveGlobalRole(accounts["facilitator-001"].role, DEFAULT_ROLE_MAP).role;
+    const role = resolveRoleSet(accounts["facilitator-001"].role, DEFAULT_ROLE_MAP).role;
     expect(role).toBe("facilitator");
 
     fx = new Fixture(mods.db);

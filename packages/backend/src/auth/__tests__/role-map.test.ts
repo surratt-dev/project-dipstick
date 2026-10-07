@@ -10,8 +10,9 @@ import {
   isClaimOverage,
   mapValues,
   normalizeClaim,
+  parseRoleArray,
   parseRoleMap,
-  resolveGlobalRole,
+  resolveRoleSet,
   type GlobalRole,
   type MappableRole,
 } from "../role-map.js";
@@ -47,6 +48,21 @@ describe("role-map constants (task 1.1)", () => {
     const labels = [...match![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
     expect([...labels].sort()).toEqual([...GLOBAL_ROLES].sort());
     expect(labels).toHaveLength(GLOBAL_ROLES.length);
+  });
+
+  // store-idp-role-set (#245) design D11: users_roles_consistent's rule 4
+  // ("strictly descending in enum order") relies on the enum's declaration
+  // order being the precedence order. The pg_enum.enumsortorder leg of this
+  // check is in users-roles-schema-integration.test.ts (real Postgres).
+  it("GLOBAL_ROLES order = ascending RANK order (engineer lowest) = 1_create_enums.sql declaration order", () => {
+    const sqlPath = fileURLToPath(new URL("../../../migrations/1_create_enums.sql", import.meta.url));
+    const sql = readFileSync(sqlPath, "utf8");
+    const match = /CREATE TYPE user_role AS ENUM \(([^)]*)\)/.exec(sql);
+    const declared = [...match![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    const byRank = [...RANK.entries()].sort(([, a], [, b]) => a - b).map(([role]) => role);
+
+    expect([...GLOBAL_ROLES]).toEqual(["engineer", ...byRank]);
+    expect([...GLOBAL_ROLES]).toEqual(declared);
   });
 
   it("PERMITTED_TARGETS is the four non-engineer roles and RANK orders them", () => {
@@ -362,35 +378,73 @@ describe("claim resolution (task 3.1)", () => {
     ["__proto__", "__proto__", "engineer", "unmapped"],
     ["toString", "toString", "engineer", "unmapped"],
   ])("%s resolves correctly", (_label, claim, role, outcome) => {
-    const result = resolveGlobalRole(claim, MAP);
+    const result = resolveRoleSet(claim, MAP);
     expect(result.role).toBe(role);
     expect(result.outcome).toBe(outcome);
+    expect(result.roles[0]).toBe(role);
   });
 
   it("an operator-written __proto__ key resolves", () => {
     const map = parseRoleMap('{"__proto__":"facilitator"}', DEV).map;
-    expect(resolveGlobalRole("__proto__", map).role).toBe("facilitator");
+    expect(resolveRoleSet("__proto__", map).role).toBe("facilitator");
+    expect(resolveRoleSet("__proto__", map).roles).toEqual(["facilitator"]);
+  });
+
+  // store-idp-role-set (#245) task 4.2: every precedence row asserts the
+  // exact role set (order and length), highest precedence first (D1).
+  it.each([
+    [["Retro-Facilitators", "Eng-Managers", "Dipstick-Admins", "Eng-Managers"], "application_admin", ["application_admin", "engineering_manager", "facilitator"], ["engineering_manager", "facilitator"]],
+    [["Dipstick-Admins", "Retro-Facilitators"], "application_admin", ["application_admin", "facilitator"], ["facilitator"]],
+    [["Eng-Managers", "Retro-Facilitators"], "engineering_manager", ["engineering_manager", "facilitator"], ["facilitator"]],
+    [["Dipstick-Admins", "Eng-Managers"], "application_admin", ["application_admin", "engineering_manager"], ["engineering_manager"]],
+    [["Retro-Facilitators", "Eng-Managers", "Dipstick-Admins"], "application_admin", ["application_admin", "engineering_manager", "facilitator"], ["engineering_manager", "facilitator"]],
+    [["Retro-Facilitators", "Seniors"], "facilitator", ["facilitator", "senior_engineer"], []],
+    [["Seniors", "Dipstick-Admins"], "application_admin", ["application_admin", "senior_engineer"], []],
+    [["Retro-Facilitators"], "facilitator", ["facilitator"], []],
+    ["Retro-Facilitators", "facilitator", ["facilitator"], []],
+    [["Seniors"], "senior_engineer", ["senior_engineer"], []],
+  ])("precedence for %j → %s, roles %j, discarded %j", (claim, role, roles, discarded) => {
+    const result = resolveRoleSet(claim, MAP);
+    expect(result.role).toBe(role);
+    expect(result.roles).toEqual(roles);
+    expect(result.discardedRoles).toEqual(discarded);
   });
 
   it.each([
-    [["Dipstick-Admins", "Retro-Facilitators"], "application_admin", ["facilitator"]],
-    [["Eng-Managers", "Retro-Facilitators"], "engineering_manager", ["facilitator"]],
-    [["Dipstick-Admins", "Eng-Managers"], "application_admin", ["engineering_manager"]],
-    [["Retro-Facilitators", "Eng-Managers", "Dipstick-Admins"], "application_admin", ["engineering_manager", "facilitator"]],
-    [["Retro-Facilitators", "Seniors"], "facilitator", []],
-    [["Retro-Facilitators"], "facilitator", []],
-    [["Seniors"], "senior_engineer", []],
-  ])("precedence for %j → %s, discarded %j", (claim, role, discarded) => {
-    const result = resolveGlobalRole(claim, MAP);
-    expect(result.role).toBe(role);
-    expect(result.discardedRoles).toEqual(discarded);
+    ["missing claim", undefined, "missing"],
+    ["nothing mapped", ["All-Staff"], "unmapped"],
+    ["prototype names", ["toString", "__proto__", "constructor"], "unmapped"],
+  ])("%s → roles [engineer] (outcome %s)", (_label, claim, outcome) => {
+    const result = resolveRoleSet(claim, MAP);
+    expect(result.roles).toEqual(["engineer"]);
+    expect(result.role).toBe("engineer");
+    expect(result.outcome).toBe(outcome);
+  });
+
+  it("no mapping yields engineer from mapValues", () => {
+    // Every permitted target, plus engineer-looking keys: engineer never appears.
+    const everything = parseRoleMap(
+      '{"a":"application_admin","b":"engineering_manager","c":"facilitator","d":"senior_engineer"}',
+      DEV,
+    ).map;
+    expect(mapValues(["a", "b", "c", "d", "engineer"], everything)).not.toContain("engineer");
+    expect(mapValues(["engineer"], DEFAULT_ROLE_MAP)).toEqual([]);
+    expect(resolveRoleSet(["a", "b", "c", "d"], everything).roles).not.toContain("engineer");
+  });
+
+  it("the [engineer] fallback is a fresh array per call", () => {
+    const first = resolveRoleSet(undefined, MAP);
+    const second = resolveRoleSet(undefined, MAP);
+    const third = resolveRoleSet(["All-Staff"], MAP);
+    expect(first.roles).not.toBe(second.roles);
+    expect(first.roles).not.toBe(third.roles);
   });
 
   it("default map preserves today's roles and grants facilitator/senior_engineer", () => {
     for (const r of ["engineering_manager", "application_admin", "facilitator", "senior_engineer"]) {
-      expect(resolveGlobalRole(r, DEFAULT_ROLE_MAP).role).toBe(r);
+      expect(resolveRoleSet(r, DEFAULT_ROLE_MAP).role).toBe(r);
     }
-    expect(resolveGlobalRole("engineer", DEFAULT_ROLE_MAP)).toMatchObject({ role: "engineer", outcome: "unmapped" });
+    expect(resolveRoleSet("engineer", DEFAULT_ROLE_MAP)).toMatchObject({ role: "engineer", outcome: "unmapped" });
   });
 
   it("isClaimOverage detects an own _claim_names entry only", () => {
@@ -401,5 +455,30 @@ describe("claim resolution (task 3.1)", () => {
     expect(isClaimOverage({ _claim_names: "groups" }, "groups")).toBe(false);
     expect(isClaimOverage({ _claim_names: ["groups"] }, "0")).toBe(false);
     expect(isClaimOverage({ _claim_names: null }, "groups")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// store-idp-role-set (#245) task 4.2: parseRoleArray (design D5)
+// ---------------------------------------------------------------------------
+describe("parseRoleArray", () => {
+  it("accepts a valid role array and returns a frozen copy", () => {
+    const input = ["engineering_manager", "facilitator"];
+    const parsed = parseRoleArray(input);
+    expect(parsed).toEqual(["engineering_manager", "facilitator"]);
+    expect(parsed).not.toBe(input);
+    expect(Object.isFrozen(parsed)).toBe(true);
+  });
+
+  it.each([
+    ["the raw enum-array string", "{a,b}"],
+    ["an empty array", []],
+    ["a prototype name", ["toString"]],
+    ["a null element", ["engineer", null]],
+    ["a non-array", { 0: "engineer", length: 1 }],
+    ["null", null],
+    ["undefined", undefined],
+  ])("rejects %s", (_label, value) => {
+    expect(() => parseRoleArray(value)).toThrow();
   });
 });
