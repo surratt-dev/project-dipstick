@@ -1,6 +1,6 @@
 # Follow-ups for #245
 
-Filed 2026-10-06: F1 → #251, F2 → #252, F4 → #253, F6 → #254. FU-7 widening comment posted on #211 (FU-7 itself was never filed). F5 not posted: FU-3 was never filed; include the F5 text in FU-3's body if it is filed.
+Filed 2026-10-06: F1 → #251, F2 → #252, F4 → #253, F6 → #254. FU-7 widening comment posted on #211 (FU-7 itself was never filed). F5: FU-3 had never been filed; it was filed as #256 with the F5 text included.
 
 Drafted by task 0.3. Agents do not post to GitHub: a human files F1, F2, F4 and F6, posts the F5 comment on FU-3's issue and the #244 follow-up 7 comment, and records the numbers and URLs in `tasks.md` "Records" (task H.1). F3 (multi-role local stub persona) is folded into F1 as an acceptance note and is not filed separately.
 
