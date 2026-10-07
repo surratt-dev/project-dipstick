@@ -15,7 +15,7 @@ import {
   buildFacilitatorQueryResult,
 } from "../content/team-content-serializers.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
-import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
+import { getTopicLockState } from "../auth/topic-lock-state.js";
 import type { SessionData } from "../auth/session-store.js";
 import type {
   TeamAccessGrant,
@@ -23,6 +23,7 @@ import type {
   FacilitatorTrendDataUnavailable,
   FacilitatorContentView,
   ConnectionRecoveryEntry,
+  GetActiveTopicsResponse,
   GetAllTopicsResponse,
 } from "@dipstick/shared";
 import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
@@ -589,15 +590,23 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     );
 
     // topic-customization-lock-and-add-custom-topic, design.md Decision 1 /
-    // Task 2.1: isCustomizationLocked is computed via the single shared
-    // lock-check function -- the same one TOPIC-003's write-side gate calls
-    // (topics.ts) -- never an independently inlined query here. Present on
-    // every 200 for an admitted caller (Task 2.2); EMs and admins never reach
-    // this point (#187).
-    const isCustomizationLocked = !(await hasCompletedFirstSession(teamId));
+    // Task 2.1: the lock state is never an independently inlined query here.
+    // template-team-not-usable (#214) D6: it comes from getTopicLockState,
+    // the one function TOPIC-002 also calls (it delegates to the shared
+    // hasCompletedFirstSession for every team but the template), with
+    // lockReason beside isCustomizationLocked. Present on every 200 for an
+    // admitted caller (Task 2.2); EMs and admins never reach this point
+    // (#187), and neither function runs for a denied request.
+    const { isCustomizationLocked, lockReason } = await getTopicLockState(teamId);
 
+    const response: GetActiveTopicsResponse = {
+      teamId,
+      topics: result.rows as GetActiveTopicsResponse["topics"],
+      isCustomizationLocked,
+      lockReason,
+    };
     await applyTimingFloor(startTime);
-    return noStore(reply).send({ teamId, topics: result.rows, isCustomizationLocked });
+    return noStore(reply).send(response);
   });
 
   // -------------------------------------------------------------------------
@@ -761,7 +770,9 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       [teamId, DEFAULT_TOPICS_TEAM_ID],
     );
 
-    const isCustomizationLocked = !(await hasCompletedFirstSession(teamId));
+    // template-team-not-usable (#214) D6: the same getTopicLockState TOPIC-001
+    // calls. The template reads locked with reason "canonical_defaults".
+    const { isCustomizationLocked, lockReason } = await getTopicLockState(teamId);
 
     // topic-annotation design.md Decision 8: presentation-only flag so the
     // screen never offers an editor that TOPIC-007 would answer with 403.
@@ -782,6 +793,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       teamId,
       teamName,
       isCustomizationLocked,
+      lockReason,
       canEditAnnotations,
       canAddTopics,
       active: activeResult.rows.map((row) => ({

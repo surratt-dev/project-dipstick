@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import type { SessionData } from "../auth/session-store.js";
 import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
+import { isTemplateTeam, writeTemplateAccessDenial } from "../teams/template-team-guard.js";
 import {
   recordAndCountSlidingWindow,
   retryAfterSeconds,
@@ -363,6 +364,25 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // template-team-not-usable (#214) design.md D3: the __default_topics__
+    // template team has no members. Answered as a missing team, at the
+    // team-existence step, after the 401 and the non-member 403 (so only an
+    // application admin reaches it; everyone else gets the 403 above, as
+    // for a missing team). Audited (surface "membership").
+    if (isTemplateTeam(teamId)) {
+      const envelope = teamNotFoundEnvelope();
+      await writeTemplateAccessDenial({
+        actorUserId: session.userId,
+        actorGlobalRole: global_role,
+        actorIp: request.ip,
+        log: request.log,
+        endpoint: "GET /api/v1/teams/:teamId/members",
+        surface: "membership",
+        correlationId: envelope.error.correlationId,
+      });
+      return reply.code(404).send(envelope);
+    }
+
     // Fetch team name
     const teamResult = await db.query<{ name: string }>(
       `SELECT name FROM teams WHERE id = $1`,
@@ -686,6 +706,31 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
           message:
             "Only an Application Admin or an Engineering Manager for this team can change member roles.",
           correlationId: crypto.randomUUID(),
+        },
+      });
+    }
+
+    // template-team-not-usable (#214) design.md D3: the template team has no
+    // members, so for an authorized caller (an application admin; no EM
+    // membership on it can exist) it gets the "not an active member" 404 a
+    // missing team gets, before the member lookup. Audited (surface
+    // "membership").
+    if (isTemplateTeam(teamId)) {
+      const correlationId = crypto.randomUUID();
+      await writeTemplateAccessDenial({
+        actorUserId: session.userId,
+        actorGlobalRole,
+        actorIp: request.ip,
+        log: request.log,
+        endpoint: "PATCH /api/v1/teams/:teamId/members/:userId/role",
+        surface: "membership",
+        correlationId,
+      });
+      return reply.code(404).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "User is not an active member of this team.",
+          correlationId,
         },
       });
     }
@@ -1118,6 +1163,25 @@ export async function teamRoutes(app: FastifyInstance): Promise<void> {
     // "found but not authorized to know it exists." For admin callers (already
     // confirmed above), a genuine 404 is acceptable.
     // -----------------------------------------------------------------------
+
+    // template-team-not-usable (#214) design.md D3: the __default_topics__
+    // template team never gets an Engineering Manager. Answered as a missing
+    // team here, after the admin 403 and the rate limiter. Audited (surface
+    // "membership").
+    if (isTemplateTeam(teamId)) {
+      const envelope = teamNotFoundEnvelope();
+      await writeTemplateAccessDenial({
+        actorUserId: session.userId,
+        actorGlobalRole,
+        actorIp: request.ip,
+        log: request.log,
+        endpoint: "POST /api/v1/teams/:teamId/managers",
+        surface: "membership",
+        correlationId: envelope.error.correlationId,
+      });
+      return reply.code(404).send(envelope);
+    }
+
     const teamResult = await db.query<{ id: string }>(
       `SELECT id FROM teams WHERE id = $1`,
       [teamId],

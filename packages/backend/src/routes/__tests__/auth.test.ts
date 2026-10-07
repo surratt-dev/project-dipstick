@@ -9,6 +9,8 @@ const mockDbQuery = vi.fn();
 const mockDbConnect = vi.fn();
 const mockRedisSetex = vi.fn();
 const mockRedisGetdel = vi.fn();
+// template-team-not-usable (#214): the template guard's D2a dedupe claim.
+const mockRedisSet = vi.fn(async (..._args: unknown[]) => "OK");
 const mockEmitAuditEvent = vi.fn();
 const mockGetAuthorizationUrl = vi.fn();
 const mockHandleCallback = vi.fn();
@@ -32,6 +34,7 @@ vi.mock("../../redis.js", () => ({
     // getdel replaces the former get+del pair — atomic retrieval-and-deletion
     // closes the non-atomic window that existed between the two separate calls.
     getdel: (...args: unknown[]) => mockRedisGetdel(...args),
+    set: (...args: unknown[]) => mockRedisSet(...args),
   },
 }));
 const { mockConfig, mockIsPrivateAddress } = vi.hoisted(() => ({
@@ -103,6 +106,8 @@ import type { FastifyBaseLogger } from "fastify";
 import type { ResolvedUser } from "../../auth/account-resolver.js";
 import { authRoutes, shouldEmitRoleClaimMapped, validateReturnTo } from "../auth.js";
 import { ResponseBodyError } from "openid-client";
+import { DatabaseError } from "pg";
+import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
 
 function buildApp(sessionOverrides: Record<string, unknown> = {}) {
   const app = Fastify();
@@ -2232,6 +2237,138 @@ describe("authRoutes", () => {
 
         expect(res.statusCode).toBe(302);
         expect(res.headers.location).toContain("category=internal_error");
+      });
+
+      // template-team-not-usable (#214) tasks.md 4.4: a pending join token
+      // whose lookup resolves to the __default_topics__ template team (stubbed:
+      // migration 23 revoked every real template link) is an unknown token,
+      // checked before the revoked/expired branch. The login completes; no
+      // membership is created; the row is written with the role in scope.
+      it.each(["active", "revoked"] as const)(
+        "#214 4.4: a %s template link redirects to joinError=invalid after a completed login, with no membership and one row without the token",
+        async (state) => {
+          setupJoinFlowPreamble("secret-template-token");
+          // Replace the preamble's link row with a template row.
+          mockDbQuery.mockReset();
+          mockDbQuery.mockImplementation(async (sql: string) =>
+            String(sql).includes("FROM join_links WHERE token")
+              ? {
+                  rows: [
+                    {
+                      id: "template-link-1",
+                      team_id: DEFAULT_TOPICS_TEAM_ID,
+                      expires_at: new Date(Date.now() + 3_600_000),
+                      revoked_at: state === "revoked" ? new Date(Date.now() - 60_000) : null,
+                    },
+                  ],
+                }
+              : { rows: [] },
+          );
+          mockDbConnect.mockResolvedValueOnce(makeMockClient()); // resolveOrCreateAccount's transaction
+
+          const app = await buildApp();
+          const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+          expect(res.statusCode).toBe(302);
+          expect(res.headers.location).toBe("http://localhost:5173/join-error?joinError=invalid");
+          // The login itself succeeded: auth.success was recorded, and no
+          // auth.failure was emitted.
+          expect(mockWriteFailOpenAuditRow).toHaveBeenCalledWith(
+            expect.objectContaining({ operation: "auth.success", userId: "user-1" }),
+          );
+          expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(expect.anything(), "auth.failure", expect.anything());
+          // Only resolveOrCreateAccount's transaction: no membership transaction.
+          expect(mockDbConnect).toHaveBeenCalledTimes(1);
+          expect(mockDbQuery.mock.calls.some(([sql]) => String(sql).includes("team_memberships"))).toBe(false);
+
+          const inserts = mockDbQuery.mock.calls.filter(([sql]) => String(sql).includes("INSERT INTO audit_log"));
+          expect(inserts).toHaveLength(1);
+          const params = inserts[0]![1] as unknown[];
+          expect(params.slice(0, 5)).toEqual([
+            "user-1",
+            "engineer",
+            expect.any(String),
+            "team.template_access_denied",
+            DEFAULT_TOPICS_TEAM_ID,
+          ]);
+          expect(JSON.parse(params[5] as string)).toEqual({ endpoint: "GET /auth/callback", surface: "join_link" });
+          expect(JSON.stringify(params)).not.toContain("secret-template-token");
+          // The role came from the parameter, not a lookup.
+          expect(mockDbQuery.mock.calls.some(([sql]) => String(sql).includes("SELECT global_role"))).toBe(false);
+          expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+            expect.anything(),
+            "join.link_rejected",
+            expect.objectContaining({ reason: "template", userId: "user-1", linkId: "template-link-1" }),
+          );
+        },
+      );
+
+      // template-team-not-usable (#214) tasks.md 2.2, design.md D5: a
+      // template constraint violation from executeJoinFlow's membership
+      // INSERT is caught by the callback's own catch. It is logged with the
+      // template_constraint_violation marker before mapAuthError, so it is
+      // not recorded only as an authentication failure; the redirect is
+      // unchanged.
+      it("#214 2.2: a template 23514 from executeJoinFlow is logged with the marker before mapAuthError, and the redirect is unchanged", async () => {
+        setupJoinFlowPreamble("valid-tok");
+        mockDbConnect.mockResolvedValueOnce(makeMockClient()); // resolveOrCreateAccount's transaction
+        const violation = new DatabaseError(
+          'new row for relation "team_memberships" violates check constraint "team_memberships_not_template_team"',
+          0,
+          "error",
+        );
+        violation.code = "23514";
+        violation.constraint = "team_memberships_not_template_team";
+        mockDbConnect.mockResolvedValueOnce({
+          query: vi.fn((sql: string) =>
+            typeof sql === "string" && sql.includes("INSERT INTO team_memberships")
+              ? Promise.reject(violation)
+              : Promise.resolve({ rows: [] }),
+          ),
+          release: vi.fn(),
+        });
+        const order: string[] = [];
+        mockMapAuthError.mockImplementation(() => {
+          order.push("mapAuthError");
+          return { category: "internal_error", message: "internal problem" };
+        });
+        const error = vi.fn((obj: unknown) => {
+          if ((obj as Record<string, unknown>)?.["template_constraint_violation"] === true) order.push("marker");
+        });
+        const spyLog: Record<string, unknown> = { level: "info", info: vi.fn(), warn: vi.fn(), debug: vi.fn(), trace: vi.fn(), fatal: vi.fn(), error };
+        spyLog["child"] = vi.fn(() => spyLog);
+
+        const app = Fastify();
+        app.decorateRequest("session", null);
+        app.addHook("onRequest", async (request) => {
+          (request as unknown as Record<string, unknown>).session = {
+            userId: "user-1",
+            sessionCreatedAt: new Date().toISOString(),
+            sessionId: "sess-1",
+            destroy: vi.fn((cb?: () => void) => cb?.()),
+            regenerate: vi.fn(async () => {}),
+            save: vi.fn(async () => {}),
+            touch: vi.fn(),
+          };
+          (request as unknown as { log: unknown }).log = spyLog;
+        });
+        app.register(authRoutes, { prefix: "/auth" });
+        await app.ready();
+
+        const res = await app.inject({ method: "GET", url: "/auth/callback?state=valid&code=abc" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toContain("/auth/error?category=internal_error");
+        expect(res.headers.location).not.toContain("_not_template_team");
+        const marker = error.mock.calls.find(
+          ([obj]) => (obj as Record<string, unknown>)?.["template_constraint_violation"] === true,
+        );
+        expect(marker?.[0]).toMatchObject({
+          template_constraint_violation: true,
+          route: "GET /auth/callback",
+          constraint: "team_memberships_not_template_team",
+        });
+        expect(order).toEqual(["marker", "mapAuthError"]);
       });
     });
   });

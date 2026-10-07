@@ -36,7 +36,12 @@ type Screen = { name: "picker" } | { name: "confirm"; team: EligibleTeam } | { n
 
 type ConfirmError =
   | { kind: "membership_conflict"; message: string }
-  | { kind: "session_already_exists"; body: SessionAlreadyExistsResponse };
+  | { kind: "session_already_exists"; body: SessionAlreadyExistsResponse }
+  // template-team-not-usable (#214), session-creation "The confirm step
+  // explains a team that is no longer available": any 404 from POST /draft
+  // (TEAM_NOT_FOUND, which the template team also answers, or a
+  // non-canonical id). Never the generic retry error.
+  | { kind: "team_unavailable" };
 
 // design.md D2 (error-state shape, engineer review Finding 3): a dedicated
 // state, not an extension of ConfirmError -- the two screens' error
@@ -263,6 +268,15 @@ export function SessionCreationPage() {
         return;
       }
 
+      if (res.status === 404) {
+        // #214: the selected team no longer exists (or never could be a
+        // session subject). "Choose another team" returns to the picker,
+        // which re-fetches the list because it is now stale.
+        setConfirmError({ kind: "team_unavailable" });
+        setListStale(true);
+        return;
+      }
+
       if (res.status === 403) {
         const body = (await res.json()) as { error: { message: string } };
         setConfirmError({ kind: "membership_conflict", message: body.error.message });
@@ -374,6 +388,15 @@ export function SessionCreationPage() {
           <p role="alert" data-testid="confirm-error-membership-conflict" style={{ color: "#c62828" }}>
             {confirmError.message}
           </p>
+        )}
+
+        {confirmError && confirmError.kind === "team_unavailable" && (
+          <div role="alert" data-testid="confirm-error-team-unavailable" style={{ color: "#c62828" }}>
+            <p>This team is no longer available. Go back to choose another team.</p>
+            <button type="button" data-testid="choose-another-team" onClick={backToPicker}>
+              Choose another team
+            </button>
+          </div>
         )}
 
         {confirmError && confirmError.kind === "session_already_exists" && (

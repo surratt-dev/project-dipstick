@@ -788,3 +788,123 @@ describe("facilitator-session-entry-point: no client pre-selection (G1, R2)", ()
     expect(screen.queryByTestId("session-creation-confirm")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// template-team-not-usable (#214) tasks.md 7.2: the confirm step explains a
+// team that is no longer available (any 404 from POST /draft), and
+// "Choose another team" returns to the picker and re-fetches the list.
+// 409 and 403 keep their copy; 5xx and network errors keep the generic one.
+// ---------------------------------------------------------------------------
+describe("SessionCreationPage — confirm step, a team that is no longer available (#214)", () => {
+  const UNAVAILABLE = "This team is no longer available. Go back to choose another team.";
+  const listBody: EligibleTeamsResponse = {
+    eligibleTeams: [{ teamId: "team-2", teamName: "Team Two", lastSessionAt: null }],
+    callerHasTeamMemberships: false,
+  };
+
+  async function confirmWith(...draftReplies: Array<Partial<Response> & { jsonBody?: unknown }>) {
+    const fetchMock = mockFetchSequence({ jsonBody: listBody }, ...draftReplies);
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+    return fetchMock;
+  }
+
+  it.each([
+    ["TEAM_NOT_FOUND", { error: { category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found.", correlationId: "c" } }],
+    ["a body without a code", { error: { message: "anything" } }],
+  ])("a stale selection (404, %s) shows the unavailable-team message, not the generic retry error", async (_label, body) => {
+    await confirmWith({ ok: false, status: 404, jsonBody: body });
+
+    await waitFor(() => expect(screen.getByTestId("confirm-error-team-unavailable")).toBeInTheDocument());
+    expect(screen.getByTestId("confirm-error-team-unavailable").textContent).toContain(UNAVAILABLE);
+    expect(screen.getByRole("button", { name: "Choose another team" })).toBeInTheDocument();
+    expect(screen.queryByTestId("confirm-error-membership-conflict")).toBeNull();
+    expect(screen.queryByText(/Something went wrong/)).toBeNull();
+  });
+
+  it("'Choose another team' shows the picker and requests eligible-for-session again", async () => {
+    const fetchMock = await confirmWith(
+      { ok: false, status: 404, jsonBody: { error: { code: "TEAM_NOT_FOUND", message: "Team not found." } } },
+      { jsonBody: { eligibleTeams: [], callerHasTeamMemberships: false } },
+    );
+    await waitFor(() => expect(screen.getByTestId("choose-another-team")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByTestId("choose-another-team"));
+
+    await waitFor(() => expect(screen.getByTestId("session-creation-picker")).toBeInTheDocument());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(fetchMock.mock.calls[2]![0]).toBe("/api/v1/teams/eligible-for-session");
+    // The stale entry is gone: the re-fetched list is what renders.
+    await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+    expect(screen.queryByTestId("picker-team-team-2")).toBeNull();
+  });
+
+  it("a live-session conflict (409) keeps its existing copy", async () => {
+    await confirmWith({
+      ok: false,
+      status: 409,
+      jsonBody: {
+        errorState: "session_already_exists",
+        existingSessionId: "s-1",
+        existingSessionStatus: "lobby",
+        teamId: "team-2",
+      } satisfies SessionAlreadyExistsResponse,
+    });
+    await waitFor(() => expect(screen.getByTestId("confirm-error-session-already-exists")).toBeInTheDocument());
+    expect(screen.queryByTestId("confirm-error-team-unavailable")).toBeNull();
+  });
+
+  it("a 5xx keeps the existing generic error", async () => {
+    await confirmWith({ ok: false, status: 500, jsonBody: { error: { message: "boom" } } });
+    await waitFor(() =>
+      expect(screen.getByTestId("confirm-error-membership-conflict").textContent).toBe(
+        "Something went wrong creating this session. Please try again.",
+      ),
+    );
+    expect(screen.queryByTestId("confirm-error-team-unavailable")).toBeNull();
+  });
+
+  it("a network error keeps the existing generic error", async () => {
+    const fetchMock = mockFetchSequence({ jsonBody: listBody });
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("picker-team-team-2")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("picker-team-team-2"));
+    await userEvent.click(screen.getByTestId("confirm-create-session"));
+    await waitFor(() =>
+      expect(screen.getByTestId("confirm-error-membership-conflict").textContent).toBe(
+        "Network error creating this session. Please try again.",
+      ),
+    );
+    expect(screen.queryByTestId("confirm-error-team-unavailable")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// template-team-not-usable (#214) tasks.md 7.3: the template is no longer
+// listed, so an empty list can now mean "the template was the only otherwise
+// eligible team". The existing empty states render, with no new copy.
+// ---------------------------------------------------------------------------
+describe("SessionCreationPage — empty list because the template was the only eligible team (#214)", () => {
+  it("a facilitator who belongs to every real team sees the existing with-memberships empty state", async () => {
+    setSession({ teamMemberships: [{ teamId: "team-1", teamName: "Home Team", role: "participant" }] as AuthSession["teamMemberships"] });
+    mockFetchSequence({ jsonBody: { eligibleTeams: [], callerHasTeamMemberships: true } });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+    expect(screen.getByTestId("picker-empty-state").textContent).toBe(EMPTY_STATE_WITH_MEMBERSHIPS);
+    expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument();
+  });
+
+  it("a fresh install (zero memberships, the template is the only team) shows the zero-home-team empty state with its Create control", async () => {
+    mockFetchSequence({ jsonBody: { eligibleTeams: [], callerHasTeamMemberships: false } });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId("picker-empty-state")).toBeInTheDocument());
+    expect(screen.getByTestId("picker-empty-state").textContent).toBe(EMPTY_STATE_WITHOUT_MEMBERSHIPS);
+    expect(screen.getByTestId("picker-create-new-team")).toBeInTheDocument();
+    expect(screen.queryByText("__default_topics__")).toBeNull();
+  });
+});

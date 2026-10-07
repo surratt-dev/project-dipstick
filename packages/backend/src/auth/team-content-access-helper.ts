@@ -4,6 +4,33 @@ import { emitAuditEvent } from "./audit-logger.js";
 import type { TeamAccessGrant, SessionStatus } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
+// FACILITATOR_GRANT_SQL — path 3's query (see "Path 3" inside
+// evaluateTeamAccess below), $1 = facilitator user id, $2 = team id.
+//
+// Exported, unchanged, so template-team-not-usable (#214) tasks.md 1.4 can run
+// the exact production predicate against a scratch copy of sessions after
+// migration 23 and show it grants nothing on the template, rather than a
+// hand-copied version of it that could drift.
+// ---------------------------------------------------------------------------
+export const FACILITATOR_GRANT_SQL = `SELECT s.id AS session_id,
+            s.status AS session_status
+     FROM sessions s
+     WHERE s.facilitator_id = $1
+       AND s.team_id = $2
+       AND (
+         s.status IN ('lobby', 'pre_session', 'active', 'wrap_up')
+         OR (
+           s.status = 'draft'
+           AND s.created_at + INTERVAL '24 hours' > NOW()
+         )
+         OR (
+           s.status = 'complete'
+           AND s.facilitator_access_expires_at > NOW()
+         )
+       )
+     LIMIT 1`;
+
+// ---------------------------------------------------------------------------
 // teamContentAccessHelper — evaluateTeamAccess(userId, teamId)
 //
 // Implements Design Decisions 2, 3, 4, 6, and 8 from design.md:
@@ -207,26 +234,7 @@ export async function evaluateTeamAccess(
   const facilitatorResult = await db.query<{
     session_id: string;
     session_status: string;
-  }>(
-    `SELECT s.id AS session_id,
-            s.status AS session_status
-     FROM sessions s
-     WHERE s.facilitator_id = $1
-       AND s.team_id = $2
-       AND (
-         s.status IN ('lobby', 'pre_session', 'active', 'wrap_up')
-         OR (
-           s.status = 'draft'
-           AND s.created_at + INTERVAL '24 hours' > NOW()
-         )
-         OR (
-           s.status = 'complete'
-           AND s.facilitator_access_expires_at > NOW()
-         )
-       )
-     LIMIT 1`,
-    [userId, teamId],
-  );
+  }>(FACILITATOR_GRANT_SQL, [userId, teamId]);
 
   if (facilitatorResult.rows.length > 0) {
     const { session_id, session_status } = facilitatorResult.rows[0] as {

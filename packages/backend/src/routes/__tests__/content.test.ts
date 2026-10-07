@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type * as TopicLockStateModule from "../../auth/topic-lock-state.js";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be defined before importing the module under test
@@ -34,8 +35,20 @@ vi.mock("../../content/timing-oracle.js", () => ({
   CONTENT_TIMING_FLOOR_MS: 150,
 }));
 
+// template-team-not-usable (#214) tasks.md 6.1: a pass-through spy on the
+// shared lock-state function, so tests can assert TOPIC-001/002 call it (and
+// that a denied request does not). The real function still runs, issuing
+// hasCompletedFirstSession's COUNT through the mocked db.
+const { mockGetTopicLockState } = vi.hoisted(() => ({ mockGetTopicLockState: vi.fn() }));
+vi.mock("../../auth/topic-lock-state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof TopicLockStateModule>();
+  mockGetTopicLockState.mockImplementation(actual.getTopicLockState);
+  return { getTopicLockState: (...args: [string]) => mockGetTopicLockState(...args) };
+});
+
 import Fastify from "fastify";
 import { contentRoutes } from "../content.js";
+import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
 import type { GetAllTopicsResponse } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -100,6 +113,9 @@ function deniedRoleEvents(): unknown[][] {
  */
 function expectTopicAndLockQueriesSkipped(expectedCalls: number) {
   expect(mockDbQuery).toHaveBeenCalledTimes(expectedCalls);
+  // #214 6.1: nor the shared lock-state function (modified TOPIC-001
+  // denied-caller clause).
+  expect(mockGetTopicLockState).not.toHaveBeenCalled();
   for (const call of mockDbQuery.mock.calls) {
     const sql = String(call[0]);
     expect(sql).not.toMatch(/FROM topics/);
@@ -355,6 +371,40 @@ describe("GET /api/v1/teams/:teamId/action-items", () => {
 // ---------------------------------------------------------------------------
 describe("GET /api/v1/teams/:teamId/topics — isCustomizationLocked (Task 2.1-2.3)", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  // template-team-not-usable (#214) tasks.md 6.1: the handler-level test that
+  // replaces #188's retired template-member read. TOPIC-001 admits no caller
+  // for the template over HTTP once it has no members and no unexpired
+  // facilitator access, so the grant is simulated here.
+  it("#214 6.1: TOPIC-001 obtains isCustomizationLocked and lockReason from getTopicLockState (template: canonical_defaults, no session query)", async () => {
+    mockFacilitatorGrant();
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // topics SELECT
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: `/api/v1/teams/${DEFAULT_TOPICS_TEAM_ID}/topics` });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGetTopicLockState).toHaveBeenCalledTimes(1);
+    expect(mockGetTopicLockState).toHaveBeenCalledWith(DEFAULT_TOPICS_TEAM_ID);
+    expect(res.json()).toMatchObject({ isCustomizationLocked: true, lockReason: "canonical_defaults" });
+    expect(mockDbQuery.mock.calls.some(([sql]) => /FROM sessions\s+WHERE team_id/.test(String(sql)))).toBe(false);
+  });
+
+  it.each([
+    ["0", true, "first_session"],
+    ["1", false, null],
+  ] as const)("#214 6.1: TOPIC-001 on a real team with %s completed sessions has lockReason %s", async (count, locked, reason) => {
+    mockTopic001MemberGrant("engineer", "participant");
+    mockDbQuery.mockResolvedValueOnce({ rows: [] }); // topics SELECT
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count }] }); // hasCompletedFirstSession
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics" });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGetTopicLockState).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(res.json()).toMatchObject({ isCustomizationLocked: locked, lockReason: reason });
+  });
 
   it("includes isCustomizationLocked: true for a team with zero completed sessions", async () => {
     mockTopic001MemberGrant("engineer", "participant");

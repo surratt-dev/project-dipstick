@@ -1,14 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockDbQuery = vi.fn();
 const mockDbConnect = vi.fn();
 const mockEmitAuditEvent = vi.fn();
+// template-team-not-usable (#214): the template guard's D2a dedupe claim.
+// Mocked so the guard never opens an ioredis client against redis://test.
+const mockRedisSet = vi.fn(async () => "OK");
 
 vi.mock("../../db.js", () => ({
   db: {
     query: (...args: unknown[]) => mockDbQuery(...args),
     connect: () => mockDbConnect(),
   },
+}));
+vi.mock("../../redis.js", () => ({
+  redis: { set: (...args: unknown[]) => (mockRedisSet as (...a: unknown[]) => Promise<string>)(...args) },
 }));
 vi.mock("../../auth/audit-logger.js", () => ({
   emitAuditEvent: (...args: unknown[]) => mockEmitAuditEvent(...args),
@@ -28,6 +34,7 @@ vi.mock("../../config.js", () => ({
 
 import Fastify from "fastify";
 import { joinLinkRoutes } from "../join-links.js";
+import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
 
 function buildApp(sessionData: Record<string, unknown> = {}) {
   const app = Fastify();
@@ -607,5 +614,91 @@ describe("joinLinkRoutes", () => {
 
       expect(res.statusCode).toBe(500);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // template-team-not-usable (#214) tasks.md 4.4: a link that resolves to the
+  // __default_topics__ template team is an unknown token. The token lookup is
+  // stubbed (migration 23 revoked every real template link and the
+  // constraint refuses new ones).
+  // -------------------------------------------------------------------------
+  describe("GET /api/join/:token — a link that resolves to the template team (#214)", () => {
+    const TEMPLATE_TEAM_ID = DEFAULT_TOPICS_TEAM_ID;
+
+    function templateLink(state: "active" | "revoked") {
+      return {
+        id: "template-link-1",
+        team_id: TEMPLATE_TEAM_ID,
+        expires_at: new Date(Date.now() + 86_400_000),
+        revoked_at: state === "revoked" ? new Date(Date.now() - 60_000) : null,
+        is_active: state === "active",
+      };
+    }
+
+    /** The token lookup returns the template row; the guard's role lookup and insert succeed. */
+    function stubDb(state: "active" | "revoked") {
+      mockDbQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM join_links WHERE token")) return { rows: [templateLink(state)] };
+        if (sql.startsWith("SELECT global_role")) return { rows: [{ global_role: "engineer" }] };
+        return { rows: [] };
+      });
+    }
+
+    function auditInserts() {
+      return mockDbQuery.mock.calls.filter(([sql]) => String(sql).includes("INSERT INTO audit_log"));
+    }
+
+    afterEach(() => {
+      mockDbQuery.mockReset();
+    });
+
+    it.each(["active", "revoked"] as const)(
+      "logged in, %s link: redirects to joinError=invalid (never expired), inserts no membership, writes one row without the token",
+      async (state) => {
+        stubDb(state);
+        const app = await buildApp();
+        const res = await app.inject({ method: "GET", url: "/api/join/secret-template-token" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("/join-error?joinError=invalid");
+        expect(mockDbConnect).not.toHaveBeenCalled(); // no membership transaction
+        expect(mockDbQuery.mock.calls.some(([sql]) => String(sql).includes("team_memberships"))).toBe(false);
+
+        const inserts = auditInserts();
+        expect(inserts).toHaveLength(1);
+        const params = inserts[0]![1] as unknown[];
+        expect(params[0]).toBe("user-1");
+        expect(params[1]).toBe("engineer");
+        expect(params[3]).toBe("team.template_access_denied");
+        expect(params[4]).toBe(TEMPLATE_TEAM_ID);
+        expect(JSON.parse(params[5] as string)).toEqual({ endpoint: "GET /api/join/:token", surface: "join_link" });
+        expect(JSON.stringify(params)).not.toContain("secret-template-token");
+
+        expect(mockEmitAuditEvent).toHaveBeenCalledWith(
+          expect.anything(),
+          "join.link_rejected",
+          expect.objectContaining({ reason: "template", linkId: "template-link-1" }),
+        );
+        expect(mockEmitAuditEvent).not.toHaveBeenCalledWith(expect.anything(), "join.link_redeemed", expect.anything());
+      },
+    );
+
+    it.each(["active", "revoked"] as const)(
+      "logged out, %s link: redirects to joinError=invalid with no login detour, emits the event and writes no row",
+      async (state) => {
+        stubDb(state);
+        const app = await buildApp({ userId: undefined });
+        const res = await app.inject({ method: "GET", url: "/api/join/secret-template-token" });
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe("/join-error?joinError=invalid");
+        expect(res.headers.location).not.toContain("/auth/login");
+        expect(auditInserts()).toHaveLength(0);
+        expect(mockRedisSet).not.toHaveBeenCalled();
+        const denial = mockEmitAuditEvent.mock.calls.find((c) => c[1] === "team.template_access_denied");
+        expect(denial?.[2]).toMatchObject({ actorUserId: null, surface: "join_link", auditRowWritten: false });
+        expect(JSON.stringify(mockEmitAuditEvent.mock.calls.map((c) => c[2]))).not.toContain("secret-template-token");
+      },
+    );
   });
 });

@@ -16,6 +16,11 @@ import { buildSessionData, getDecryptedTokens } from "../auth/session-store.js";
 import type { SessionData } from "../auth/session-store.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
 import { mapAuthError } from "../auth/error-handler.js";
+import {
+  isTemplateConstraintViolation,
+  logTemplateConstraintViolation,
+} from "../teams/template-constraint-violation.js";
+import { isTemplateTeam, writeTemplateAccessDenial } from "../teams/template-team-guard.js";
 import { MissingClaimError } from "../auth/errors.js";
 import { sanitizeOidcError } from "../auth/oidc-error-sanitizer.js";
 import { writeSessionInvalidatedAuditRow } from "../auth/session-invalidation-audit.js";
@@ -592,6 +597,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       await request.session.save();
       return reply.redirect(`${appOrigin}${redirectUrl}`);
     } catch (err: unknown) {
+      // template-team-not-usable (#214) design.md D5: executeJoinFlow runs
+      // inside this try, so a template constraint violation from its
+      // membership INSERT lands here. Logged with the marker first, so it is
+      // not recorded only as an authentication failure. The user-facing
+      // outcome (mapAuthError -> /auth/error) is unchanged.
+      if (isTemplateConstraintViolation(err)) {
+        logTemplateConstraintViolation(request.log, err, "GET /auth/callback", correlationId);
+      }
       const authError = mapAuthError(err);
 
       request.log.error({
@@ -865,6 +878,30 @@ async function executeJoinFlow(
     expires_at: Date;
     revoked_at: Date | null;
   };
+
+  // template-team-not-usable (#214) design.md D3: a link that resolves to
+  // the __default_topics__ template team is an unknown token, checked
+  // immediately after the row is found and before the revoked/expired
+  // branch (as GET /api/join/:token does). No membership is created; the
+  // login itself has already succeeded and is unaffected. The user is
+  // logged in here, so the row is written with the role already in scope.
+  if (isTemplateTeam(link.team_id)) {
+    emitAuditEvent(logger, "join.link_rejected", {
+      userId,
+      sourceIp,
+      linkId: link.id,
+      reason: "template",
+    });
+    await writeTemplateAccessDenial({
+      actorUserId: userId,
+      actorGlobalRole,
+      actorIp: sourceIp,
+      log: logger,
+      endpoint: "GET /auth/callback",
+      surface: "join_link",
+    });
+    return { redirectUrl: "/join-error?joinError=invalid" };
+  }
 
   if (link.revoked_at || new Date(link.expires_at) < new Date()) {
     emitAuditEvent(logger, "join.link_rejected", {

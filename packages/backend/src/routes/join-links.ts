@@ -5,6 +5,7 @@ import { withAuditTransaction } from "../auth/audit-write-transaction.js";
 import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
 import { resolveJoinLandingPath } from "../auth/join-landing-path.js";
 import type { SessionData } from "../auth/session-store.js";
+import { isTemplateTeam, writeTemplateAccessDenial } from "../teams/template-team-guard.js";
 
 export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/teams/:teamId/join-links
@@ -13,6 +14,32 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
   }>("/api/teams/:teamId/join-links", async (request, reply) => {
     const session = request.session as unknown as SessionData;
     const { teamId } = request.params;
+
+    // template-team-not-usable (#214) design.md D3: the __default_topics__
+    // template team never has a join link. Answered with the missing-team
+    // response (the non-member 403 below), but BEFORE the membership check:
+    // on this route the membership check is the authorization, and no
+    // template membership can exist, so a guard placed after it could never
+    // run. Any authenticated caller reaches it. Audited (surface
+    // "join_link"); the caller's role is read by the writer.
+    if (isTemplateTeam(teamId)) {
+      const correlationId = crypto.randomUUID();
+      await writeTemplateAccessDenial({
+        actorUserId: session.userId,
+        actorIp: request.ip,
+        log: request.log,
+        endpoint: "POST /api/teams/:teamId/join-links",
+        surface: "join_link",
+        correlationId,
+      });
+      return reply.code(403).send({
+        error: {
+          category: "invalid_request" as const,
+          message: "You are not a member of this team.",
+          correlationId,
+        },
+      });
+    }
 
     // Verify caller is a facilitator for this team
     // (engineering_manager role or facilitator global role)
@@ -119,6 +146,30 @@ export async function joinLinkRoutes(app: FastifyInstance): Promise<void> {
       revoked_at: Date | null;
       is_active: boolean;
     };
+
+    // template-team-not-usable (#214) design.md D3: a link that resolves to
+    // the __default_topics__ template team is treated as an unknown token,
+    // checked immediately after the row is found: before the revoked/expired
+    // branch (migration 23 revoked every template link, and they must read
+    // "invalid", not "expired") and before the login redirect (a logged-out
+    // caller is not sent through OIDC for a dead link). No membership is
+    // created. Logged-out callers have no actor, so the writer emits the
+    // event only; the token is never recorded.
+    if (isTemplateTeam(link.team_id)) {
+      emitAuditEvent(request.log, "join.link_rejected", {
+        sourceIp: request.ip,
+        linkId: link.id,
+        reason: "template",
+      });
+      await writeTemplateAccessDenial({
+        actorUserId: session?.userId ?? null,
+        actorIp: request.ip,
+        log: request.log,
+        endpoint: "GET /api/join/:token",
+        surface: "join_link",
+      });
+      return reply.redirect("/join-error?joinError=invalid");
+    }
 
     if (!link.is_active) {
       const reason = link.revoked_at ? "revoked" : "expired";

@@ -66,6 +66,12 @@ export type AuditEventName =
   // produces a durable audit_log row, written in the same transaction as the
   // team_memberships INSERT, via withAuditTransaction.
   | "join.link_redeemed"
+  // join.link_rejected: log only. Fired by both redemption paths
+  // (join-links.ts's GET /api/join/:token and auth.ts's executeJoinFlow).
+  // fields: { sourceIp, linkId (null when not found), userId (callback path
+  // only), reason: "not_found" | "revoked" | "expired" | "template" }.
+  // "template" (template-team-not-usable #214): the link resolves to the
+  // __default_topics__ template team and is answered as an unknown token.
   | "join.link_rejected"
   // team.role_changed is the structured-log counterpart to the role_change_audit
   // DB row (now audit_log). Both are written: the DB row is in-transaction and is
@@ -403,6 +409,18 @@ export type AuditEventName =
   // response's correlationId and auditRowWritten (false when the insert
   // failed and this event is the only record).
   | "topic.write_denied_template"
+  // team.template_access_denied: template-team-not-usable (#214), design.md
+  // D2/D2a. Fired by writeTemplateAccessDenial (teams/template-team-guard.ts)
+  // for every request the template guard refuses on a session, membership or
+  // join-link route (draft, the session sub-routes, members, TEAM-005,
+  // TEAM-006, join-link creation and both redemption paths). The audit_log
+  // row's metadata is { endpoint, surface: "session" | "membership" |
+  // "join_link" } only, never a token or a body. No row for a logged-out
+  // caller (the event is the record), and at most one row per actor and
+  // endpoint per minute (audit_row_suppressed: true on the event otherwise).
+  // The event also carries correlationId (when the route has one) and
+  // auditRowWritten.
+  | "team.template_access_denied"
   // topic.archived: remove-topic, design.md Decision 7. Fired by
   // DELETE /api/v1/teams/:teamId/topics/:topicId (TOPIC-004) on every
   // successful archive, in the same database transaction as the topics
