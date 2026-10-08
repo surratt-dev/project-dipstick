@@ -53,6 +53,7 @@ export function makeTopics(overrides: Partial<GetAllTopicsResponse> = {}): GetAl
     teamId: "team-1",
     teamName: "Platform Squad",
     isCustomizationLocked: false,
+    lockReason: null,
     canEditAnnotations: true,
     canAddTopics: true,
     active: [

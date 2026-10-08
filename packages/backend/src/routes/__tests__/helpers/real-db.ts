@@ -145,12 +145,17 @@ export async function buildApp(
  * registerRoutes(), authenticated as userId -- without app.ts's session
  * store, helmet, auth middleware or WebSocket layer (#188 design.md D4).
  * onRoute, when given, is registered before any route so it sees all of them.
+ *
+ * extraRoutes (template-team-not-usable #214 tasks.md 5.1): registered after
+ * registerRoutes(), in the same root context, so they inherit its error
+ * handler and the onRoute hook sees them. Used by the structural template
+ * test's probe self-test.
  */
 export async function buildFullApp(
   mods: Mods,
   userId: string,
   onRoute?: (route: RouteOptions) => void,
-  opts: { keepTopicWriteBudget?: boolean } = {},
+  opts: { keepTopicWriteBudget?: boolean; extraRoutes?: (app: FastifyInstance) => void } = {},
 ): Promise<FastifyInstance> {
   if (!opts.keepTopicWriteBudget) await resetTopicWriteBudget(userId); // #184 5.4b
   const app = Fastify();
@@ -159,6 +164,26 @@ export async function buildFullApp(
     (request as unknown as Record<string, unknown>).session = { userId };
   });
   if (onRoute) app.addHook("onRoute", onRoute);
+  await mods.registerRoutes(app);
+  opts.extraRoutes?.(app);
+  await app.ready();
+  return app;
+}
+
+/**
+ * Every HTTP route, with NO authenticated user, behind app.ts's real auth
+ * middleware (template-team-not-usable #214 tasks.md 3.3/5.2: "an
+ * unauthenticated caller gets 401 and no audit row"). The middleware answers
+ * 401 for every non-public route before any handler runs.
+ */
+export async function buildUnauthenticatedFullApp(mods: Mods): Promise<FastifyInstance> {
+  const { authMiddleware } = await import("../../../auth/middleware.js");
+  const app = Fastify();
+  app.decorateRequest("session", null);
+  app.addHook("onRequest", async (request) => {
+    (request as unknown as Record<string, unknown>).session = {};
+  });
+  await authMiddleware(app);
   await mods.registerRoutes(app);
   await app.ready();
   return app;

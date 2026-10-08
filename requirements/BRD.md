@@ -212,6 +212,8 @@ Requirements are marked **[HARD]** where the behavior is non-negotiable and cann
 
 **FR-1.7** [HARD] The application shall support creating a team independently of session creation. A Facilitator or an Engineering Manager may create a team. A team that exists without a completed session shall appear in the facilitator's list of available teams and behave identically to any established team when a session is subsequently created for it. Creating a team without a session is a supported and valid system state; the application shall handle it gracefully in all views that reference session history or trend data (displaying empty or zero-session indicators rather than errors).
 
+*Rationale (added by `template-team-not-usable`, #214; owning requirement: `default-topic-provisioning`):* the `__default_topics__` template row holds the canonical default topics and is not a team for this requirement. It never appears in the facilitator's list of available teams.
+
 ### FR-2: Session Setup
 
 **FR-2.1** [HARD] Only a user with the Facilitator role may create a session for a given team.

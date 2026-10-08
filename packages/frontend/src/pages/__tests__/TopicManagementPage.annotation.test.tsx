@@ -849,12 +849,15 @@ describe("team definition — interlocks and visibility", () => {
     expect(edit.title).toBe("");
   });
 
+  // template-team-not-usable (#214): the modified "A locked team shows no
+  // definition controls" scenario names lockReason "first_session".
   it("a locked team shows no definition controls and the exact full lock notice", async () => {
-    installFetch({ gets: [mockFetchResponse(makeTopics({ isCustomizationLocked: true }))] });
+    installFetch({ gets: [mockFetchResponse(makeTopics({ isCustomizationLocked: true, lockReason: "first_session" }))] });
     await renderLoaded();
 
     expect(screen.queryByTestId("edit-definition-topic-1")).not.toBeInTheDocument();
     expect(screen.queryByTestId("edit-definition-topic-2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add team definition")).not.toBeInTheDocument();
     expect(screen.getByTestId("customization-lock-notice").textContent?.replace(/\s+/g, " ").trim()).toBe(
       "Topics cannot be customized until this team completes its first session. Topics are shown read-only below. Team definitions can be added after the team's first session.",
     );

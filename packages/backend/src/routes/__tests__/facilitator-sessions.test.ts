@@ -55,6 +55,7 @@ vi.mock("../../config.js", () => ({
 }));
 
 import Fastify from "fastify";
+import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
 import type { FastifyBaseLogger } from "fastify";
 import { DatabaseError } from "pg";
 import {
@@ -3469,6 +3470,34 @@ describe("GET /api/v1/teams/eligible-for-session", () => {
     );
     expect(eligibleQueryCall).toBeDefined();
     expect(eligibleQueryCall![0] as string).toContain("deactivated_at IS NULL");
+  });
+
+  // template-team-not-usable (#214) tasks.md 3.1: the template team is
+  // excluded by binding the shared DEFAULT_TOPICS_TEAM_ID constant as $2,
+  // never by a UUID literal or by name in the SQL text. Also covers the
+  // "fresh install where the template is the only team" scenario at the
+  // handler level: with the template excluded, the query returns no row and
+  // the response is the zero-home-team empty list.
+  it("#214 3.1: the eligibility query excludes the template by a bound parameter, and an empty result is 200 []", async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ exists: false }] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/eligible-for-session" });
+
+    const eligibleQueryCall = mockDbQuery.mock.calls.find((call) =>
+      (call[0] as string).includes("FROM teams"),
+    );
+    expect(eligibleQueryCall).toBeDefined();
+    const [sql, params] = eligibleQueryCall as [string, unknown[]];
+    expect(sql).toContain("t.id <> $2");
+    expect(params[1]).toBe(DEFAULT_TOPICS_TEAM_ID);
+    expect(sql).not.toContain(DEFAULT_TOPICS_TEAM_ID);
+    expect(sql).not.toContain("__default_topics__");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ eligibleTeams: [], callerHasTeamMemberships: false });
   });
 
   // cross-team-facilitator-constraint task 1.1 — the eligibility query

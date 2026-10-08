@@ -9,6 +9,7 @@ import { contentRoutes } from "./content.js";
 import { facilitatorSessionRoutes } from "./facilitator-sessions.js";
 import { actionItemRoutes } from "./action-items.js";
 import { topicRoutes } from "./topics.js";
+import { registerTemplateConstraintErrorHandler } from "../teams/template-constraint-violation.js";
 
 // ---------------------------------------------------------------------------
 // HTTP route registration — reject-template-team-topic-writes (#188),
@@ -19,8 +20,14 @@ import { topicRoutes } from "./topics.js";
 // hook) without importing app.ts and its session store, helmet, auth
 // middleware and WebSocket layer. buildApp() calls this at the same point it
 // used to register the routes inline. WebSocket routes stay in app.ts.
+//
+// template-team-not-usable (#214) design.md D5: the narrow error handler for
+// template constraint violations is set here, before any route, rather than
+// in app.ts, so buildFullApp and the structural template-guard test see the
+// same handler production does.
 // ---------------------------------------------------------------------------
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  registerTemplateConstraintErrorHandler(app);
   await app.register(healthRoutes);
   await app.register(authRoutes, { prefix: "/auth" });
   await app.register(joinLinkRoutes);

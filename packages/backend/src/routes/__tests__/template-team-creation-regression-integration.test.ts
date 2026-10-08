@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import type * as TopicLockHelperModule from "../../auth/topic-lock-helper.js";
 import type { FastifyInstance } from "fastify";
 import {
   probeInfra,
@@ -16,7 +17,7 @@ import { snapshotTemplate, assertTemplateUnchanged, restoreTemplate } from "./he
 // Team-creation regression — reject-template-team-topic-writes (#188),
 // design.md D5, tasks.md 4.4 (BA S6, engineer M1).
 //
-// With a completed sentinel session in place (so the lock cannot mask a
+// With the template reading as unlocked (so the lock cannot mask a
 // regression), VALID writes -- ones that would succeed on an unlocked team --
 // are sent to TOPIC-003..007 against the template. Each must be 404
 // TEAM_NOT_FOUND, the template's own rows (every status) must be unchanged
@@ -25,8 +26,24 @@ import { snapshotTemplate, assertTemplateUnchanged, restoreTemplate } from "./he
 // created afterwards must receive exactly the snapshot's default rows.
 //
 // In its own file so a regression fails only this test. Never
-// fx.track(SENTINEL_TEAM_ID); the sentinel session is removed by id.
+// fx.track(SENTINEL_TEAM_ID).
+//
+// template-team-not-usable (#214) design.md D9, tasks.md 1.1: "unlocked" used
+// to be a completed template session, which the database now refuses
+// (sessions_not_template_team). It is a hoisted module mock of
+// auth/topic-lock-helper.js instead; every other team reads the real lock.
 // ---------------------------------------------------------------------------
+
+vi.mock("../../auth/topic-lock-helper.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof TopicLockHelperModule>();
+  const { DEFAULT_TOPICS_TEAM_ID } = await import("../../sessions/default-topics.js");
+  return {
+    ...actual,
+    hasCompletedFirstSession: vi.fn(async (teamId: string) =>
+      teamId === DEFAULT_TOPICS_TEAM_ID ? true : actual.hasCompletedFirstSession(teamId),
+    ),
+  };
+});
 
 const infraUp = await probeInfra();
 requireInfraOrThrow(infraUp, "template-team-creation-regression-integration.test.ts");
@@ -52,12 +69,6 @@ describe.skipIf(!infraUp)("team creation copies the pre-attempt template baselin
 
   it("valid writes to TOPIC-003..007 on an unlocked template are 404 and leave the template and the next team's copy unchanged", async () => {
     const { db } = mods;
-    const sessionId = randomUUID();
-    await db.query(
-      `INSERT INTO sessions (id, team_id, facilitator_id, status, is_first_session, session_number, completed_at)
-       VALUES ($1, $2, $3, 'complete', false, 1, NOW())`,
-      [sessionId, SENTINEL_TEAM_ID, facilitatorId],
-    );
     const snap = await snapshotTemplate(db);
     try {
       const active = [...snap.values()]
@@ -108,7 +119,6 @@ describe.skipIf(!infraUp)("team creation copies the pre-attempt template baselin
       expect(copied.sort(byOrder)).toEqual(expected.sort(byOrder));
     } finally {
       await restoreTemplate(db, snap);
-      await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
     }
   });
 });

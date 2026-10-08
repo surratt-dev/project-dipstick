@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+import type * as TopicLockHelperModule from "../../auth/topic-lock-helper.js";
 import type { FastifyInstance, HTTPMethods, LightMyRequestResponse } from "fastify";
 import { probeInfra, requireInfraOrThrow, loadModules, buildApp, Fixture, SENTINEL_TEAM_ID } from "./helpers/real-db.js";
 import type { Mods, Db } from "./helpers/real-db.js";
@@ -15,11 +16,32 @@ import type { Mods, Db } from "./helpers/real-db.js";
 // shared template is never mutated, so this file takes no snapshot.
 //
 // Never fx.track(SENTINEL_TEAM_ID): Fixture.cleanup() would delete the
-// template's topics, sessions and team row. Sentinel sessions and sentinel
-// membership rows are inserted and deleted by id in each test's own
-// try/finally. Every audit assertion is scoped by a per-row fixture actor and
-// the database clock, because other files write template-denial rows too.
+// template's topics, sessions and team row. Every audit assertion is scoped
+// by a per-row fixture actor and the database clock, because other files
+// write template-denial rows too.
+//
+// template-team-not-usable (#214) design.md D9, tasks.md 1.1: no template
+// sessions or memberships are seeded any more. The database refuses them
+// (sessions/team_memberships/join_links _not_template_team). The template's
+// lock state is a hoisted module mock of auth/topic-lock-helper.js instead
+// (vi.spyOn does not intercept an ESM export loaded through loadModules()).
+// Every other team still reads the real lock.
 // ---------------------------------------------------------------------------
+
+// The template's lock state for the current test: true = "unlocked" (as if a
+// completed template session existed), false = "locked".
+const templateLock = vi.hoisted(() => ({ hasCompletedSession: false }));
+
+vi.mock("../../auth/topic-lock-helper.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof TopicLockHelperModule>();
+  const { DEFAULT_TOPICS_TEAM_ID } = await import("../../sessions/default-topics.js");
+  return {
+    ...actual,
+    hasCompletedFirstSession: vi.fn(async (teamId: string) =>
+      teamId === DEFAULT_TOPICS_TEAM_ID ? templateLock.hasCompletedSession : actual.hasCompletedFirstSession(teamId),
+    ),
+  };
+});
 
 const infraUp = await probeInfra();
 requireInfraOrThrow(infraUp, "template-team-topic-writes-integration.test.ts");
@@ -131,16 +153,6 @@ function comparable(res: LightMyRequestResponse) {
   return { status: res.statusCode, headers, body: { ...parsed, error } };
 }
 
-async function insertSentinelSession(db: Db, facilitatorId: string): Promise<string> {
-  const id = randomUUID();
-  await db.query(
-    `INSERT INTO sessions (id, team_id, facilitator_id, status, is_first_session, session_number, completed_at)
-     VALUES ($1, $2, $3, 'complete', false, 1, NOW())`,
-    [id, SENTINEL_TEAM_ID, facilitatorId],
-  );
-  return id;
-}
-
 async function insertSentinelMembership(db: Db, userId: string, role = "participant"): Promise<string> {
   return (
     await db.query<{ id: string }>(
@@ -163,6 +175,7 @@ describe.skipIf(!infraUp)("template team rejects team-scoped topic writes — re
   afterEach(async () => {
     for (const app of apps.splice(0)) await app.close();
     await fx.cleanup();
+    templateLock.hasCompletedSession = false;
   });
 
   afterAll(async () => {
@@ -192,34 +205,29 @@ describe.skipIf(!infraUp)("template team rejects team-scoped topic writes — re
       const { db } = mods;
       const actor = await fx.user(role);
       const app = await appFor(actor);
-      // "locked" = this row inserts no completed sentinel session. Another
-      // file may unlock the template meanwhile; the guard makes that moot.
-      const sessionId = lock === "unlocked" ? await insertSentinelSession(db, actor) : undefined;
-      try {
-        const since = await dbNow(db);
-        const template = await send(app, ep, SENTINEL_TEAM_ID);
-        const missing = await send(app, ep, randomUUID());
+      // The template's lock state comes from the module mock (D9).
+      templateLock.hasCompletedSession = lock === "unlocked";
+      const since = await dbNow(db);
+      const template = await send(app, ep, SENTINEL_TEAM_ID);
+      const missing = await send(app, ep, randomUUID());
 
-        expect(template.statusCode).toBe(404);
-        expect(template.json().error.code).toBe("TEAM_NOT_FOUND");
-        expect(comparable(template)).toEqual(comparable(missing));
+      expect(template.statusCode).toBe(404);
+      expect(template.json().error.code).toBe("TEAM_NOT_FOUND");
+      expect(comparable(template)).toEqual(comparable(missing));
 
-        expect(await templateDenialCount(db, actor, since, ep.endpoint)).toBe(1);
-        // Every audit row this actor produced: the template denial only -- no
-        // lock-denial row, no success row, nothing for the missing team.
-        const audit = await auditRowsSince(db, actor, since);
-        expect(audit).toHaveLength(1);
-        expect(audit[0]).toMatchObject({
-          operation: "topic.write_denied_template",
-          team_id: SENTINEL_TEAM_ID,
-          actor_global_role: role,
-        });
-        expect(audit[0]!.actor_ip).not.toBeNull();
-        expect(audit[0]!.metadata).toEqual({ endpoint: ep.endpoint, attempted_operation: ep.attemptedOperation });
-        expect(SUCCESS_OPERATIONS).not.toContain(audit[0]!.operation);
-      } finally {
-        if (sessionId) await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
-      }
+      expect(await templateDenialCount(db, actor, since, ep.endpoint)).toBe(1);
+      // Every audit row this actor produced: the template denial only -- no
+      // lock-denial row, no success row, nothing for the missing team.
+      const audit = await auditRowsSince(db, actor, since);
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({
+        operation: "topic.write_denied_template",
+        team_id: SENTINEL_TEAM_ID,
+        actor_global_role: role,
+      });
+      expect(audit[0]!.actor_ip).not.toBeNull();
+      expect(audit[0]!.metadata).toEqual({ endpoint: ep.endpoint, attempted_operation: ep.attemptedOperation });
+      expect(SUCCESS_OPERATIONS).not.toContain(audit[0]!.operation);
     },
   );
 
@@ -253,48 +261,28 @@ describe.skipIf(!infraUp)("template team rejects team-scoped topic writes — re
     expect(await templateDenialCount(db, admin, since, ep.endpoint)).toBe(0);
   });
 
-  it("4.2: with another user's sentinel membership, a facilitator still gets 404 on every endpoint", async () => {
-    const { db } = mods;
-    const other = await fx.user("engineer");
-    const facilitator = await fx.user("facilitator");
-    const app = await appFor(facilitator);
-    const membershipId = await insertSentinelMembership(db, other);
-    try {
-      for (const ep of ENDPOINTS) {
-        const since = await dbNow(db);
-        const res = await send(app, ep, SENTINEL_TEAM_ID);
-        expect(res.statusCode, ep.label).toBe(404);
-        expect(res.json().error.code, ep.label).toBe("TEAM_NOT_FOUND");
-        expect(await templateDenialCount(db, facilitator, since, ep.endpoint), ep.label).toBe(1);
-      }
-    } finally {
-      await db.query(`DELETE FROM team_memberships WHERE id = $1`, [membershipId]);
-    }
-  });
+  // Retired by template-team-not-usable (#214) tasks.md 1.1: "with another
+  // user's sentinel membership, a facilitator still gets 404". No template
+  // membership can exist once the _not_template_team constraints land; the
+  // refusal itself is asserted in
+  // teams/__tests__/template-team-constraint-integration.test.ts (tasks.md 1.3).
 
-  it("4.2: a facilitator holding a sentinel membership gets 403 FACILITATOR_IS_TEAM_MEMBER and no template-denial row; an admin member gets 404 on 003-006", async () => {
+  // template-team-not-usable (#214) tasks.md 1.2: this used to assert that a
+  // facilitator holding a template membership gets 403
+  // FACILITATOR_IS_TEAM_MEMBER (#188's accepted difference #1). That state can
+  // no longer arise: the database refuses the membership.
+  it("4.2: a template membership cannot be created, so 403 FACILITATOR_IS_TEAM_MEMBER on the template is unreachable (23514)", async () => {
     const { db } = mods;
     const facilitator = await fx.user("facilitator");
-    const admin = await fx.user("application_admin");
-    const facApp = await appFor(facilitator);
-    const adminApp = await appFor(admin);
-    const membershipIds = [await insertSentinelMembership(db, facilitator), await insertSentinelMembership(db, admin)];
-    try {
-      for (const ep of ENDPOINTS) {
-        const since = await dbNow(db);
-        const res = await send(facApp, ep, SENTINEL_TEAM_ID);
-        expect(res.statusCode, ep.label).toBe(403);
-        expect(res.json().error.code, ep.label).toBe("FACILITATOR_IS_TEAM_MEMBER");
-        expect(await templateDenialCount(db, facilitator, since, ep.endpoint), ep.label).toBe(0);
-      }
-      for (const ep of ENDPOINTS.filter((e) => e.admitsAdmin)) {
-        const res = await send(adminApp, ep, SENTINEL_TEAM_ID);
-        expect(res.statusCode, ep.label).toBe(404);
-        expect(res.json().error.code, ep.label).toBe("TEAM_NOT_FOUND");
-      }
-    } finally {
-      await db.query(`DELETE FROM team_memberships WHERE id = ANY($1::uuid[])`, [membershipIds]);
-    }
+    await expect(insertSentinelMembership(db, facilitator)).rejects.toMatchObject({
+      code: "23514",
+      constraint: "team_memberships_not_template_team",
+    });
+    const rows = await db.query(`SELECT 1 FROM team_memberships WHERE team_id = $1 AND user_id = $2`, [
+      SENTINEL_TEAM_ID,
+      facilitator,
+    ]);
+    expect(rows.rowCount).toBe(0);
   });
 
   it("4.2: on an unlocked real team, a default topic archives and restores (200/200) with topic.archived and topic.restored rows", async () => {
@@ -321,51 +309,42 @@ describe.skipIf(!infraUp)("template team rejects team-scoped topic writes — re
   // -------------------------------------------------------------------------
   // 4.3 — reads of the template are unaffected
   // -------------------------------------------------------------------------
-  it("4.3: TOPIC-001 (a member) reads the template's active rows in order; /topics/all is 200 with canAddTopics and a lock flag that follows the lock", async () => {
-    const { db } = mods;
-    const member = await fx.user("engineer");
-    const facilitator = await fx.user("facilitator");
-    const membershipId = await insertSentinelMembership(db, member);
-    let sessionId: string | undefined;
-    try {
-      const list = await (await appFor(member)).inject({ method: "GET", url: `/api/v1/teams/${SENTINEL_TEAM_ID}/topics` });
-      expect(list.statusCode).toBe(200);
-      const expected = (
-        await db.query<{ id: string }>(
-          `SELECT id FROM topics WHERE team_id = $1 AND status = 'active' ORDER BY display_order`,
-          [SENTINEL_TEAM_ID],
-        )
-      ).rows.map((row) => row.id);
-      expect((list.json().topics as Array<{ id: string }>).map((t) => t.id)).toEqual(expected);
-
+  // The TOPIC-001 half of this test ("a member reads the template's active
+  // rows in order") is retired by template-team-not-usable (#214) tasks.md
+  // 1.1: no template member can exist after that change. TOPIC-001's lock
+  // fields are covered at the handler level by the getTopicLockState unit
+  // test (tasks.md 6.1, routes/__tests__/content.test.ts).
+  // template-team-not-usable (#214) tasks.md 6.1: reuses this file's lock
+  // mock. Even when hasCompletedFirstSession reports the template unlocked,
+  // getTopicLockState answers locked with reason "canonical_defaults"
+  // (topic-customization-lock "Template lock does not depend on sessions").
+  it.each([true, false])(
+    "4.3: /topics/all on the template is 200 with canAddTopics, locked as canonical_defaults (hasCompletedFirstSession -> %s)",
+    async (completed) => {
+      const facilitator = await fx.user("facilitator");
       const facApp = await appFor(facilitator);
-      sessionId = await insertSentinelSession(db, facilitator);
+      templateLock.hasCompletedSession = completed;
       const all = await facApp.inject({ method: "GET", url: `/api/v1/teams/${SENTINEL_TEAM_ID}/topics/all` });
       expect(all.statusCode).toBe(200);
-      expect(all.json()).toMatchObject({ canAddTopics: true, isCustomizationLocked: false });
-    } finally {
-      if (sessionId) await db.query(`DELETE FROM sessions WHERE id = $1`, [sessionId]);
-      await db.query(`DELETE FROM team_memberships WHERE id = $1`, [membershipId]);
-    }
-  });
+      expect(all.json()).toMatchObject({
+        canAddTopics: true,
+        isCustomizationLocked: true,
+        lockReason: "canonical_defaults",
+      });
+    },
+  );
 
   // topic-001-authz-contract-reconcile (#187) task 4.8: the template id has no
-  // special case for either EM signal. An EM membership and a global EM with a
-  // participant membership are both denied TOPIC-001 on the template.
-  it.each([
-    { label: "an EM membership", globalRole: "engineering_manager", membershipRole: "engineering_manager" },
-    { label: "a global EM with a participant membership", globalRole: "engineering_manager", membershipRole: "participant" },
-  ])("4.8 (#187): TOPIC-001 on the template is 403 for $label", async ({ globalRole, membershipRole }) => {
-    const { db } = mods;
-    const em = await fx.user(globalRole);
-    const membershipId = await insertSentinelMembership(db, em, membershipRole);
-    try {
-      const res = await (await appFor(em)).inject({ method: "GET", url: `/api/v1/teams/${SENTINEL_TEAM_ID}/topics` });
-      expect(res.statusCode).toBe(403);
-      expect(res.body).not.toContain("isCustomizationLocked");
-      expect(res.json().topics).toBeUndefined();
-    } finally {
-      await db.query(`DELETE FROM team_memberships WHERE id = $1`, [membershipId]);
-    }
+  // special case for either EM signal. template-team-not-usable (#214) tasks.md
+  // 1.2: the two membership-seeded variants (an EM membership, a global EM with
+  // a participant membership) can no longer be set up, because the database
+  // refuses any template membership. What remains reachable is a global EM
+  // with no membership, which is still denied with no lock state.
+  it("4.8 (#187): TOPIC-001 on the template is 403 with no lock state for a global EM", async () => {
+    const em = await fx.user("engineering_manager");
+    const res = await (await appFor(em)).inject({ method: "GET", url: `/api/v1/teams/${SENTINEL_TEAM_ID}/topics` });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).not.toContain("isCustomizationLocked");
+    expect(res.json().topics).toBeUndefined();
   });
 });

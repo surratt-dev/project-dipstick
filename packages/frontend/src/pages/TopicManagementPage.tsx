@@ -64,6 +64,15 @@ import { ActiveTopicsEmptyState, EMPTY_STATE_ADD_BUTTON_ID } from "../components
 // and a small, honest empty active-topics state.
 // ---------------------------------------------------------------------------
 
+// template-team-not-usable (#214), specs/topic-management-screen "The
+// canonical default topics are shown as a read-only reference". Chosen from
+// TOPIC-002's lockReason only, never from the team id. The template's stored
+// team name (__default_topics__) is never displayed: these replace it
+// wherever the screen would show the team's name.
+export const CANONICAL_DEFAULTS_TITLE = "Default topics";
+export const CANONICAL_DEFAULTS_NOTICE =
+  "These are the canonical default topics every new team starts from. They can't be edited here.";
+
 type ActiveTopic = GetAllTopicsResponse["active"][number];
 type ArchivedTopic = GetAllTopicsResponse["archived"][number];
 
@@ -1055,6 +1064,18 @@ export function TopicManagementPage() {
   // topic-annotation Tasks 8.2-8.4 — definition editor
   // -------------------------------------------------------------------------
 
+  // #214: the canonical defaults' tab title, restored when the screen leaves
+  // that view. Other teams keep whatever title the app already shows.
+  const isCanonicalDefaultsView = data?.lockReason === "canonical_defaults";
+  useEffect(() => {
+    if (!isCanonicalDefaultsView) return;
+    const previous = document.title;
+    document.title = CANONICAL_DEFAULTS_TITLE;
+    return () => {
+      document.title = previous;
+    };
+  }, [isCanonicalDefaultsView]);
+
   // Orphaned editor (engineer review M2): reset whenever its row has left
   // data.active. A 404/422 save failure does not trigger this -- that row
   // stays in data.active until the facilitator closes the editor.
@@ -1202,6 +1223,11 @@ export function TopicManagementPage() {
 
   const restoreDialogState =
     restoreState.status === "confirming" || restoreState.status === "submitting" ? restoreState : null;
+
+  // #214: the canonical default topics (the template team). Read-only, with
+  // "Default topics" in place of the stored team name everywhere.
+  const isCanonicalDefaults = data.lockReason === "canonical_defaults";
+  const displayTeamName = isCanonicalDefaults ? CANONICAL_DEFAULTS_TITLE : data.teamName;
 
   const reorderEnabled = !data.isCustomizationLocked && data.active.length >= 2;
   const isSaving = saveState === "saving";
@@ -1486,13 +1512,30 @@ export function TopicManagementPage() {
     >
       <nav style={{ marginBottom: "1rem", fontSize: "0.875rem" }}>
         <Link to={`/team/${teamId}`} data-testid="back-to-team-page">
-          ← {data.teamName || "Team"}
+          ← {displayTeamName || "Team"}
         </Link>
       </nav>
 
-      <h1 data-testid="topic-management-heading">Topic Management</h1>
+      <h1 data-testid="topic-management-heading">
+        {isCanonicalDefaults ? CANONICAL_DEFAULTS_TITLE : "Topic Management"}
+      </h1>
 
-      {data.isCustomizationLocked && (
+      {isCanonicalDefaults && (
+        <p
+          data-testid="canonical-defaults-notice"
+          style={{
+            padding: "0.75rem 1rem",
+            marginBottom: "1rem",
+            backgroundColor: "#f5f5f5",
+            border: "1px dashed #bdbdbd",
+            borderRadius: "4px",
+          }}
+        >
+          {CANONICAL_DEFAULTS_NOTICE}
+        </p>
+      )}
+
+      {data.isCustomizationLocked && !isCanonicalDefaults && (
         <p
           data-testid="customization-lock-notice"
           style={{
@@ -1778,7 +1821,7 @@ export function TopicManagementPage() {
                 {dialogState && dialogState.topic.topicId === topic.topicId && (
                   <RemoveTopicDialog
                     state={dialogState}
-                    teamName={data.teamName || "this team"}
+                    teamName={displayTeamName || "this team"}
                     onCancel={cancelRemove}
                     onConfirm={(t) => void submitArchive(t, false)}
                     onConfirmAnyway={(t) =>
@@ -1920,16 +1963,19 @@ export function TopicManagementPage() {
                     </div>
                   )}
 
-                  <div style={{ marginTop: "0.5rem" }}>
-                    <button
-                      onClick={() => startRestore(topic)}
-                      disabled={topicActionsDisabled}
-                      title={topicActionsReason}
-                      data-testid={`restore-topic-${topic.topicId}`}
-                    >
-                      Restore
-                    </button>
-                  </div>
+                  {/* #214: the canonical defaults offer no write control. */}
+                  {!isCanonicalDefaults && (
+                    <div style={{ marginTop: "0.5rem" }}>
+                      <button
+                        onClick={() => startRestore(topic)}
+                        disabled={topicActionsDisabled}
+                        title={topicActionsReason}
+                        data-testid={`restore-topic-${topic.topicId}`}
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  )}
 
                   {restoreState.status === "error" && restoreState.topicId === topic.topicId && (
                     <div
@@ -1950,7 +1996,7 @@ export function TopicManagementPage() {
                   {restoreDialogState && restoreDialogState.topic.topicId === topic.topicId && (
                     <RestoreTopicDialog
                       state={restoreDialogState}
-                      teamName={data.teamName || "this team"}
+                      teamName={displayTeamName || "this team"}
                       onCancel={cancelRestore}
                       onConfirm={(t) => void submitRestore(t)}
                     />

@@ -52,7 +52,9 @@ import type { SessionSubscriberGrant, SessionStatus } from "@dipstick/shared";
 // evaluateTeamAccess does not translate into a session-subscriber grant here.
 // ---------------------------------------------------------------------------
 
-const LIVE_FACILITATOR_STATUSES: SessionStatus[] = ["lobby", "pre_session", "active", "wrap_up"];
+// Exported for template-team-not-usable (#214) tasks.md 1.4, which asserts
+// that migration 23 leaves no template session in one of these statuses.
+export const LIVE_FACILITATOR_STATUSES: readonly SessionStatus[] = ["lobby", "pre_session", "active", "wrap_up"];
 
 export async function evaluateSessionSubscriberAccess(
   userId: string,

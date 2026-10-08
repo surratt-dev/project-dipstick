@@ -107,6 +107,29 @@ describe("scheduleReauthorizationSweep (SEC-25/SEC-27, design.md Decision D2)", 
     expect(conn.socket.close).toHaveBeenCalledWith(STALE_SIGNAL_CLOSE_CODE);
   });
 
+  // template-team-not-usable (#214) tasks.md 8.5: after migration 23 no
+  // template membership is active and no template session grants its
+  // facilitator, so evaluateTeamAccess returns no grant for a connection on
+  // the template team. A single sweep closes it (the up-to-5-minute residual
+  // design.md D4 accepts for sockets already open at deploy time).
+  it("#214 8.5: a connection on the template team with no grant is closed by a single sweep", async () => {
+    const { DEFAULT_TOPICS_TEAM_ID } = await import("../../sessions/default-topics.js");
+    mockEvaluateTeamAccess.mockResolvedValue(null);
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "engineer" }] }).mockResolvedValueOnce({ rows: [] });
+
+    const registry = new ConnectionRegistry();
+    const conn = fakeConn();
+    registry.register("team", DEFAULT_TOPICS_TEAM_ID, conn);
+
+    scheduleReauthorizationSweep(conn, "team", DEFAULT_TOPICS_TEAM_ID, registry, noopLogger as never);
+    await vi.advanceTimersByTimeAsync(REAUTHORIZATION_INTERVAL_MS);
+
+    expect(mockEvaluateTeamAccess).toHaveBeenCalledWith("user-1", DEFAULT_TOPICS_TEAM_ID, expect.anything());
+    expect(conn.socket.close).toHaveBeenCalledTimes(1);
+    expect(conn.socket.close).toHaveBeenCalledWith(STALE_SIGNAL_CLOSE_CODE);
+    expect(registry.candidates("team", DEFAULT_TOPICS_TEAM_ID)).toHaveLength(0);
+  });
+
   it("team-scoped: an application_admin's admin-path grant is rejected even though membership was never removed", async () => {
     mockEvaluateTeamAccess.mockResolvedValue({ path: "admin", actorGlobalRole: "application_admin" });
     mockDbQuery.mockResolvedValueOnce({ rows: [{ global_role: "application_admin" }] }).mockResolvedValueOnce({ rows: [] });

@@ -55,6 +55,40 @@ export interface AddCustomTopicResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Why a team's topics are locked — template-team-not-usable (#214) design.md
+// D6. Set beside isCustomizationLocked on TOPIC-001 and TOPIC-002, both from
+// the backend's one getTopicLockState (auth/topic-lock-state.ts), so the two
+// can never disagree.
+//   "first_session"      — a team that has not completed its first session.
+//   "canonical_defaults" — the __default_topics__ template team: the
+//                          canonical default topics, never editable here.
+//   null                 — unlocked.
+// The Topic Management screen chooses its copy from this value only.
+// ---------------------------------------------------------------------------
+export type TopicLockReason = "first_session" | "canonical_defaults" | null;
+
+// ---------------------------------------------------------------------------
+// TOPIC-001 — GET /api/v1/teams/:teamId/topics (content.ts). The rows are
+// returned as the database names them; no other field is selected (the
+// annotation is deliberately absent, see Topic above).
+// ---------------------------------------------------------------------------
+export interface ActiveTopicRow {
+  id: string;
+  name: string;
+  prompt: string;
+  vote_type: VoteType;
+  display_order: number;
+  status: TopicStatus;
+}
+
+export interface GetActiveTopicsResponse {
+  teamId: string;
+  topics: ActiveTopicRow[];
+  isCustomizationLocked: boolean;
+  lockReason: TopicLockReason;
+}
+
+// ---------------------------------------------------------------------------
 // TOPIC-002 — GET /api/v1/teams/:teamId/topics/all (remove-topic, design.md
 // Decision 9/6). Used by the Topic Management screen.
 // ---------------------------------------------------------------------------
@@ -73,6 +107,9 @@ export interface GetAllTopicsResponse {
   // team's display name.
   teamName: string;
   isCustomizationLocked: boolean;
+  // #214: why isCustomizationLocked is true (null when unlocked). The screen
+  // shows the canonical-defaults treatment for "canonical_defaults".
+  lockReason: TopicLockReason;
   // topic-annotation design.md Decision 8: true for a standing facilitator,
   // false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7).
   // Presentation only -- TOPIC-007 enforces independently.

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyBaseLogger } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
 import type { PoolClient } from "pg";
 import { DatabaseError } from "pg";
 import { db } from "../db.js";
@@ -22,6 +22,11 @@ import {
   NoActiveTopicsError,
 } from "../sessions/session-topic-snapshot.js";
 import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
+import {
+  isTemplateConstraintViolation,
+  logTemplateConstraintViolation,
+} from "../teams/template-constraint-violation.js";
+import { isTemplateTeam, writeTemplateAccessDenial } from "../teams/template-team-guard.js";
 import type {
   RevealFailureResponse,
   RevealAlreadyRevealedResponse,
@@ -236,6 +241,45 @@ export async function getOrCreateJoinLink(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Template-team refusal for the team-addressed session sub-routes —
+// template-team-not-usable (#214) design.md D3.
+//
+// advance, complete, topics/advance and facilitator-state authorize only on
+// the session row (sessions.facilitator_id = caller), so there is no
+// session-independent authorization to run first: the guard runs right
+// after authentication (and advance's non-canonical sessionId rejection),
+// before the session lookup and before any getOrCreateJoinLink. Any
+// authenticated caller therefore gets the route's ordinary "Session not
+// found." 404 (no timing floor: the not-found path has none), with one
+// team.template_access_denied row. The caller's role is not in scope on
+// these routes, so writeTemplateAccessDenial reads it. reveal answers a
+// missing session differently (its non-recoverable 409) and builds its own
+// response; see that handler.
+// ---------------------------------------------------------------------------
+async function refuseTemplateSessionRoute(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  endpoint: string,
+): Promise<FastifyReply> {
+  const correlationId = crypto.randomUUID();
+  await writeTemplateAccessDenial({
+    actorUserId: (request.session as unknown as SessionData).userId,
+    actorIp: request.ip,
+    log: request.log,
+    endpoint,
+    surface: "session",
+    correlationId,
+  });
+  return reply.code(404).send({
+    error: {
+      category: "not_found" as const,
+      message: "Session not found.",
+      correlationId,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Facilitator session lifecycle routes
 //
 // Decision 3 (enforce-access-control-on-team-content):
@@ -274,7 +318,9 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
   //      :teamId.
   //   3. Team existence -> 404 if missing. Runs before the membership
   //      rejection so a nonexistent :teamId never reaches that rejection's
-  //      audit write, mirroring every other handler in this file.
+  //      audit write, mirroring every other handler in this file. The
+  //      template team gets the same 404 here, with a
+  //      team.template_access_denied row (#214).
   //   4. is_member (already fetched in step 1's query) -> 403,
   //      cross-team-constraint message, audited (Decision D1) -- this is the
   //      check that closes the previously-invisible enforcement gap.
@@ -323,6 +369,26 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
           correlationId: crypto.randomUUID(),
         },
       });
+    }
+
+    // template-team-not-usable (#214) design.md D3: the __default_topics__
+    // template team is answered exactly as a missing team (404
+    // TEAM_NOT_FOUND, no timing floor, because the missing-team path has
+    // none), at the team-existence step: after the 401 and the facilitator
+    // 403, before the cross-team check, so no session and no join link is
+    // ever created for it. Audited (surface "session").
+    if (isTemplateTeam(teamId)) {
+      const envelope = teamNotFoundEnvelope();
+      await writeTemplateAccessDenial({
+        actorUserId: session.userId,
+        actorGlobalRole: global_role,
+        actorIp: request.ip,
+        log: request.log,
+        endpoint: "POST /api/v1/teams/:teamId/sessions/draft",
+        surface: "session",
+        correlationId: envelope.error.correlationId,
+      });
+      return reply.code(404).send(envelope);
     }
 
     // Verify the team exists
@@ -735,6 +801,10 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       // Any other failure in the transaction: a fixed 500, the error logged
       // with the body's correlationId, never echoed (security review SF1).
       const body = buildErrorEnvelope("internal_error", TEAM_CREATION_FAILED_MESSAGE);
+      if (isTemplateConstraintViolation(err)) {
+        // #214 design.md D5: the marker; the response is unchanged.
+        logTemplateConstraintViolation(request.log, err, "POST /api/v1/teams", body.error.correlationId);
+      }
       request.log.error({ err, correlationId: body.error.correlationId }, "team creation failed");
       return reply.code(500).send(body);
     } finally {
@@ -789,6 +859,15 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
           correlationId: crypto.randomUUID(),
         },
       });
+    }
+
+    // #214 design.md D3: the template team, before the session lookup.
+    if (isTemplateTeam(teamId)) {
+      return refuseTemplateSessionRoute(
+        request,
+        reply,
+        "POST /api/v1/teams/:teamId/sessions/:sessionId/advance",
+      );
     }
 
     // Verify the session exists and belongs to this team
@@ -993,6 +1072,15 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       // follow-up 6), and Fastify's default one echoes err.message.
       await client.query("ROLLBACK").catch(() => undefined);
       const body = buildErrorEnvelope("internal_error", ROOM_OPEN_FAILED_MESSAGE);
+      if (isTemplateConstraintViolation(err)) {
+        // #214 design.md D5: the marker; the response is unchanged.
+        logTemplateConstraintViolation(
+          request.log,
+          err,
+          "POST /api/v1/teams/:teamId/sessions/:sessionId/advance",
+          body.error.correlationId,
+        );
+      }
       request.log.error({ err, correlationId: body.error.correlationId, sessionId }, "room open failed");
       return reply.code(500).send(body);
     } finally {
@@ -1543,6 +1631,11 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     const session = request.session as unknown as SessionData;
     const { teamId, sessionId } = request.params;
 
+    // #214 design.md D3: the template team, before the session lookup.
+    if (isTemplateTeam(teamId)) {
+      return refuseTemplateSessionRoute(request, reply, "POST /api/v1/teams/:teamId/sessions/:sessionId/complete");
+    }
+
     const sessionResult = await db.query<{
       id: string;
       team_id: string;
@@ -1706,6 +1799,33 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
   }>("/api/v1/teams/:teamId/sessions/:sessionId/reveal", async (request, reply) => {
     const userSession = request.session as unknown as SessionData;
     const { teamId, sessionId } = request.params;
+
+    // #214 design.md D3: the template team, before the session lookup, with
+    // the response this route gives a session it cannot find for the team
+    // (the non-recoverable 409 below), so the template looks like any team
+    // without that session. Audited (surface "session").
+    if (isTemplateTeam(teamId)) {
+      // The 409 body carries no correlationId (as for a missing session); one
+      // is minted for the event and the log, as on the other routes
+      // (security implementation review F2).
+      await writeTemplateAccessDenial({
+        actorUserId: userSession.userId,
+        actorIp: request.ip,
+        log: request.log,
+        endpoint: "POST /api/v1/teams/:teamId/sessions/:sessionId/reveal",
+        surface: "session",
+        correlationId: crypto.randomUUID(),
+      });
+      const templateBody: RevealFailureResponse = {
+        errorState: "reveal_failure",
+        recoverable: false,
+        message: "This session is no longer in an active state. Please review the session status.",
+        sessionId,
+        teamId,
+        currentSessionStatus: "complete",
+      };
+      return reply.code(409).send(templateBody);
+    }
 
     // Query the session to evaluate both the authorization state and the
     // current session status in a single round-trip.
@@ -1940,6 +2060,11 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
   }>("/api/v1/teams/:teamId/sessions/:sessionId/topics/advance", async (request, reply) => {
     const userSession = request.session as unknown as SessionData;
     const { teamId, sessionId } = request.params;
+
+    // #214 design.md D3: the template team, before the session lookup.
+    if (isTemplateTeam(teamId)) {
+      return refuseTemplateSessionRoute(request, reply, "POST /api/v1/teams/:teamId/sessions/:sessionId/topics/advance");
+    }
 
     const sessionResult = await db.query<{
       id: string;
@@ -2305,6 +2430,11 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     const userSession = request.session as unknown as SessionData;
     const { teamId, sessionId } = request.params;
 
+    // #214 design.md D3: the template team, before the session lookup.
+    if (isTemplateTeam(teamId)) {
+      return refuseTemplateSessionRoute(request, reply, "GET /api/v1/teams/:teamId/sessions/:sessionId/facilitator-state");
+    }
+
     // Query session state and verify the requester is the session facilitator.
     // join-link-redemption-wiring, tasks.md Task 2.3/4.3: join_token is no
     // longer selected here -- joinToken is sourced via get-or-create below.
@@ -2476,6 +2606,11 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
     // sessions only (design.md D2) -- mirrors fetchPreSessionActionItems's
     // existing convention of sourcing only from completed sessions. A live
     // or draft session never masquerades as "last session" context.
+    //
+    // template-team-not-usable (#214): the __default_topics__ template team
+    // is never listed, whatever its membership, deactivation or session
+    // state (default-topic-provisioning, FR-1.7 carve-out). Excluded by
+    // binding the shared constant as $2, never by a UUID literal or by name.
     const eligibleResult = await db.query<{
       team_id: string;
       team_name: string;
@@ -2492,8 +2627,9 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
             AND tm.user_id = $1
             AND tm.removed_at IS NULL
        WHERE tm.id IS NULL
-         AND t.deactivated_at IS NULL`,
-      [session.userId],
+         AND t.deactivated_at IS NULL
+         AND t.id <> $2`,
+      [session.userId, DEFAULT_TOPICS_TEAM_ID],
     );
 
     const eligibleTeams: EligibleTeam[] = eligibleResult.rows.map((row) => ({
