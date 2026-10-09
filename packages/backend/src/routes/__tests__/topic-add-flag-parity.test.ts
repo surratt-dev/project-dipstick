@@ -30,11 +30,34 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Postgres is required; see implementation-notes.md.)
 // ---------------------------------------------------------------------------
 
-type Caller = { globalRole: string; isMember: boolean };
+// #232 task 2.4a (design.md D6): `membershipRole` is the caller's live active
+// membership role on the team, served to readActiveMembershipRole (TOPIC-002's
+// administrator arm). null = no active membership. Every application_admin
+// row asserts that the fake actually served this value (servedMembershipRoles
+// below), so a mis-routed membership query cannot pass as a null membership.
+type Caller = { globalRole: string; isMember: boolean; membershipRole?: string | null };
 // null = no users row exists for the session's userId.
 let currentCaller: Caller | null = { globalRole: "facilitator", isMember: false };
+// Membership roles the fake served to readActiveMembershipRole, per request.
+let servedMembershipRoles: Array<string | null> = [];
 
 function fakeQuery(sql: string): Promise<{ rows: unknown[] }> {
+  // readActiveMembershipRole -- matched before any broader team_memberships rule.
+  if (sql.includes("SELECT role FROM team_memberships")) {
+    const role = currentCaller?.membershipRole ?? null;
+    servedMembershipRoles.push(role);
+    return Promise.resolve({ rows: role === null ? [] : [{ role }] });
+  }
+  // TOPIC-002's role-set read (`FROM users WHERE id`), kept apart from the
+  // shared helper's `FROM users u`. One row; with no users row the request
+  // never gets this far (the helper denies first).
+  if (sql.includes("roles::text[] AS roles FROM users WHERE id")) {
+    return Promise.resolve({ rows: currentCaller === null ? [] : [{ roles: [currentCaller.globalRole] }] });
+  }
+  // TOPIC-002's admin audit insert (admin.topic_config_accessed / _denied).
+  if (sql.includes("INSERT INTO audit_log")) {
+    return Promise.resolve({ rows: [] });
+  }
   if (sql.includes("FROM users u") && sql.includes("team_memberships")) {
     if (currentCaller === null) return Promise.resolve({ rows: [] });
     return Promise.resolve({ rows: [{ global_role: currentCaller.globalRole, is_member: currentCaller.isMember }] });
@@ -111,7 +134,13 @@ async function buildApp() {
   return app;
 }
 
-type Expected = { get: 200; canAddTopics: boolean; post: 201 | 403 } | { get: 403; post: 403 };
+// #232: `{ get: 403; post: 201 }` is used ONLY by the "application_admin with
+// an engineering_manager membership" row -- the recorded split between
+// TOPIC-002's no-manager rule and TOPIC-003..006, which #208 owns.
+type Expected =
+  | { get: 200; canAddTopics: boolean; post: 201 | 403 }
+  | { get: 403; post: 403 }
+  | { get: 403; post: 201 };
 
 const ADMITTED_CAN_ADD: Expected = { get: 200, canAddTopics: true, post: 201 };
 const REJECTED: Expected = { get: 403, post: 403 };
@@ -122,16 +151,39 @@ const CALLER_CLASSES: Array<{ label: string; caller: Caller | null; expected: Ex
   { label: "application_admin", caller: { globalRole: "application_admin", isMember: false }, expected: ADMITTED_CAN_ADD },
   {
     label: "application_admin who is a member of the team",
-    caller: { globalRole: "application_admin", isMember: true },
+    // #232 2.4a: pinned to a participant membership (the no-manager rule admits it).
+    caller: { globalRole: "application_admin", isMember: true, membershipRole: "participant" },
     expected: ADMITTED_CAN_ADD,
+  },
+  {
+    label: "application_admin with an engineering_manager membership",
+    // DELIBERATE SPLIT -- do NOT "fix" this row here. TOPIC-002 applies the
+    // no-manager rule (#232) and answers 403, while TOPIC-003..006 still admit
+    // this caller (POST 201) and stay unchanged until #208 is decided. Making
+    // the add endpoint deny too would decide #208 by accident.
+    caller: { globalRole: "application_admin", isMember: true, membershipRole: "engineering_manager" },
+    expected: { get: 403, post: 201 },
   },
   { label: "engineer", caller: { globalRole: "engineer", isMember: true }, expected: REJECTED },
   { label: "engineering manager", caller: { globalRole: "engineering_manager", isMember: true }, expected: REJECTED },
+  {
+    label: "global engineering manager with a participant membership",
+    caller: { globalRole: "engineering_manager", isMember: true, membershipRole: "participant" },
+    expected: REJECTED,
+  },
+  {
+    label: "global engineering manager with an engineering_manager membership",
+    caller: { globalRole: "engineering_manager", isMember: true, membershipRole: "engineering_manager" },
+    expected: REJECTED,
+  },
   { label: "no user row for the session's userId", caller: null, expected: REJECTED },
 ];
 
 describe("canAddTopics agrees with TOPIC-003's authorization for every caller class (security review S1)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    servedMembershipRoles = [];
+  });
 
   it("the table includes a class that can add (guards against an all-deny table)", () => {
     expect(CALLER_CLASSES.some((row) => row.expected.post === 201)).toBe(true);
@@ -144,6 +196,15 @@ describe("canAddTopics agrees with TOPIC-003's authorization for every caller cl
       const app = await buildApp();
 
       const list = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
+
+      // #232 2.4a (design.md D6): the fake must prove what it served. Every
+      // application_admin row's GET read exactly the configured membership
+      // role; any other caller's GET performed no membership-role read.
+      if (caller?.globalRole === "application_admin") {
+        expect(servedMembershipRoles).toEqual([caller.membershipRole ?? null]);
+      } else {
+        expect(servedMembershipRoles).toEqual([]);
+      }
       const post = await app.inject({
         method: "POST",
         url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics",
@@ -166,6 +227,9 @@ describe("canAddTopics agrees with TOPIC-003's authorization for every caller cl
         const body = list.json() as GetAllTopicsResponse;
         expect(body.isCustomizationLocked).toBe(false);
         expect(body.canAddTopics).toBe(post.statusCode !== 403);
+      } else if (expected.get === 403 && expected.post === 201) {
+        // #232 / #208: the one recorded exception (see the row's comment).
+        expect(caller).toEqual({ globalRole: "application_admin", isMember: true, membershipRole: "engineering_manager" });
       } else {
         expect(list.statusCode).toBe(403);
         expect(post.statusCode).toBe(403);

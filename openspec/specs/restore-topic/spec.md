@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines `POST /api/v1/teams/:teamId/topics/:topicId/restore` (TOPIC-005) — the inverse of `remove-topic`'s archive transition. Covers authorization (the standing, org-wide facilitator-or-admin model shared with TOPIC-002/TOPIC-004), the check-ordering cascade, the advisory-lock-guarded append-position reposition, provenance (`restored_by`/`restored_at`, and preservation of `archived_at`/`archived_by`), and audit posture.
+Defines `POST /api/v1/teams/:teamId/topics/:topicId/restore` (TOPIC-005) — the inverse of `remove-topic`'s archive transition. Covers authorization (the standing, org-wide facilitator-or-admin model shared with TOPIC-004; TOPIC-002 shares the facilitator side but adds a no-manager rule to its admin side, #232), the check-ordering cascade, the advisory-lock-guarded append-position reposition, provenance (`restored_by`/`restored_at`, and preservation of `archived_at`/`archived_by`), and audit posture.
 
 This spec does NOT cover the frontend restore action or its confirmation dialog (see `topic-management-screen`). It also does not cover a trend-view gap signal — that work is deferred to a separate follow-up change and is not part of this capability.
 

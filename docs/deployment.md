@@ -288,9 +288,9 @@ A `200` response means PostgreSQL and Redis are both reachable.
 
 Audit events are emitted via `emitAuditEvent` (`packages/backend/src/auth/audit-logger.ts`) at the `info` level, with the child logger's level explicitly overridden so application-wide log-level changes (e.g. raising Fastify's logger to `warn`) cannot suppress them. **This override does not protect against transport-level filtering.** If you configure a pino transport (a log shipper, a `pino-*` destination, anything set via `transport` in Fastify's `logger` option) that applies its own level filter below `info`, audit events will be silently dropped downstream of this logger, with no indication in the application that anything was lost.
 
-Many audit events also write an `audit_log` database row in the same transaction as the state change — that row is the authoritative audit record and is unaffected by log transport configuration (role changes, rate-limit breaches, action-item status changes, EM data-access reads, admin reads, and most session/WebSocket-lifecycle events all fall in this category). Most of the `auth.*`/`join.*` trail now also falls in this category (`auth-events-audit-log-coverage`): `auth.success`, `auth.session_created`, `auth.first_access_created`, `auth.role_claim_mapped`, `auth.idp_logout_failed`, `join.link_created`, and `join.link_redeemed` each write a durable `audit_log` row — the fail-open group (`auth.success`, `auth.session_created`, `auth.idp_logout_failed`) via a bounded-timeout write that never blocks the triggering response, the transactional group (`auth.first_access_created`, `auth.role_claim_mapped`, `join.link_created`, `join.link_redeemed`) in the same transaction as the domain write it accompanies. See `openspec/specs/auth-error-handling/spec.md` and `openspec/specs/join-link/spec.md` for the exact mechanism and field shapes. Since migration 22 (#245), `audit_log.actor_roles` holds the actor's full role set on `auth.first_access_created` and `auth.role_claim_mapped` rows only. **NULL in `actor_roles` means the actor's role set was not captured for that operation, not that the actor had no roles.**
+Many audit events also write an `audit_log` database row in the same transaction as the state change — that row is the authoritative audit record and is unaffected by log transport configuration (role changes, rate-limit breaches, action-item status changes, EM data-access reads, and most session/WebSocket-lifecycle events all fall in this category). Admin reads (`admin.membership_list_accessed`, `admin.team_detail_accessed`, and TOPIC-002's `admin.topic_config_accessed` / `admin.topic_config_denied`, #232) also write a durable row, but not in a transaction: the row is written after the data is read and before the response is sent, and if the write fails the request fails closed (`500`, none of the data returned). If the data was served, the record exists; a row can exist for a response that never reached the client (over-record, never under-record). Most of the `auth.*`/`join.*` trail now also falls in this category (`auth-events-audit-log-coverage`): `auth.success`, `auth.session_created`, `auth.first_access_created`, `auth.role_claim_mapped`, `auth.idp_logout_failed`, `join.link_created`, and `join.link_redeemed` each write a durable `audit_log` row — the fail-open group (`auth.success`, `auth.session_created`, `auth.idp_logout_failed`) via a bounded-timeout write that never blocks the triggering response, the transactional group (`auth.first_access_created`, `auth.role_claim_mapped`, `join.link_created`, `join.link_redeemed`) in the same transaction as the domain write it accompanies. See `openspec/specs/auth-error-handling/spec.md` and `openspec/specs/join-link/spec.md` for the exact mechanism and field shapes. Since migration 22 (#245), `audit_log.actor_roles` holds the actor's full role set on `auth.first_access_created` and `auth.role_claim_mapped` rows, and (from #232) on `admin.topic_config_accessed` and `admin.topic_config_denied` rows; no other operation writes it. **NULL in `actor_roles` means the actor's role set was not captured for that operation, not that the actor had no roles.**
 
-**What remains log-only, with no database backing anywhere in this codebase:** `auth.session_invalidated` remains a partial exception as before (marked below); four events remain deferred pending a volume/latency determination that no queryable data source exists to answer today (tracked as GitHub issue #156, filed during `auth-events-audit-log-coverage`'s proposal stage) — `auth.authorization_initiated`, `auth.callback_received`, `auth.failure` (all three call sites), and `join.link_rejected` (all five call sites). `auth.audit_write_failed` is deliberately never DB-backed (see the footnote below). Seven further events are also log-only: the two `auth.token_refresh_*` events and five unrelated to the auth/join trail. In total, 13 events remain at risk if a filtering transport is introduced:
+**What remains log-only, with no database backing anywhere in this codebase:** `auth.session_invalidated` remains a partial exception as before (marked below); four events remain deferred pending a volume/latency determination that no queryable data source exists to answer today (tracked as GitHub issue #156, filed during `auth-events-audit-log-coverage`'s proposal stage) — `auth.authorization_initiated`, `auth.callback_received`, `auth.failure` (all three call sites), and `join.link_rejected` (all five call sites). `auth.audit_write_failed` is deliberately never DB-backed (see the footnote below). Eight further events are also log-only: the two `auth.token_refresh_*` events and six unrelated to the auth/join trail. In total, 14 events remain at risk if a filtering transport is introduced:
 
 - `auth.*`: `auth.authorization_initiated`, `auth.callback_received`, `auth.failure`, `auth.session_invalidated`\*, `auth.token_refresh_success`, `auth.token_refresh_failure`, `auth.audit_write_failed`
 - `join.*`: `join.link_rejected`
@@ -299,10 +299,42 @@ Many audit events also write an `audit_log` database row in the same transaction
 - `team.manager_association_rate_limit_check_failed`
 - `session.reveal_latency_observed`
 - `topic.config_read_denied_role`
+- `admin.*`: `admin.audit_write_failed` (#232, design D5b) — deliberately never DB-backed: it fires when TOPIC-002's administrator-arm role-set read or audit insert fails, and a database row about the database failing to take a row is not a fallback
 
 This means a filtering transport still puts a meaningful slice of the authentication trail at risk — pre-authentication events, all failure classifications, and rejected join attempts have no database fallback — even though the "who logged in, when, created their account, had their role mapped, or joined a team" record now does.
 
 \* `auth.session_invalidated` is a partial exception (`http-auth-audit-log-coverage`): at all four of its HTTP-side call sites (`middleware.ts`'s absolute-timeout, revoked-token, and exhausted-retry branches; `auth.ts`'s `/auth/logout` handler) it also writes a real `audit_log` row, bounded by a single 500ms timeout covering both DB round trips and fail-open on either an explicit error or that timeout — a DB outage never blocks the triggering 401/logout response. When that write fails, this event's occurrence falls back to log-only for that one occurrence (today's pre-change baseline, not zero evidence), and a sustained failure of the write path emits `auth.audit_write_failed` as a paired, purely log-only detectability signal — writing a DB row about the DB being unreachable isn't a real fallback, so that event never gets one. `auth-events-audit-log-coverage` extends this same `auth.audit_write_failed` signal to the fail-open group's three events (`auth.success`, `auth.session_created`, `auth.idp_logout_failed`), and adds an accurate `errorClass: "AuditWriteError"` to the existing `auth.callback_error` log line for the transactional group's own failure mode (see design.md Decision D3/D7) — both named as candidate inputs for GitHub issue #131 ("No monitoring consumer exists for any `AuditEventName` signal"), which remains open: neither `auth.audit_write_failed` nor any other `AuditEventName` in this codebase is consumed by an alert rule, anomaly-detection job, or dashboard today.
+
+**Review queries (#232 compensating control).** Until #238 revisits admission, the TOPIC-002 admin rows are the evidence that an administrator who is also a manager read a team's topic configuration. Two periodic review queries:
+
+1. Admin topic-configuration reads by a caller whose stored role set includes engineering manager:
+   ```sql
+   SELECT * FROM audit_log
+    WHERE operation = 'admin.topic_config_accessed'
+      AND 'engineering_manager' = ANY(actor_roles);
+   ```
+2. Self-demotion correlation: a TEAM-005 role change (`team.role_changed`) where `actor_user_id = target_user_id` and the caller moved off `engineering_manager`, followed by an `admin.topic_config_accessed` row by the same user for the same team:
+   ```sql
+   SELECT rc.actor_user_id, rc.team_id,
+          rc.timestamp AS demoted_at,
+          rc.metadata->>'to_role' AS to_role,
+          acc.timestamp AS accessed_at, acc.id AS access_row_id
+     FROM audit_log rc
+     JOIN audit_log acc
+       ON acc.operation = 'admin.topic_config_accessed'
+      AND acc.actor_user_id = rc.actor_user_id
+      AND acc.team_id = rc.team_id
+      AND acc.timestamp > rc.timestamp
+    WHERE rc.operation = 'team.role_changed'
+      AND rc.actor_user_id = rc.target_user_id
+      AND rc.metadata->>'from_role' = 'engineering_manager'
+    ORDER BY rc.timestamp, acc.timestamp;
+   ```
+   The backend has no membership-removal path: nothing in the application sets `team_memberships.removed_at`. A removed membership can therefore only come from direct database access, which writes no `audit_log` row and is invisible to this query. Database-level access control is the control for that, not this query.
+
+Note that `actor_roles` reflects `users.roles` at request time; a user who has not signed in since #245 still has the backfilled `{application_admin}`.
+
+Proposed: Security (Tomás Ferreira), monthly, no alerting. Pending owner confirmation.
 
 **Before adopting any pino transport with a level filter:** revisit `emitAuditEvent` in `audit-logger.ts` — the child-logger level override protects against the application log level only, and the transport will need its own accommodation (e.g. a level floor on the transport config, or routing audit events to an unfiltered destination) to keep the events above from going dark.
 

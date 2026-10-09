@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines `PUT /api/v1/teams/:teamId/topics/order` (TOPIC-006). The endpoint replaces the display order of a team's active topics with a facilitator-supplied order. This spec covers authorization (the standing, org-wide facilitator-or-admin model shared with TOPIC-002/004/005), the fixed check cascade, the full-list set-equality check and its stale-save outcome, dense 1-based atomic renumbering, no-op handling, concurrency posture, audit posture, the open-session hint in the response and who may receive it, and the guarantee that reorder never modifies an existing session's topic sequence.
+Defines `PUT /api/v1/teams/:teamId/topics/order` (TOPIC-006). The endpoint replaces the display order of a team's active topics with a facilitator-supplied order. This spec covers authorization (the standing, org-wide facilitator-or-admin model shared with TOPIC-004/005; TOPIC-002 shares the facilitator side but adds a no-manager rule to its admin side, #232), the fixed check cascade, the full-list set-equality check and its stale-save outcome, dense 1-based atomic renumbering, no-op handling, concurrency posture, audit posture, the open-session hint in the response and who may receive it, and the guarantee that reorder never modifies an existing session's topic sequence.
 
 This spec does NOT cover the reorder controls on the Topic Management screen (see `topic-management-screen`), or the partial-unique-index fix for archived-row `display_order` collisions (see `remove-topic`), which this endpoint depends on.
 

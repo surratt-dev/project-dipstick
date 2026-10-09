@@ -660,7 +660,14 @@ export function TopicManagementPage() {
         credentials: "include",
       });
       if (res.status === 403) {
-        setError("You do not have access to this team's topic management.");
+        // #232 (design.md D7): show the server's reason (e.g. the no-manager
+        // rule's message to an administrator who manages this team). The body
+        // is parsed defensively: a non-JSON 403 (proxy/WAF page, empty body)
+        // must not throw into the catch below and show the network error.
+        const body: unknown = await res.json().catch(() => null);
+        setError(
+          hasEnvelopeMessage(body) ? body.error.message : "You do not have access to this team's topic management.",
+        );
         return;
       }
       if (!res.ok) {
