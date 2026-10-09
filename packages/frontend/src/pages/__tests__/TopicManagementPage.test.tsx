@@ -175,7 +175,9 @@ describe("active topic list", () => {
   }
 
   it("#232: a 403 with an envelope message renders that exact message", async () => {
-    const message = "Topic configuration for this team isn't available to its engineering manager.";
+    // Any envelope message works (the handling is generic); this is the
+    // backend's FACILITATOR_IS_TEAM_MEMBER message, as a literal.
+    const message = "A facilitator cannot view topic management for a team they are a member of.";
     global.fetch = vi
       .fn()
       .mockResolvedValue(mockFetchResponse({ error: { category: "forbidden", message, correlationId: "c-1" } }, 403));

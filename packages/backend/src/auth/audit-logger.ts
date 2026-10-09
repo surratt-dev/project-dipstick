@@ -150,15 +150,17 @@ export type AuditEventName =
   | "admin.team_detail_accessed"
   | "admin.session_content_denied"
   // admin.topic_config_accessed: 232-topic-002-admin-read-audit-no-manager
-  // (#232), design.md D5. Fired by TOPIC-002 (GET
-  // /api/v1/teams/:teamId/topics/all, content.ts) on EVERY 200 it sends to an
-  // application_admin -- every team, the template team included, annotated or
-  // not, one row per request (never deduplicated).
+  // (#232), design.md D5, as amended by 208-member-admin-topic-writes
+  // (#208). Fired by TOPIC-002 (GET /api/v1/teams/:teamId/topics/all,
+  // content.ts) on EVERY 200 it sends to an application_admin -- every team,
+  // the template team included, annotated or not, whatever the admin's
+  // membership on the team, one row per request (never deduplicated).
   //
   // Durable audit_log row PLUS this event, not log-only: TOPIC-002 is not a
   // hot path (screen mount and the refetch after a write, by a small
-  // population), the spec requires the audit_log row, and for the no-manager
-  // rule the durable row is the only after-the-fact evidence. The insert is a
+  // population), the spec requires the audit_log row, and the durable row is
+  // the only after-the-fact evidence that an administrator who manages the
+  // team read its definitions (#208). The insert is a
   // plain awaited INSERT (teams.ts style, not a transaction) written after
   // the data reads and before the timing floor and the send; if it throws
   // the request is 500 with no data.
@@ -166,15 +168,21 @@ export type AuditEventName =
   // Row columns: actor_user_id, actor_global_role = 'application_admin',
   // actor_ip, operation, team_id (the requested id; may name no team),
   // metadata, actor_roles (users.roles read once per request, written as
-  // $n::text[]). These two TOPIC-002 operations are the first writers of
-  // actor_roles after the two sign-in rows (auth.first_access_created,
-  // auth.role_claim_mapped); migration 22's column comment is deliberately
-  // not edited (applied migration).
+  // $n::text[]). TOPIC-002's admin rows (this operation, and the retired
+  // admin.topic_config_denied, #232, no longer emitted since #208) were the
+  // first writers of actor_roles after the two sign-in rows
+  // (auth.first_access_created, auth.role_claim_mapped); migration 22's
+  // column comment is deliberately not edited (applied migration).
   //
   // metadata (exactly): { endpoint: "GET /api/v1/teams/:teamId/topics/all",
-  // http_status: 200, membership_role: null | "participant",
-  // actor_idp_roles_include_em, team_found, active_count, archived_count,
-  // annotated_count }.
+  // http_status: 200, membership_role, actor_idp_roles_include_em,
+  // team_found, active_count, archived_count, annotated_count }.
+  // membership_role is the caller's live active membership role on the team,
+  // recorded raw as read: null (no active membership), or whatever value
+  // team_memberships.role holds ("participant" or "engineering_manager"
+  // today, and any future enum value as-is). The set is open: it is audit
+  // data only, not an admission input, so nothing checks it against a list
+  // (#208 design.md D2).
   // event payload (exactly): { actorUserId, actorGlobalRole, actorIp, teamId,
   // endpoint, httpStatus, membershipRole, actorRoles, actorIdpRolesIncludeEm,
   // teamFound, activeCount, archivedCount, annotatedCount }.
@@ -193,44 +201,18 @@ export type AuditEventName =
   // caller holds no manager role in the IdP. The role set is audit data
   // only, never an admission input.
   | "admin.topic_config_accessed"
-  // admin.topic_config_denied: 232-topic-002-admin-read-audit-no-manager
-  // (#232), design.md D4/D5. Fired by TOPIC-002 when the no-manager rule
-  // denies an application_admin (live active membership role on the team is
-  // anything other than absent or 'participant'), before the timing floor
-  // and the 403. Durable audit_log row PLUS this event, for the same reasons
-  // as admin.topic_config_accessed above (not a hot path; spec requires the
-  // row). A failed denial insert makes the request 500, never 200.
-  //
-  // Row columns: the same as admin.topic_config_accessed, actor_roles
-  // included ($n::text[]).
-  //
-  // metadata (exactly): { endpoint: "GET /api/v1/teams/:teamId/topics/all",
-  // http_status: 403, reason: "membership_em" | "membership_unrecognised",
-  // actor_idp_roles_include_em }. No team_found: the deny branch runs no
-  // team query.
-  // event payload (exactly): { actorUserId, actorGlobalRole, actorIp, teamId,
-  // endpoint, httpStatus, reason, actorRoles, actorIdpRolesIncludeEm }.
-  //
-  // NEVER annotation text, topic names or topic ids. Same visibility guard
-  // (never exposed to team members or EMs) and the same backfill limit as
-  // admin.topic_config_accessed.
-  //
-  // Distinct from TOPIC-001's spec-protected admin.session_content_denied:
-  // topic configuration is not session content. "Admin denied topic
-  // configuration" therefore has two names; both rows carry
-  // metadata.endpoint, which is how a consumer tells them apart.
-  | "admin.topic_config_denied"
   // admin.audit_write_failed: 232-topic-002-admin-read-audit-no-manager
   // (#232), design.md D5b. Log-only by design, no audit_log row: writing a
   // database row about the database failing to take a row is not a
   // fallback. Fired on TOPIC-002's administrator arm when the role-set read
-  // (SELECT roles::text[] FROM users) or either audit insert
-  // (admin.topic_config_accessed / admin.topic_config_denied) throws, just
-  // before the error is rethrown and the request fails 500.
+  // (SELECT roles::text[] FROM users) or the admin.topic_config_accessed
+  // insert throws, just before the error is rethrown and the request fails
+  // 500.
   //
-  // payload (exactly): { actorUserId, teamId, endpoint, operation:
-  // "admin.topic_config_accessed" | "admin.topic_config_denied" (the row that
-  // was due), stage: "role_set_read" | "audit_insert", errorCode }. errorCode
+  // payload (exactly): { actorUserId, teamId, endpoint, operation, stage,
+  // errorCode }. On TOPIC-002, operation can only be
+  // "admin.topic_config_accessed" (the row that was due; #208 removed the
+  // denial row) and stage is "role_set_read" | "audit_insert". errorCode
   // is the pg SQLSTATE (err.code) or null -- NEVER err.message or err.detail,
   // which can echo row values. A membership-read failure does not emit it
   // (no row was due yet).

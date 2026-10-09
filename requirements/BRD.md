@@ -200,7 +200,7 @@ Requirements are marked **[HARD]** where the behavior is non-negotiable and cann
 - **Participant:** A team member eligible to vote in sessions for their assigned team.
 - **Facilitator:** A user who leads sessions for teams other than their own. A facilitator may also be a Participant for their own team.
 - **Engineering Manager (EM):** A user associated with a team who has read-only access to session history and trend data for that team. Within session history, an EM sees anonymous vote distributions (counts per value per topic) rather than individual vote attribution. An EM may not vote.
-- **Application Administrator:** A user who may manage team definitions, assign members, and assign facilitators across all teams. An Application Administrator does not take part in sessions: they cannot register as a session participant, lock in votes, or receive live session events, even for a team they belong to. They may still hold team membership. *(Added by #243, configurable OIDC role map, design D11.)*
+- **Application Administrator:** A user who may manage team definitions, assign members, and assign facilitators across all teams. An Application Administrator does not take part in sessions: they cannot register as a session participant, lock in votes, or receive live session events, even for a team they belong to. They may still hold team membership. *(Added by #243, configurable OIDC role map, design D11.)* They may read and change any team's topic configuration (FR-8.2). *(Added by #208.)*
 
 **FR-1.4** [HARD] The application shall prevent any user assigned the EM role for a given team from casting votes in sessions for that team.
 
@@ -326,7 +326,9 @@ Trend outlier detection (flagging the team's aggregate score against a rolling h
 
 *Rationale (added by `reject-template-team-topic-writes`, #188; owning requirement: `default-topic-provisioning`):* the team-scoped topic-write endpoints (TOPIC-003 to TOPIC-007) are not the Application Administrator maintenance path and reject the template team. Until a dedicated maintenance endpoint exists (F5), the default set is maintained through database migrations only, and the "maintainable by an Application Administrator" clause is not yet met through the UI.
 
-**FR-8.2** [HARD] After a team's first session, the facilitator or Application Administrator shall be able to add, remove, or reorder topics for that team.
+**FR-8.2** [HARD] After a team's first session, a facilitator who is not a member of the team, or an Application Administrator, shall be able to add, remove, restore, or reorder topics for that team. An Application Administrator may do so whether or not they hold a membership on the team, in any role.
+
+*Rationale (added by #208; decision record: `use cases/08b - Member Admin Topic Writes - Decision.md`):* the product owner decided that Application Administrators are a trusted role and are not barred from a team's topic configuration by their membership on it. The member bar (FR-2.2's principle, enforced on topic reads and writes as `FACILITATOR_IS_TEAM_MEMBER`) applies to facilitators only. "Restore" names what TOPIC-005 already does. This decision covers topic configuration only; it does not change any other administrator restriction (FR-1.3, FR-2.1, FR-8.7, Constraint 2).
 
 **FR-8.3** [HARD] When a topic is removed from a team's active topic list, all historical voting data for that topic shall be retained and accessible in session history and trend views. Removal from the active list does not purge historical records.
 
@@ -338,7 +340,7 @@ Trend outlier detection (flagging the team's aggregate score against a rolling h
 
 **FR-8.7** [HARD] After a team's first session, the Facilitator shall be able to set, edit, or clear a team-specific definition for each active topic. Application Administrators shall not edit team definitions.
 
-*Rationale (added by `topic-annotation`, #53):* the definition is the team's own words, recorded by the facilitator who was in the room with them; Application Administrators have no session context. FR-8.2 ("facilitator or Application Administrator" may add, remove, or reorder topics) does not mention annotation, so FR-8.7 adds a rule for a new operation and does not contradict FR-8.2. Administrators may still read team definitions on the topic management screen, except an administrator who holds an engineering manager membership on that team (no-manager rule; #232).
+*Rationale (added by `topic-annotation`, #53):* the definition is the team's own words, recorded by the facilitator who was in the room with them; Application Administrators have no session context. FR-8.2 ("facilitator or Application Administrator" may add, remove, or reorder topics) does not mention annotation, so FR-8.7 adds a rule for a new operation and does not contradict FR-8.2. Administrators may still read team definitions on the topic management screen.
 
 ### FR-9: Trend Dashboard and Reporting
 
@@ -649,7 +651,7 @@ The following constraints are non-negotiable. They reflect organizational policy
 Session data, vote history, trend charts, and action items for a given team are visible only to the engineers on that team, the team's Engineering Manager, and the facilitator assigned to a given session. No cross-team visibility. No aggregate views that expose team-level scores to individuals outside the reporting chain.
 
 **Constraint 2: Engineering Managers have read-only access and cannot participate as session voters.**
-Engineering Managers may view their team's trend history, session summaries, and action item backlog. They may not join a session as a participant, cast votes, or take actions that affect session flow. This constraint must be enforced at the application layer, not governed by convention. Application Administrators are excluded from session participation on the same terms (no registration, voting or live session events), so that a manager who is also an administrator cannot bypass this constraint (#243, design D11). They may still hold team membership. An administrator who holds an engineering manager membership on a team cannot read that team's topic configuration (#232).
+Engineering Managers may view their team's trend history, session summaries, and action item backlog. They may not join a session as a participant, cast votes, or take actions that affect session flow. This constraint must be enforced at the application layer, not governed by convention. Application Administrators are excluded from session participation on the same terms (no registration, voting or live session events), so that a manager who is also an administrator cannot bypass this constraint (#243, design D11). They may still hold team membership.
 
 **Constraint 3: Session history is retained for 15 months.**
 Session data, vote records, trend data, and action items are retained for 15 months (five quarters) from their creation date. This window is sufficient to support meaningful longitudinal trend analysis across a full annual cycle and one quarter of additional context. Any change to the retention period requires explicit review and approval by the executive sponsor before implementation.
@@ -778,6 +780,7 @@ It has not yet been confirmed that every privileged WebSocket event (reveal trig
 | FR-7.1         | Action items persist; resolved rather than deleted | Create accountability continuity across all sessions                     |
 | FR-7.1a        | Pre-close deletion of wrap-up-created items permitted | Allow facilitator to correct data-entry errors before items enter the permanent record |
 | FR-7.4         | Stale item flagging                                | Surface neglected commitments before they are forgotten                  |
+| FR-8.2         | Non-member facilitators and Application Administrators (any membership) add, remove, restore, or reorder topics | Let the team's topics evolve after its first session without letting a member facilitator shape their own team's agenda |
 | FR-8.3         | Topic removal preserves history                    | Protect longitudinal trend data after topic set changes                  |
 | FR-8.7         | Only the Facilitator edits team topic definitions; admins excluded | Keep the definition in the team's words, captured by someone who was in the room |
 | FR-9.5         | EM view shows aggregates, not individual votes     | Allow management visibility without exposing individual participant data |
