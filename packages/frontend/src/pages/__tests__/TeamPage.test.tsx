@@ -141,6 +141,10 @@ describe("TeamPage", () => {
   // ---------------------------------------------------------------------------
   // remove-topic, design.md Decision 10's nav-entry-point resolution
   // (tasks.md Task 9.6) — a discoverable link to Topic Management.
+  //
+  // #232 (design.md D7): this link must NOT be hidden by role or membership
+  // (for example for an administrator who manages the team). The server
+  // (TOPIC-002) is the only gate; the screen explains a 403 itself.
   // ---------------------------------------------------------------------------
   it("renders a discoverable Topics nav link to /team/:teamId/topics", () => {
     render(

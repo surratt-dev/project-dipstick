@@ -147,6 +147,62 @@ describe("active topic list", () => {
 
     expect(screen.queryByText("Pairing Effectiveness")).not.toBeInTheDocument();
   });
+
+  // #232 (design.md D7, task 6.2): the access-denied state shows the server's
+  // envelope message when there is one, and the fixed fallback otherwise --
+  // including for a 403 whose body is not JSON, which must never surface as
+  // the network-error message. No topic list, definition block or write
+  // control renders in any case.
+  const ACCESS_FALLBACK = "You do not have access to this team's topic management.";
+  const nonJson403 = (text: string) =>
+    ({
+      ok: false,
+      status: 403,
+      json: () => Promise.reject(new SyntaxError("Unexpected token")),
+      text: () => Promise.resolve(text),
+    }) as unknown as Response;
+
+  async function expectDeniedWith(message: string) {
+    await waitFor(() => {
+      expect(screen.getByTestId("topic-management-error")).toHaveTextContent(message);
+    });
+    expect(screen.getByTestId("topic-management-error")).toHaveTextContent(new RegExp(`^${message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+    expect(screen.queryByText("Network error loading topics.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pairing Effectiveness")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Our team's definition/)).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+  }
+
+  it("#232: a 403 with an envelope message renders that exact message", async () => {
+    const message = "Topic configuration for this team isn't available to its engineering manager.";
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(mockFetchResponse({ error: { category: "forbidden", message, correlationId: "c-1" } }, 403));
+
+    renderPage();
+
+    await expectDeniedWith(message);
+  });
+
+  it("#232: a 403 with a JSON body that is not an envelope with a message renders the fallback", async () => {
+    global.fetch = vi.fn().mockResolvedValue(mockFetchResponse({ error: { category: "forbidden" } }, 403));
+
+    renderPage();
+
+    await expectDeniedWith(ACCESS_FALLBACK);
+  });
+
+  it.each([
+    ["an HTML body", "<html><body>Forbidden</body></html>"],
+    ["an empty body", ""],
+  ])("#232: a 403 with %s (not JSON) renders the fallback, not the network error", async (_label, text) => {
+    global.fetch = vi.fn().mockResolvedValue(nonJson403(text));
+
+    renderPage();
+
+    await expectDeniedWith(ACCESS_FALLBACK);
+  });
 });
 
 // ---------------------------------------------------------------------------

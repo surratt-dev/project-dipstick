@@ -353,6 +353,17 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
         expect(adminEntry.teamAnnotation).toBe(markup);
         expect(adminEntry.annotationUpdatedBy).toEqual({ userId: F, displayName: "Fran Facilitator" });
 
+        // #232 task 5.3: the admin read writes exactly one text-free
+        // admin.topic_config_accessed row.
+        const adminReadRows = await db.query<{ metadata: Record<string, unknown> }>(
+          `SELECT metadata FROM audit_log
+            WHERE actor_user_id = $1 AND team_id = $2 AND operation = 'admin.topic_config_accessed'`,
+          [ADMIN, TEAM],
+        );
+        expect(adminReadRows.rows).toHaveLength(1);
+        expect(adminReadRows.rows[0]?.metadata).toMatchObject({ http_status: 200, annotated_count: 1, team_found: true });
+        expect(JSON.stringify(adminReadRows.rows[0]?.metadata)).not.toContain(markup);
+
         // Admin cannot write (FR-8.7), and nothing changes.
         const adminPut = await putAnnotation(adminApp, TEAM, TOPIC_A, "Admin wording");
         expect(adminPut.statusCode).toBe(403);

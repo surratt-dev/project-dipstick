@@ -447,6 +447,8 @@ An Application Administrator follows the same flow with the same validation and 
 ## Summary
 **Actor:** Facilitator
 
+**Secondary Actor:** Application Administrator (read-only definitions; FR-8.7)
+
 **Trigger:** The Facilitator wants to review the team's current topic set before running a session or making changes.
 
 **Goal:** As a Facilitator, I want to view the team's full active topic list, including prompts, vote types, annotations, and order, so that I can understand the current configuration and decide whether any changes are needed.
@@ -466,7 +468,8 @@ An Application Administrator follows the same flow with the same validation and 
 
 ## Alternate Flows
 - **Team has no active topics (for example after a data error):** The Application displays an empty state. Removing the last active topic is blocked (`409 TOPIC_LAST_ACTIVE`), so this state cannot be reached by removing topics through the UI; it arises from a concurrent-archive race (#184), a team created with zero default topics (#200), or a manual data fix. What the empty state offers depends on whether the team is locked, whether archived topics exist, and whether the caller can add topics: it offers re-adding from the archived list and/or adding a custom topic only where those actions can succeed, and no actions otherwise (see the `topic-management-screen` spec, added by `topic-add-form-and-empty-state`).
-- **Facilitator does not have access to this team's configuration:** The Application displays an access error. (Access rules for topic management outside a live session should be defined — see Notes.)
+- **Facilitator does not have access to this team's configuration:** The Application displays an access error. (Access rules for topic management outside a live session should be defined — see Notes. For the Application Administrator arm, see the `topic-customization-lock` spec.)
+- **Administrator who holds an engineering manager membership on the team:** the Application shows "Topic configuration for this team isn't available to its engineering manager." No topic data is shown (no-manager rule, #232).
 
 ## Postconditions
 - **Success:** The Facilitator has an accurate view of the team's topic configuration. No data is changed by viewing.
@@ -481,6 +484,7 @@ An Application Administrator follows the same flow with the same validation and 
 - [ ] The customization lock notice is visible and explanatory when the first session has not yet been completed.
 - [ ] Editing controls are present only when customization is unlocked.
 - [ ] Viewing the topic configuration does not alter any data.
+- [ ] Every administrator view is recorded in the audit log, without topic names or definition text.
 
 ## Out of Scope
 - Engineers viewing the topic management screen (Engineers see topics only within the session room during live voting).

@@ -16,6 +16,7 @@ import {
 } from "../content/team-content-serializers.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import { getTopicLockState } from "../auth/topic-lock-state.js";
+import { parseRoleArray } from "../auth/role-map.js";
 import type { SessionData } from "../auth/session-store.js";
 import type {
   TeamAccessGrant,
@@ -172,6 +173,131 @@ function isTopicConfigReadAdmitted(
       return false;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// TOPIC-002 administrator-arm admission predicate —
+// 232-topic-002-admin-read-audit-no-manager (#232), design.md D2/D3.
+//
+// The no-manager rule on TOPIC-002's application_admin arm. Allow-list, not
+// deny-list: admitted only when the caller's live active membership role on
+// the team is absent (null) or 'participant'. 'engineering_manager' is
+// denied as membership_em; ANY other value is denied as
+// membership_unrecognised.
+//
+// Unconditional: no flag, env, config or override. TOPIC-002 only --
+// TOPIC-003..006 (topics.ts) keep admitting admins through the shared
+// helper; whether a member-admin may write is #208's decision, not this one.
+//
+// The membership_unrecognised branch is unreachable against today's
+// membership_role enum (participant, engineering_manager; migration 1). It
+// exists as defence in depth for a future enum value, so ADDING A VALUE TO
+// membership_role MUST REVISIT THIS PREDICATE.
+//
+// Pure and synchronous; not exported (the handler does the membership read
+// via readActiveMembershipRole and passes the result in).
+// ---------------------------------------------------------------------------
+type AdminTopicConfigRead =
+  | { admitted: true; membershipRole: null | "participant" }
+  | { admitted: false; reason: "membership_em" | "membership_unrecognised" };
+
+function evaluateAdminTopicConfigRead(liveRole: string | null): AdminTopicConfigRead {
+  if (liveRole === null) return { admitted: true, membershipRole: null };
+  if (liveRole === "participant") return { admitted: true, membershipRole: "participant" };
+  if (liveRole === "engineering_manager") return { admitted: false, reason: "membership_em" };
+  return { admitted: false, reason: "membership_unrecognised" };
+}
+
+/**
+ * #232 implementation review (security N1): TOPIC-002 knows exactly two
+ * authorized roles -- "facilitator" (unaudited read) and "application_admin"
+ * (the audited, no-manager admin arm). Anything else the shared decision
+ * authorizes throws (500 via the root handler) before any data read, so a
+ * future role added to the shared helper (#208) cannot reach the data
+ * unaudited. The message names no role value, team or user.
+ */
+export function assertTopic002AuthorizedRole(
+  role: string,
+): asserts role is "facilitator" | "application_admin" {
+  if (role !== "facilitator" && role !== "application_admin") {
+    throw new Error("TOPIC-002: authorization admitted an unexpected role; refusing to serve");
+  }
+}
+
+/** #232 D3: 403 message for ADMIN_IS_TEAM_MANAGER (reason membership_em). */
+export const ADMIN_IS_TEAM_MANAGER_MESSAGE =
+  "Topic configuration for this team isn't available to its engineering manager.";
+/** #232 D3: 403 message for ADMIN_MEMBERSHIP_NOT_ADMITTED (reason membership_unrecognised). */
+export const ADMIN_MEMBERSHIP_NOT_ADMITTED_MESSAGE = "Topic configuration for this team isn't available to you.";
+
+const TOPIC_002_ENDPOINT = "GET /api/v1/teams/:teamId/topics/all";
+
+type Topic002AdminOperation = "admin.topic_config_accessed" | "admin.topic_config_denied";
+
+/**
+ * #232 D5b: run one admin-arm audit step (the role-set read or an audit
+ * insert). On a throw, emit the log-only admin.audit_write_failed signal
+ * with the SQLSTATE only (never err.message / err.detail, which can echo row
+ * values), then rethrow so the request still fails 500 with no data.
+ */
+async function withAdminAuditFailureSignal<T>(
+  request: FastifyRequest,
+  ctx: { actorUserId: string; teamId: string; operation: Topic002AdminOperation; stage: "role_set_read" | "audit_insert" },
+  step: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    emitAuditEvent(request.log, "admin.audit_write_failed", {
+      actorUserId: ctx.actorUserId,
+      teamId: ctx.teamId,
+      endpoint: TOPIC_002_ENDPOINT,
+      operation: ctx.operation,
+      stage: ctx.stage,
+      errorCode: typeof code === "string" ? code : null,
+    });
+    throw err;
+  }
+}
+
+/**
+ * #232 D5: the caller's stored role set, read once per admin request. The
+ * ::text[] cast is required (node-pg does not parse an enum array). Zero
+ * rows throws -- never default -- so a vanished identity stays in the
+ * fail-closed set. parseRoleArray throws on anything malformed.
+ */
+async function readActorRoleSet(userId: string): Promise<readonly string[]> {
+  const result = await db.query<{ roles: unknown }>(`SELECT roles::text[] AS roles FROM users WHERE id = $1`, [userId]);
+  if (result.rows.length !== 1) {
+    throw new Error("TOPIC-002 admin arm: caller's users row vanished after authorization");
+  }
+  return parseRoleArray(result.rows[0]!.roles);
+}
+
+/** #232 D5: the admin-arm audit insert; actor_roles last as $7::text[] (insertSignInAuditRow pattern). */
+async function insertTopic002AdminAuditRow(args: {
+  actorUserId: string;
+  actorIp: string;
+  operation: Topic002AdminOperation;
+  teamId: string;
+  metadata: Record<string, unknown>;
+  actorRoles: readonly string[];
+}): Promise<void> {
+  await db.query(
+    `INSERT INTO audit_log
+       (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata, actor_roles)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::text[])`,
+    [
+      args.actorUserId,
+      "application_admin",
+      args.actorIp,
+      args.operation,
+      args.teamId,
+      JSON.stringify(args.metadata),
+      [...args.actorRoles],
+    ],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +811,105 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
         });
     }
 
+    // -----------------------------------------------------------------------
+    // #232 (232-topic-002-admin-read-audit-no-manager), design.md D2/D4/D5:
+    // the administrator arm's no-manager rule and its audit.
+    //
+    // Runs ONLY when the shared decision admitted an application_admin, so a
+    // facilitator's request never reaches the membership or role-set read
+    // (facilitators gain no query). The shared helper
+    // (standing-facilitator-access-helper.ts) is deliberately unchanged: it
+    // also serves TOPIC-003..006, which keep admitting admins until #208 is
+    // decided. Do NOT move this check into the shared helper.
+    //
+    // Two small reads, not one users/team_memberships join: content.ts runs
+    // no SQL against team_memberships (access-control Decision 8) -- the
+    // membership role comes from readActiveMembershipRole. Folding both into
+    // one local join is the first optimisation someone will try; it breaks
+    // that rule.
+    //
+    // Every admin request runs the same prefix (helper row -> membership row
+    // -> role-set row) and both branches end with the same tail: audit insert
+    // -> event -> timing floor -> send. The insert never sits between the
+    // floor and the send (timing parity, design review M3).
+    //
+    // Fail closed: a throw from the membership read, the role-set read or
+    // either insert propagates (500, no data). The deny branch below returns
+    // before any team-name/topic/lock read, so a failed denial insert can
+    // never become a 200.
+    // -----------------------------------------------------------------------
+    // #232 implementation review (security N1): the admin arm is the only
+    // audited path, so an authorized role that is neither "facilitator" nor
+    // "application_admin" must not fall through to the data reads unaudited.
+    // The shared decision types actorGlobalRole as `string` and #208 will
+    // reopen that helper; fail closed (500, no data, no read) on anything
+    // else instead of silently skipping the no-manager check and audit.
+    assertTopic002AuthorizedRole(decision.actorGlobalRole);
+
+    let adminAudit: {
+      membershipRole: null | "participant";
+      actorRoles: readonly string[];
+      actorIdpRolesIncludeEm: boolean;
+    } | null = null;
+    if (decision.actorGlobalRole === "application_admin") {
+      const liveRole = await readActiveMembershipRole(session.userId, teamId);
+      const adminRead = evaluateAdminTopicConfigRead(liveRole);
+      const dueOperation: Topic002AdminOperation = adminRead.admitted
+        ? "admin.topic_config_accessed"
+        : "admin.topic_config_denied";
+      const auditCtx = { actorUserId: session.userId, teamId, operation: dueOperation };
+
+      const actorRoles = await withAdminAuditFailureSignal(request, { ...auditCtx, stage: "role_set_read" }, () =>
+        readActorRoleSet(session.userId),
+      );
+      // Audit metadata only -- never an admission input (migration 21's boundary).
+      const actorIdpRolesIncludeEm = actorRoles.includes("engineering_manager");
+
+      if (!adminRead.admitted) {
+        await withAdminAuditFailureSignal(request, { ...auditCtx, stage: "audit_insert" }, () =>
+          insertTopic002AdminAuditRow({
+            actorUserId: session.userId,
+            actorIp: request.ip,
+            operation: "admin.topic_config_denied",
+            teamId,
+            metadata: {
+              endpoint: TOPIC_002_ENDPOINT,
+              http_status: 403,
+              reason: adminRead.reason,
+              actor_idp_roles_include_em: actorIdpRolesIncludeEm,
+            },
+            actorRoles,
+          }),
+        );
+        emitAuditEvent(request.log, "admin.topic_config_denied", {
+          actorUserId: session.userId,
+          actorGlobalRole: "application_admin",
+          actorIp: request.ip,
+          teamId,
+          endpoint: TOPIC_002_ENDPOINT,
+          httpStatus: 403,
+          reason: adminRead.reason,
+          actorRoles,
+          actorIdpRolesIncludeEm,
+        });
+        await applyTimingFloor(startTime);
+        return noStore(reply)
+          .code(403)
+          .send({
+            error: {
+              category: "forbidden" as const,
+              message:
+                adminRead.reason === "membership_em"
+                  ? ADMIN_IS_TEAM_MANAGER_MESSAGE
+                  : ADMIN_MEMBERSHIP_NOT_ADMITTED_MESSAGE,
+              correlationId: crypto.randomUUID(),
+            },
+          });
+      }
+
+      adminAudit = { membershipRole: adminRead.membershipRole, actorRoles, actorIdpRolesIncludeEm };
+    }
+
     // Task 9.2/Decision 10's confirmation-copy requirement: the dialog
     // names both the topic and the team. No other endpoint reachable by a
     // standing, non-member facilitator returns a team's display name, so
@@ -786,6 +1011,11 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // permanent -- never merge the two. The parity test in
     // __tests__/topic-add-flag-parity.test.ts keeps this expression in step
     // with TOPIC-003's checkAddCustomTopicAuthorization.
+    // #232: an application_admin with an engineering_manager (or any
+    // non-participant) membership on the team never reaches this line -- the
+    // no-manager deny branch above returns first -- even though TOPIC-003
+    // still admits that caller until #208 is decided (the parity test's
+    // recorded GET 403 / POST 201 exception).
     const canAddTopics =
       decision.actorGlobalRole === "facilitator" || decision.actorGlobalRole === "application_admin";
 
@@ -834,6 +1064,59 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
           isArchived: row.team_topic_status === "archived",
         })),
     };
+
+    // #232 D5: every admin 200 writes exactly one text-free access row (every
+    // team, the template team included, annotated or not; never
+    // deduplicated), then its event, then the floor, then the send. A plain
+    // awaited insert (teams.ts style, not a transaction): if it throws the
+    // request is 500 and none of the data read above is sent.
+    if (adminAudit !== null) {
+      const { membershipRole, actorRoles, actorIdpRolesIncludeEm } = adminAudit;
+      const teamFound = teamResult.rows.length > 0;
+      const activeCount = responseBody.active.length;
+      const archivedCount = responseBody.archived.length;
+      const annotatedCount =
+        responseBody.active.filter((t) => t.teamAnnotation !== null).length +
+        responseBody.archived.filter((t) => t.teamAnnotation !== null).length;
+
+      await withAdminAuditFailureSignal(
+        request,
+        { actorUserId: session.userId, teamId, operation: "admin.topic_config_accessed", stage: "audit_insert" },
+        () =>
+          insertTopic002AdminAuditRow({
+            actorUserId: session.userId,
+            actorIp: request.ip,
+            operation: "admin.topic_config_accessed",
+            teamId,
+            metadata: {
+              endpoint: TOPIC_002_ENDPOINT,
+              http_status: 200,
+              membership_role: membershipRole,
+              actor_idp_roles_include_em: actorIdpRolesIncludeEm,
+              team_found: teamFound,
+              active_count: activeCount,
+              archived_count: archivedCount,
+              annotated_count: annotatedCount,
+            },
+            actorRoles,
+          }),
+      );
+      emitAuditEvent(request.log, "admin.topic_config_accessed", {
+        actorUserId: session.userId,
+        actorGlobalRole: "application_admin",
+        actorIp: request.ip,
+        teamId,
+        endpoint: TOPIC_002_ENDPOINT,
+        httpStatus: 200,
+        membershipRole,
+        actorRoles,
+        actorIdpRolesIncludeEm,
+        teamFound,
+        activeCount,
+        archivedCount,
+        annotatedCount,
+      });
+    }
 
     await applyTimingFloor(startTime);
     return noStore(reply).send(responseBody);
