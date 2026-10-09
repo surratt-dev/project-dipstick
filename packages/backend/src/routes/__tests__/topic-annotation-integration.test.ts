@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type pg from "pg";
 import Fastify from "fastify";
-import { probeInfra, requireInfraOrThrow, resetTopicWriteBudget } from "./helpers/real-db.js";
+import { probeInfra, requireInfraOrThrow, resetTopicWriteBudget, Fixture } from "./helpers/real-db.js";
 
 // ---------------------------------------------------------------------------
 // Real Postgres coverage for topic-annotation (TOPIC-007, TOPIC-002 reads,
@@ -382,6 +382,48 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
         await cleanup(db, [TEAM], [F, ENGINEER, ADMIN]);
       }
     });
+
+    // #208 tasks.md 1.3 (topic-annotation scenario "An administrator who
+    // manages the team still cannot change the annotation"): the #208
+    // decision admits member administrators to TOPIC-002..006 only;
+    // TOPIC-007 still rejects every administrator, whatever their membership.
+    it.each([
+      ["engineering_manager", ["application_admin", "engineering_manager"]],
+      ["participant", ["application_admin"]],
+    ] as const)(
+      "an application_admin with membership role %s: PUT annotation -> 403 and the annotation columns are unchanged",
+      async (role, roles) => {
+        const fx = new Fixture(mods.db);
+        try {
+          const fac = await fx.user(["facilitator"]);
+          const teamId = await fx.team(fac);
+          await fx.unlock(teamId, fac);
+          const topicId = await fx.topic(teamId, { displayOrder: 1 });
+          const admin = await fx.user(roles);
+          await fx.member(teamId, admin, role);
+
+          const facPut = await putAnnotation(await buildApp(fac), teamId, topicId, "Facilitator wording");
+          expect(facPut.statusCode).toBe(200);
+          const before = await mods.db.query(
+            `SELECT team_annotation, annotation_updated_by, annotation_updated_at FROM topics WHERE id = $1`,
+            [topicId],
+          );
+          expect(before.rows[0]?.annotation_updated_at).not.toBeNull();
+
+          const adminPut = await putAnnotation(await buildApp(admin), teamId, topicId, "Admin wording");
+          expect(adminPut.statusCode).toBe(403);
+
+          const after = await mods.db.query(
+            `SELECT team_annotation, annotation_updated_by, annotation_updated_at FROM topics WHERE id = $1`,
+            [topicId],
+          );
+          expect(after.rows[0]).toEqual(before.rows[0]);
+          expect(after.rows[0]).toMatchObject({ team_annotation: "Facilitator wording", annotation_updated_by: fac });
+        } finally {
+          await fx.cleanup();
+        }
+      },
+    );
 
     it("sentinel text never reaches audit_log on set or clear", async () => {
       const { db } = mods;

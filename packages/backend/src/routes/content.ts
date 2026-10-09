@@ -175,46 +175,13 @@ function isTopicConfigReadAdmitted(
   }
 }
 
-// ---------------------------------------------------------------------------
-// TOPIC-002 administrator-arm admission predicate —
-// 232-topic-002-admin-read-audit-no-manager (#232), design.md D2/D3.
-//
-// The no-manager rule on TOPIC-002's application_admin arm. Allow-list, not
-// deny-list: admitted only when the caller's live active membership role on
-// the team is absent (null) or 'participant'. 'engineering_manager' is
-// denied as membership_em; ANY other value is denied as
-// membership_unrecognised.
-//
-// Unconditional: no flag, env, config or override. TOPIC-002 only --
-// TOPIC-003..006 (topics.ts) keep admitting admins through the shared
-// helper; whether a member-admin may write is #208's decision, not this one.
-//
-// The membership_unrecognised branch is unreachable against today's
-// membership_role enum (participant, engineering_manager; migration 1). It
-// exists as defence in depth for a future enum value, so ADDING A VALUE TO
-// membership_role MUST REVISIT THIS PREDICATE.
-//
-// Pure and synchronous; not exported (the handler does the membership read
-// via readActiveMembershipRole and passes the result in).
-// ---------------------------------------------------------------------------
-type AdminTopicConfigRead =
-  | { admitted: true; membershipRole: null | "participant" }
-  | { admitted: false; reason: "membership_em" | "membership_unrecognised" };
-
-function evaluateAdminTopicConfigRead(liveRole: string | null): AdminTopicConfigRead {
-  if (liveRole === null) return { admitted: true, membershipRole: null };
-  if (liveRole === "participant") return { admitted: true, membershipRole: "participant" };
-  if (liveRole === "engineering_manager") return { admitted: false, reason: "membership_em" };
-  return { admitted: false, reason: "membership_unrecognised" };
-}
-
 /**
- * #232 implementation review (security N1): TOPIC-002 knows exactly two
- * authorized roles -- "facilitator" (unaudited read) and "application_admin"
- * (the audited, no-manager admin arm). Anything else the shared decision
- * authorizes throws (500 via the root handler) before any data read, so a
- * future role added to the shared helper (#208) cannot reach the data
- * unaudited. The message names no role value, team or user.
+ * #232 implementation review (security N1), kept by #208: guards the audited
+ * admin arm. TOPIC-002 knows exactly two authorized roles -- "facilitator"
+ * (unaudited read) and "application_admin" (the audited admin arm). Anything
+ * else the shared decision authorizes throws (500 via the root handler)
+ * before any data read: a role admitted by the shared helper in future must
+ * not reach the data unaudited. The message names no role value, team or user.
  */
 export function assertTopic002AuthorizedRole(
   role: string,
@@ -224,15 +191,11 @@ export function assertTopic002AuthorizedRole(
   }
 }
 
-/** #232 D3: 403 message for ADMIN_IS_TEAM_MANAGER (reason membership_em). */
-export const ADMIN_IS_TEAM_MANAGER_MESSAGE =
-  "Topic configuration for this team isn't available to its engineering manager.";
-/** #232 D3: 403 message for ADMIN_MEMBERSHIP_NOT_ADMITTED (reason membership_unrecognised). */
-export const ADMIN_MEMBERSHIP_NOT_ADMITTED_MESSAGE = "Topic configuration for this team isn't available to you.";
-
 const TOPIC_002_ENDPOINT = "GET /api/v1/teams/:teamId/topics/all";
 
-type Topic002AdminOperation = "admin.topic_config_accessed" | "admin.topic_config_denied";
+// #208: the admin arm has no deny branch, so its only audited operation is
+// the access row.
+type Topic002AdminOperation = "admin.topic_config_accessed";
 
 /**
  * #232 D5b: run one admin-arm audit step (the role-set read or an audit
@@ -812,15 +775,15 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // -----------------------------------------------------------------------
-    // #232 (232-topic-002-admin-read-audit-no-manager), design.md D2/D4/D5:
-    // the administrator arm's no-manager rule and its audit.
+    // The administrator arm's audit: #232 D4/D5 (change folder
+    // 232-topic-002-admin-read-audit-no-manager), as amended by #208
+    // (208-member-admin-topic-writes), which reverses #232's admission bar.
+    // Every application_admin the shared decision admits is served, whatever
+    // their membership on the team, and every one of those reads is audited.
     //
     // Runs ONLY when the shared decision admitted an application_admin, so a
     // facilitator's request never reaches the membership or role-set read
-    // (facilitators gain no query). The shared helper
-    // (standing-facilitator-access-helper.ts) is deliberately unchanged: it
-    // also serves TOPIC-003..006, which keep admitting admins until #208 is
-    // decided. Do NOT move this check into the shared helper.
+    // (facilitators gain no query).
     //
     // Two small reads, not one users/team_memberships join: content.ts runs
     // no SQL against team_memberships (access-control Decision 8) -- the
@@ -828,36 +791,36 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // one local join is the first optimisation someone will try; it breaks
     // that rule.
     //
-    // Every admin request runs the same prefix (helper row -> membership row
-    // -> role-set row) and both branches end with the same tail: audit insert
-    // -> event -> timing floor -> send. The insert never sits between the
-    // floor and the send (timing parity, design review M3).
+    // The membership role is audit data only, never an admission input
+    // (#208 design.md D2): it is recorded raw (no allow-list, no cast) as
+    // the access row's membership_role. Every admin request runs the same
+    // prefix (helper row -> membership row -> role-set row) and the same
+    // tail: data reads -> audit insert -> event -> timing floor -> send. The
+    // insert never sits between the floor and the send (timing parity,
+    // design review M3).
     //
     // Fail closed: a throw from the membership read, the role-set read or
-    // either insert propagates (500, no data). The deny branch below returns
-    // before any team-name/topic/lock read, so a failed denial insert can
-    // never become a 200.
+    // the access insert propagates (500, no data). Both reads run before any
+    // team-name/topic/lock read; a failed membership read emits no
+    // admin.audit_write_failed (it is outside withAdminAuditFailureSignal).
     // -----------------------------------------------------------------------
-    // #232 implementation review (security N1): the admin arm is the only
-    // audited path, so an authorized role that is neither "facilitator" nor
-    // "application_admin" must not fall through to the data reads unaudited.
-    // The shared decision types actorGlobalRole as `string` and #208 will
-    // reopen that helper; fail closed (500, no data, no read) on anything
-    // else instead of silently skipping the no-manager check and audit.
+    // #232 implementation review (security N1), kept by #208: the admin arm
+    // is the only audited path, so an authorized role that is neither
+    // "facilitator" nor "application_admin" must not fall through to the
+    // data reads unaudited. The shared decision types actorGlobalRole as
+    // `string`; fail closed (500, no data, no read) on anything else.
     assertTopic002AuthorizedRole(decision.actorGlobalRole);
 
     let adminAudit: {
-      membershipRole: null | "participant";
+      membershipRole: string | null;
       actorRoles: readonly string[];
       actorIdpRolesIncludeEm: boolean;
     } | null = null;
     if (decision.actorGlobalRole === "application_admin") {
-      const liveRole = await readActiveMembershipRole(session.userId, teamId);
-      const adminRead = evaluateAdminTopicConfigRead(liveRole);
-      const dueOperation: Topic002AdminOperation = adminRead.admitted
-        ? "admin.topic_config_accessed"
-        : "admin.topic_config_denied";
-      const auditCtx = { actorUserId: session.userId, teamId, operation: dueOperation };
+      // Raw live value (null, "participant", "engineering_manager", or any
+      // future enum value). Not an admission input (#208 D2).
+      const membershipRole = await readActiveMembershipRole(session.userId, teamId);
+      const auditCtx = { actorUserId: session.userId, teamId, operation: "admin.topic_config_accessed" as const };
 
       const actorRoles = await withAdminAuditFailureSignal(request, { ...auditCtx, stage: "role_set_read" }, () =>
         readActorRoleSet(session.userId),
@@ -865,49 +828,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       // Audit metadata only -- never an admission input (migration 21's boundary).
       const actorIdpRolesIncludeEm = actorRoles.includes("engineering_manager");
 
-      if (!adminRead.admitted) {
-        await withAdminAuditFailureSignal(request, { ...auditCtx, stage: "audit_insert" }, () =>
-          insertTopic002AdminAuditRow({
-            actorUserId: session.userId,
-            actorIp: request.ip,
-            operation: "admin.topic_config_denied",
-            teamId,
-            metadata: {
-              endpoint: TOPIC_002_ENDPOINT,
-              http_status: 403,
-              reason: adminRead.reason,
-              actor_idp_roles_include_em: actorIdpRolesIncludeEm,
-            },
-            actorRoles,
-          }),
-        );
-        emitAuditEvent(request.log, "admin.topic_config_denied", {
-          actorUserId: session.userId,
-          actorGlobalRole: "application_admin",
-          actorIp: request.ip,
-          teamId,
-          endpoint: TOPIC_002_ENDPOINT,
-          httpStatus: 403,
-          reason: adminRead.reason,
-          actorRoles,
-          actorIdpRolesIncludeEm,
-        });
-        await applyTimingFloor(startTime);
-        return noStore(reply)
-          .code(403)
-          .send({
-            error: {
-              category: "forbidden" as const,
-              message:
-                adminRead.reason === "membership_em"
-                  ? ADMIN_IS_TEAM_MANAGER_MESSAGE
-                  : ADMIN_MEMBERSHIP_NOT_ADMITTED_MESSAGE,
-              correlationId: crypto.randomUUID(),
-            },
-          });
-      }
-
-      adminAudit = { membershipRole: adminRead.membershipRole, actorRoles, actorIdpRolesIncludeEm };
+      adminAudit = { membershipRole, actorRoles, actorIdpRolesIncludeEm };
     }
 
     // Task 9.2/Decision 10's confirmation-copy requirement: the dialog
@@ -1011,11 +932,6 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // permanent -- never merge the two. The parity test in
     // __tests__/topic-add-flag-parity.test.ts keeps this expression in step
     // with TOPIC-003's checkAddCustomTopicAuthorization.
-    // #232: an application_admin with an engineering_manager (or any
-    // non-participant) membership on the team never reaches this line -- the
-    // no-manager deny branch above returns first -- even though TOPIC-003
-    // still admits that caller until #208 is decided (the parity test's
-    // recorded GET 403 / POST 201 exception).
     const canAddTopics =
       decision.actorGlobalRole === "facilitator" || decision.actorGlobalRole === "application_admin";
 

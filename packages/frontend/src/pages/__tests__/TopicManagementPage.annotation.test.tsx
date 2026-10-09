@@ -863,6 +863,12 @@ describe("team definition — interlocks and visibility", () => {
     );
   });
 
+  // topic-management-screen scenario "An administrator sees the team's
+  // definitions read-only". The page never knows the caller's membership: an
+  // admin-shaped TOPIC-002 200 is the same for every administrator, member of
+  // the team or not, in any role (#208). The membership half of the
+  // scenario is pinned by the backend (content.test.ts,
+  // topic-002-admin-audit-integration.test.ts).
   it("an administrator (canEditAnnotations false) sees definitions read-only", async () => {
     installFetch({ gets: [mockFetchResponse(makeTopics({ canEditAnnotations: false }))] });
     await renderLoaded();
@@ -871,5 +877,29 @@ describe("team definition — interlocks and visibility", () => {
     expect(screen.getByTestId("team-definition-provenance-topic-1")).toBeInTheDocument();
     expect(screen.queryByText("Add team definition")).not.toBeInTheDocument();
     expect(screen.queryByTestId("edit-definition-topic-1")).not.toBeInTheDocument();
+  });
+
+  // #208 tasks.md 4.5, topic-management-screen scenario "An administrator who
+  // manages the team has the topic write controls". Fixture-based: an
+  // admin-shaped 200 (canAddTopics true, canEditAnnotations false) on an
+  // unlocked team; the backend pins that a manager-admin receives it.
+  it("an administrator who manages the team has the topic write controls but no definition controls", async () => {
+    installFetch({ gets: [mockFetchResponse(makeTopics({ canAddTopics: true, canEditAnnotations: false }))] });
+    await renderLoaded();
+
+    for (const id of ["topic-1", "topic-2"]) {
+      expect(screen.getByTestId(`remove-topic-${id}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`move-up-${id}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`move-down-${id}`)).toBeInTheDocument();
+      expect(screen.queryByTestId(`edit-definition-${id}`)).not.toBeInTheDocument();
+      expect(screen.queryByTestId(`definition-editor-${id}`)).not.toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("group", { name: /^Reorder / })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Add custom topic" }).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Add team definition")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("toggle-archived-topics"));
+    expect(screen.getByTestId("restore-topic-topic-old")).toBeInTheDocument();
+    expect(screen.queryByTestId("edit-definition-topic-old")).not.toBeInTheDocument();
   });
 });

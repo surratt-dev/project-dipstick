@@ -187,7 +187,7 @@ An Application Administrator follows the same flow with the same validation and 
 **Terminology note, corrected (`remove-topic` design.md, shipped `TOPIC-004`):** this use case's "remove"/"removed" vocabulary is superseded by the shipped archive/restore model — `topics.status` transitions between `'active'` and `'archived'`, tracked with `archivedAt`/`archivedBy`, not a `removed` flag. The Main Flow, Postconditions, and Acceptance Criteria below describe the same user-facing behavior this use case always specified; only the underlying state name has changed from what this document originally drafted.
 
 ## Summary
-**Actor:** Facilitator
+**Actor:** Facilitator (or Application Administrator, per FR-8.2)
 
 **Trigger:** The Facilitator determines that a topic (default or custom) does not apply to the team's context and wants to remove it from future sessions.
 
@@ -294,7 +294,7 @@ An Application Administrator follows the same flow with the same validation and 
 - [ ] The new order is not applied until the Facilitator explicitly saves it.
 - [x] After saving, the new order is used in all subsequent sessions. (Delivered by #175: every session snapshots the team's active topics into `session_topics` at room open, so a session whose room is opened after the save uses the new order, including a draft that was created before the save.)
 - [ ] Reordering is not available when only one topic exists.
-- [ ] Reorder controls are only available to the Facilitator, not to Engineers. (The screen's access rule is inherited from the existing `topic-management-screen` access-denied requirement.)
+- [ ] Reorder controls are only available to the Facilitator or an Application Administrator, not to Engineers. (The screen's access rule is inherited from the existing `topic-management-screen` access-denied requirement.)
 
 ## Out of Scope
 - Automatically reordering topics based on any criteria (reordering is always manual).
@@ -381,7 +381,7 @@ An Application Administrator follows the same flow with the same validation and 
 # Use Case: Re-Add a Previously Removed Topic
 
 ## Summary
-**Actor:** Facilitator
+**Actor:** Facilitator (or Application Administrator, per FR-8.2)
 
 **Trigger:** The Facilitator decides to reinstate a topic that was previously removed from the team's active topic set.
 
@@ -445,7 +445,7 @@ An Application Administrator follows the same flow with the same validation and 
 # Use Case: View Active Topic Configuration
 
 ## Summary
-**Actor:** Facilitator
+**Actor:** Facilitator (or Application Administrator, per FR-8.2)
 
 **Secondary Actor:** Application Administrator (read-only definitions; FR-8.7)
 
@@ -469,7 +469,6 @@ An Application Administrator follows the same flow with the same validation and 
 ## Alternate Flows
 - **Team has no active topics (for example after a data error):** The Application displays an empty state. Removing the last active topic is blocked (`409 TOPIC_LAST_ACTIVE`), so this state cannot be reached by removing topics through the UI; it arises from a concurrent-archive race (#184), a team created with zero default topics (#200), or a manual data fix. What the empty state offers depends on whether the team is locked, whether archived topics exist, and whether the caller can add topics: it offers re-adding from the archived list and/or adding a custom topic only where those actions can succeed, and no actions otherwise (see the `topic-management-screen` spec, added by `topic-add-form-and-empty-state`).
 - **Facilitator does not have access to this team's configuration:** The Application displays an access error. (Access rules for topic management outside a live session should be defined — see Notes. For the Application Administrator arm, see the `topic-customization-lock` spec.)
-- **Administrator who holds an engineering manager membership on the team:** the Application shows "Topic configuration for this team isn't available to its engineering manager." No topic data is shown (no-manager rule, #232).
 
 ## Postconditions
 - **Success:** The Facilitator has an accurate view of the team's topic configuration. No data is changed by viewing.
@@ -484,6 +483,7 @@ An Application Administrator follows the same flow with the same validation and 
 - [ ] The customization lock notice is visible and explanatory when the first session has not yet been completed.
 - [ ] Editing controls are present only when customization is unlocked.
 - [ ] Viewing the topic configuration does not alter any data.
+- [ ] An Application Administrator can view the screen for any team, whatever their membership on it; team definitions are shown read-only.
 - [ ] Every administrator view is recorded in the audit log, without topic names or definition text.
 
 ## Out of Scope

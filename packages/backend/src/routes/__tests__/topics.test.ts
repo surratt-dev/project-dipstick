@@ -841,9 +841,9 @@ describe("POST /api/v1/teams/:teamId/topics — application admin success (tasks
     );
     expect(body).not.toHaveProperty("openSessionCreatedAt");
 
-    // F1's interim compensating control: exactly one topic.custom_added row,
-    // attributed to application_admin, on the transaction client between
-    // INSERT topics and COMMIT. Do not weaken.
+    // The permanent audit record of admin topic writes (#208 decision):
+    // exactly one topic.custom_added row, attributed to application_admin, on
+    // the transaction client between INSERT topics and COMMIT. Do not weaken.
     const audits = successAuditCalls(client);
     expect(audits).toHaveLength(1);
     const params = audits[0]![1] as unknown[];
