@@ -81,10 +81,21 @@ export async function evaluateStandingFacilitatorAccess(
 // and does NOT call applyTimingFloor -- each caller is responsible for both
 // of those itself, immediately before sending its own 403, on every branch
 // this function can return `authorized: false` for.
+//
+// #264: the denied variant also carries `actorGlobalRole` (`null` = no users
+// row for the caller), additive only. It exists for TOPIC-002's denial audit
+// row and for that use ONLY. It must never feed an admission decision: the
+// decision is `authorized` and `reason`, nothing else (same discipline as
+// `membership_role` in #208). TOPIC-003..007 do not read it.
 // ---------------------------------------------------------------------------
 export type StandingFacilitatorOrAdminDecision =
   | { authorized: true; actorGlobalRole: string }
-  | { authorized: false; reason: "NOT_A_FACILITATOR" | "FACILITATOR_IS_TEAM_MEMBER" };
+  | {
+      authorized: false;
+      reason: "NOT_A_FACILITATOR" | "FACILITATOR_IS_TEAM_MEMBER";
+      /** Audit only (#264), never an admission input. null = the caller has no users row. */
+      actorGlobalRole: string | null;
+    };
 
 export async function checkStandingFacilitatorOrAdminAuthorization(
   userId: string,
@@ -98,7 +109,7 @@ export async function checkStandingFacilitatorOrAdminAuthorization(
   // authenticated session middleware already guarantees one exists for any
   // normal request that reaches a caller of this function).
   if (grant === null) {
-    return { authorized: false, reason: "NOT_A_FACILITATOR" };
+    return { authorized: false, reason: "NOT_A_FACILITATOR", actorGlobalRole: null };
   }
 
   if (grant.globalRole === "application_admin") {
@@ -106,11 +117,11 @@ export async function checkStandingFacilitatorOrAdminAuthorization(
   }
 
   if (grant.globalRole !== "facilitator") {
-    return { authorized: false, reason: "NOT_A_FACILITATOR" };
+    return { authorized: false, reason: "NOT_A_FACILITATOR", actorGlobalRole: grant.globalRole };
   }
 
   if (grant.isMember) {
-    return { authorized: false, reason: "FACILITATOR_IS_TEAM_MEMBER" };
+    return { authorized: false, reason: "FACILITATOR_IS_TEAM_MEMBER", actorGlobalRole: grant.globalRole };
   }
 
   return { authorized: true, actorGlobalRole: grant.globalRole };
