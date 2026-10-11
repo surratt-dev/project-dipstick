@@ -49,9 +49,9 @@ The following administrator restrictions are **not changed by this decision and 
 
 Global engineering managers (`global_role = 'engineering_manager'`) stay out of TOPIC-002..006 (`403 NOT_A_FACILITATOR`), whatever their membership.
 
-### Open item for the owner (not in scope here)
+### Scope confirmed by the owner (2026-10-11)
 
-Read literally, the owner's broader statement ("should not be constrained from any features except facilitating their own team") would reach the restrictions listed above, none of which is facilitating. Whether to revisit any of them is a separate decision for the owner. This change does not act on it.
+Read literally, the owner's broader statement ("should not be constrained from any features except facilitating their own team") would reach the restrictions listed above, none of which is facilitating. The owner has confirmed: **"#208 covers topic configuration only."** The restrictions listed above stay in force as they are. Revisiting any of them would be a new decision, not an extension of this one.
 
 Relaxing any of them goes back through security review. Administrator access to session content (votes, trends, notes, action items) is a different data class from topic configuration, and R-EXEC-1's acceptance (section 7) does not cover it.
 
