@@ -102,7 +102,11 @@ Relaxing any of them goes back through security review. Administrator access to 
 
 ## 8. Follow-up
 
-- **#187 release note:** "Engineering managers, including administrators who manage the team, cannot read the team's definitions" is now false. Proposed replacement, for the owner to approve before release: "Engineering managers cannot read the team's definitions. Application administrators can, including one who manages the team; every administrator read is audited."
+- **#187 release note:** the earlier approved line, "Engineering managers, including administrators who manage the team, cannot read the team's definitions", is now false. Owner-approved replacement (2026-10-11):
+
+  > Engineering managers cannot read a team's definitions or change its topics. The exception is someone who also holds the Application Administrator role: administrators can read every team's definitions and add, remove or reorder its topics, including on a team they manage. Every administrator read and change is recorded in the audit log, which is reviewed after an incident rather than monitored.
+
+  It discloses topic changes as well as reads, because #208 lets a manager-admin do both, and it describes the audit log as forensic, not monitored (`docs/deployment.md`). The note ships when team definitions first reach participants. Today that is the session room's per-session topic snapshot (#175), not TOPIC-001, which #233 proposes to retire.
 - **Candidate, owned by Security:** add `membership_role` and `actor_roles` to administrator `topic.*` write rows, so the write row records membership at the time of the write.
 - **#201** (facilitator-visible topic provenance): suggested for higher priority (section 7).
 

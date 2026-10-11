@@ -610,7 +610,7 @@ interface GetActiveTopicsResponse {
 | `404 Not Found` | `teamId` is not a canonical UUID (`TEAM_NOT_FOUND`), returned before any query; a well-formed id for a nonexistent team returns 403 |
 
 **Notes**
-- **`teamAnnotation` release note (#187).** When `teamAnnotation` ships on this endpoint, its release notes must say that engineering managers cannot read the team's definitions (#187).
+- **Team-definition release note (#187, revised by #208).** When team definitions first reach participants (on this endpoint, or, as today, in the session room's per-session topic snapshot, #175), the release notes must carry this owner-approved wording: "Engineering managers cannot read a team's definitions or change its topics. The exception is someone who also holds the Application Administrator role: administrators can read every team's definitions and add, remove or reorder its topics, including on a team they manage. Every administrator read and change is recorded in the audit log, which is reviewed after an incident rather than monitored." This endpoint still denies both engineering managers and Application Administrators (see 403 above). The note covers TOPIC-002, where administrators, including one who manages the team, read definitions and change topics (#208).
 - Only topics with `status = 'active'` are returned. Archived topics are served by `TOPIC-002`.
 - Topics are ordered by `display_order` ascending.
 - `isCustomizationLocked` is computed as `COUNT(*) = 0` from completed sessions for this team.
