@@ -312,7 +312,7 @@ When the role-set read or the insert fails on the administrator arm, the endpoin
 
 Neither the row's metadata nor the event's payload SHALL contain annotation text, topic names, or topic ids. A `200` to a caller who is not an `application_admin` SHALL write no `admin.*` row. This endpoint SHALL write no `admin.topic_config_denied` row; that operation was retired by #208, and historical rows of it are left unchanged.
 
-TOPIC-002's `403`s to non-administrators (`NOT_A_FACILITATOR`, `FACILITATOR_IS_TEAM_MEMBER`) are not audited by this requirement. Scenarios that assert "no `admin.*` row" for those callers pin only that no administrator operation is written. They do not decide whether those denials should be audited under SEC-13.
+TOPIC-002's `403`s to non-administrators (`NOT_A_FACILITATOR`, `FACILITATOR_IS_TEAM_MEMBER`) are not audited by this requirement; since #264 they are audited under a separate operation, `topic.config_list_denied` (see Requirement: The all-topics endpoint writes one durable row and one event per non-administrator denial). Scenarios that assert "no `admin.*` row" for those callers pin only that no administrator operation is written.
 
 #### Scenario: An admin read writes one access row with text-free counts
 - **WHEN** an `application_admin` requests the full topic list of a team with an annotated active topic and an annotated archived topic
