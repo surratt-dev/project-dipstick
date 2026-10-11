@@ -459,6 +459,9 @@ function validateAddCustomTopicBody(body: AddCustomTopicRequestBody): Validation
 // checkStandingFacilitatorAuthorization (TOPIC-007), which would drop the
 // admin branch. Writes its own copy (design.md D2) and applies the timing
 // floor itself, on both reason branches. Reason codes are unchanged.
+//
+// Admits `application_admin` whatever their membership on the team (#208
+// decision; BRD FR-8.2).
 // ---------------------------------------------------------------------------
 async function checkAddCustomTopicAuthorization(
   reply: FastifyReply,
@@ -493,6 +496,9 @@ async function checkAddCustomTopicAuthorization(
 // this endpoint. Because the shared function is decision-only (no reply, no
 // applyTimingFloor), this wrapper writes its own TOPIC-004-appropriate
 // message and applies the timing floor itself, on both reason branches.
+//
+// Admits `application_admin` whatever their membership on the team (#208
+// decision; BRD FR-8.2).
 // ---------------------------------------------------------------------------
 async function checkArchiveTopicAuthorization(
   reply: FastifyReply,
@@ -571,6 +577,9 @@ async function checkTopicExistsAndActive(
 // Because the shared function is decision-only (no reply, no
 // applyTimingFloor), this wrapper writes its own TOPIC-005-appropriate
 // message and applies the timing floor itself, on both reason branches.
+//
+// Admits `application_admin` whatever their membership on the team (#208
+// decision; BRD FR-8.2).
 // ---------------------------------------------------------------------------
 async function checkRestoreTopicAuthorization(
   reply: FastifyReply,
@@ -649,6 +658,9 @@ async function checkTopicExistsAndArchived(
 // facilitator-only checkStandingFacilitatorAuthorization, which would
 // silently drop the application_admin branch. Writes its own message and
 // applies the timing floor itself, on both reason branches.
+//
+// Admits `application_admin` whatever their membership on the team (#208
+// decision; BRD FR-8.2).
 // ---------------------------------------------------------------------------
 async function checkReorderTopicsAuthorization(
   reply: FastifyReply,

@@ -660,8 +660,8 @@ export function TopicManagementPage() {
         credentials: "include",
       });
       if (res.status === 403) {
-        // #232 (design.md D7): show the server's reason (e.g. the no-manager
-        // rule's message to an administrator who manages this team). The body
+        // #232 (design.md D7): show the server's reason (e.g. the
+        // member-facilitator message, FACILITATOR_IS_TEAM_MEMBER). The body
         // is parsed defensively: a non-JSON 403 (proxy/WAF page, empty body)
         // must not throw into the catch below and show the network error.
         const body: unknown = await res.json().catch(() => null);

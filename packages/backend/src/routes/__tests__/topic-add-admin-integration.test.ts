@@ -16,7 +16,8 @@ import type { Mods } from "./helpers/real-db.js";
 // application admin adding a custom topic (BRD FR-8.2 [HARD]).
 //
 // tasks.md 2.1-2.3: the audit rows are read back from the real audit_log
-// (F1's interim compensating control — do not weaken these assertions).
+// (the permanent audit record of admin topic writes (#208 decision) — do not
+// weaken these assertions).
 // tasks.md 2.7: an admin add while a room is open leaves that session's
 // session_topics untouched and reaches the team's active configuration.
 //

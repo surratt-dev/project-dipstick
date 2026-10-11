@@ -6,15 +6,18 @@ import type { Mods } from "./helpers/real-db.js";
 import type { GlobalRole } from "../../auth/role-map.js";
 
 // ---------------------------------------------------------------------------
-// 232-topic-002-admin-read-audit-no-manager (#232) tasks 5.1 / 5.2 — real
-// Postgres evidence for TOPIC-002's administrator arm:
+// 232-topic-002-admin-read-audit-no-manager (#232) tasks 5.1 / 5.2, as
+// amended by 208-member-admin-topic-writes (#208) — real Postgres evidence
+// for TOPIC-002's administrator arm:
 //
-//   - the no-manager rule (an application_admin with an active
-//     engineering_manager membership gets 403 and no topic data), and
-//   - the durable, text-free admin.topic_config_accessed /
-//     admin.topic_config_denied rows, with actor_roles read from
-//     users.roles via roles::text[] (the only proof that the cast decodes
-//     to an array in real Postgres).
+//   - every application_admin is admitted whatever their membership on the
+//     team (#208 reverses #232's no-manager rule): an admin with an active
+//     engineering_manager membership gets 200 with the team's definitions,
+//     and no admin.topic_config_denied row is written, and
+//   - the durable, text-free admin.topic_config_accessed row, recording the
+//     raw membership_role, with actor_roles read from users.roles via
+//     roles::text[] (the only proof that the cast decodes to an array in
+//     real Postgres).
 //
 // A separate file (not a describe in topic-annotation-integration) so the
 // HARD-rule evidence is findable by name and a later edit to the annotation
@@ -43,7 +46,7 @@ interface AuditRow {
   metadata: Record<string, unknown>;
 }
 
-describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (real Postgres, #232)", () => {
+describe.skipIf(!infraUp)("TOPIC-002 administrator audit (real Postgres, #232, #208)", () => {
   let mods: Mods;
   let fx: Fixture;
   const apps: FastifyInstance[] = [];
@@ -79,6 +82,7 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (re
     return { fac, teamId, activeId, archivedId };
   }
 
+  /** Only for the removed_at case; every other seed uses Fixture.member (#208 tasks.md 1.1). */
   async function membership(teamId: string, userId: string, role: "participant" | "engineering_manager", removed = false) {
     await mods.db.query(
       `INSERT INTO team_memberships (team_id, user_id, role, removed_at) VALUES ($1, $2, $3::membership_role, $4)`,
@@ -115,39 +119,42 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (re
   // -------------------------------------------------------------------------
   // 5.1
   // -------------------------------------------------------------------------
-  it("admin with an engineering_manager membership: 403 ADMIN_IS_TEAM_MANAGER, no topic text, one denial row with actor_roles", async () => {
-    const { ADMIN_IS_TEAM_MANAGER_MESSAGE } = await import("../content.js");
+  it("admin with an engineering_manager membership (#208): 200 with both definitions, read-only, one text-free access row recording engineering_manager, no denial row", async () => {
     const { teamId, activeId, archivedId } = await seedTeam();
     const admin = await user(["application_admin", "engineering_manager"]);
-    await membership(teamId, admin, "engineering_manager");
+    await fx.member(teamId, admin, "engineering_manager");
 
     const res = await getAll(admin, teamId);
 
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
-    expect(res.json().error).toMatchObject({ category: "forbidden", message: ADMIN_IS_TEAM_MANAGER_MESSAGE });
-    expectNoTopicText(res.body);
-    expect(res.body).not.toContain(activeId);
-    expect(res.body).not.toContain(archivedId);
+    const body = res.json();
+    expect(body.canEditAnnotations).toBe(false);
+    expect(body.canAddTopics).toBe(true);
+    expect(body.active).toEqual([expect.objectContaining({ topicId: activeId, teamAnnotation: ACTIVE_DEFINITION })]);
+    expect(body.archived).toEqual([
+      expect.objectContaining({ topicId: archivedId, teamAnnotation: ARCHIVED_DEFINITION }),
+    ]);
 
     const rows = await adminRows(admin);
     expect(rows).toHaveLength(1);
     const [row] = rows;
     expect(row).toMatchObject({
-      operation: "admin.topic_config_denied",
+      operation: "admin.topic_config_accessed",
       actor_user_id: admin,
       actor_global_role: "application_admin",
       team_id: teamId,
       actor_roles: ["application_admin", "engineering_manager"],
     });
-    expect(row!.metadata).toEqual({
-      endpoint: "GET /api/v1/teams/:teamId/topics/all",
-      http_status: 403,
-      reason: "membership_em",
+    expect(row!.metadata).toMatchObject({
+      http_status: 200,
+      membership_role: "engineering_manager",
       actor_idp_roles_include_em: true,
+      annotated_count: 2,
     });
-    expectNoTopicText(row!.metadata);
-    expect(JSON.stringify(row!.metadata)).not.toContain(activeId);
+    expectNoTopicText(row);
+    expect(JSON.stringify(row!.metadata)).not.toMatch(new RegExp(`${activeId}|${archivedId}`));
+    expect(rows.filter((r) => r.operation === "admin.topic_config_denied")).toHaveLength(0);
   });
 
   it("admin non-member, roles {application_admin}: 200 and one access row with exact counts and actor_roles", async () => {
@@ -201,7 +208,7 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (re
   it("admin with a participant membership: 200 and the access row records membership_role participant", async () => {
     const { teamId } = await seedTeam();
     const admin = await user(["application_admin"]);
-    await membership(teamId, admin, "participant");
+    await fx.member(teamId, admin, "participant");
 
     const res = await getAll(admin, teamId);
 
@@ -215,7 +222,7 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (re
   it("global engineering manager with a participant membership: 403 and no admin.* row", async () => {
     const { teamId } = await seedTeam();
     const em = await user(["engineering_manager"]);
-    await membership(teamId, em, "participant");
+    await fx.member(teamId, em, "participant");
 
     const res = await getAll(em, teamId);
 
@@ -235,6 +242,9 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (re
     expect(await adminRows(fac)).toHaveLength(0);
   });
 
+  // #208: a removed membership (removed_at set) is no membership, so the
+  // access row records membership_role null. Regression pin for the raw
+  // membership read (only active rows count).
   it("admin whose engineering_manager membership was removed: 200 and one access row with membership_role null", async () => {
     const { teamId } = await seedTeam();
     const admin = await user(["application_admin"]);
@@ -270,8 +280,8 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (re
   });
 
   // -------------------------------------------------------------------------
-  // 5.2 — TOPIC-004 regression: the no-manager rule does not touch writes.
-  // TOPIC-003..006 are unchanged until #208 is decided.
+  // 5.2 — TOPIC-004 regression: admin writes are unchanged by #232 and #208
+  // (the full write matrix is topic-write-member-admin-integration.test.ts).
   // -------------------------------------------------------------------------
   it.each([
     ["participant", ["application_admin"]],
@@ -281,7 +291,7 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator no-manager rule and audit (re
     // A second active topic, so archiving one is not refused as the last.
     await fx.topic(teamId, { displayOrder: 3, name: "Topic002 Second Active" });
     const admin = await user(roles);
-    await membership(teamId, admin, role);
+    await fx.member(teamId, admin, role);
 
     const res = await (await appFor(admin)).inject({ method: "DELETE", url: `/api/v1/teams/${teamId}/topics/${activeId}` });
 

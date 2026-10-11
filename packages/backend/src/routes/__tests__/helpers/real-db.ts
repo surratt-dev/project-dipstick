@@ -232,9 +232,19 @@ export class Fixture {
     return id;
   }
 
-  /** An active team_memberships row (cleaned up with the team). */
-  async member(teamId: string, userId: string): Promise<void> {
-    await this.db.query(`INSERT INTO team_memberships (team_id, user_id) VALUES ($1, $2)`, [teamId, userId]);
+  /**
+   * An active team_memberships row (cleaned up with the team). role defaults
+   * to participant, the column default (#208 tasks.md 1.1).
+   */
+  async member(
+    teamId: string,
+    userId: string,
+    role: "participant" | "engineering_manager" = "participant",
+  ): Promise<void> {
+    await this.db.query(
+      `INSERT INTO team_memberships (team_id, user_id, role) VALUES ($1, $2, $3::membership_role)`,
+      [teamId, userId, role],
+    );
   }
 
   /** Records a team created through the API (POST /teams) for cleanup. */

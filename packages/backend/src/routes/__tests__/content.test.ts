@@ -49,12 +49,7 @@ vi.mock("../../auth/topic-lock-state.js", async (importOriginal) => {
 });
 
 import Fastify from "fastify";
-import {
-  contentRoutes,
-  ADMIN_IS_TEAM_MANAGER_MESSAGE,
-  ADMIN_MEMBERSHIP_NOT_ADMITTED_MESSAGE,
-  assertTopic002AuthorizedRole,
-} from "../content.js";
+import { contentRoutes, assertTopic002AuthorizedRole } from "../content.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
 import type { GetAllTopicsResponse } from "@dipstick/shared";
 
@@ -1047,7 +1042,7 @@ async function buildAppWithReplySpy(userId = "actor-1") {
 }
 
 /**
- * #232 D2/D4: on both admin outcomes the tail is
+ * #232 D4, kept by #208: on the admin 200 the tail is
  * audit insert < structured event < applyTimingFloor < reply sent.
  */
 function expectAuditTailOrder(operation: string, replySpy: ReturnType<typeof vi.fn>) {
@@ -1104,59 +1099,105 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     expect(body.isCustomizationLocked).toBe(true);
   });
 
-  // #232 task 3.1: the former "an application_admin can list any team's
-  // topics, including one they are an active member of" test, split by the
-  // admin's live membership role on the team (the no-manager rule).
-  it("#232: an application_admin with no membership gets 200 and one access row; insert < event < floor < reply", async () => {
-    routeTopic002({ globalRole: "application_admin", isMember: false, membershipRole: null });
+  // #208 (reverses #232's no-manager rule): every application_admin is
+  // admitted whatever their live membership role on the team, and every read
+  // writes exactly one access row recording that role raw. No path writes an
+  // admin.topic_config_denied row any more.
+  it.each([
+    ["no membership", false, null],
+    ["a participant membership", true, "participant"],
+    ["an engineering_manager membership", true, "engineering_manager"],
+  ] as const)(
+    "#208: an application_admin with %s gets 200 and one access row recording it; insert < event < floor < reply",
+    async (_label, isMember, membershipRole) => {
+      routeTopic002({ globalRole: "application_admin", isMember, membershipRole });
 
-    const { app, replySpy } = await buildAppWithReplySpy();
-    const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
+      const { app, replySpy } = await buildAppWithReplySpy();
+      const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
 
-    expect(res.statusCode).toBe(200);
-    const inserts = auditInsertCalls("admin.topic_config_accessed");
-    expect(inserts).toHaveLength(1);
-    expect(auditInsertCalls()).toHaveLength(1);
-    expect(auditInsertMetadata(inserts[0]!).membership_role).toBeNull();
-    expectAuditTailOrder("admin.topic_config_accessed", replySpy);
-  });
+      expect(res.statusCode).toBe(200);
+      const inserts = auditInsertCalls("admin.topic_config_accessed");
+      expect(inserts).toHaveLength(1);
+      expect(auditInsertCalls()).toHaveLength(1);
+      expect(auditInsertCalls("admin.topic_config_denied")).toHaveLength(0);
+      expect(eventCalls("admin.topic_config_denied")).toHaveLength(0);
+      expect(auditInsertMetadata(inserts[0]!).membership_role).toBe(membershipRole);
+      expectAuditTailOrder("admin.topic_config_accessed", replySpy);
+    },
+  );
 
-  it("#232: an application_admin with a participant membership gets 200 and one access row recording participant", async () => {
-    routeTopic002({ globalRole: "application_admin", isMember: true, membershipRole: "participant" });
+  // #208 task 2.1 (topic-annotation scenario: an administrator who manages
+  // the team reads its definitions; the audit carries no definition text).
+  it("#208: an application_admin with an engineering_manager membership gets 200 with topic data and exactly one access row recording engineering_manager", async () => {
+    const DEF_X = "Definition-X-sentinel-208a";
+    const DEF_Y = "Definition-Y-sentinel-208b";
+    routeTopic002({
+      globalRole: "application_admin",
+      isMember: true,
+      membershipRole: "engineering_manager",
+      roles: ["application_admin", "engineering_manager"],
+      active: [
+        {
+          id: "topic-x",
+          name: "Topic X",
+          prompt: "X?",
+          vote_type: "finger",
+          display_order: 1,
+          is_default: false,
+          first_session_description: null,
+          created_at: new Date("2026-09-01T00:00:00.000Z"),
+          updated_at: new Date("2026-09-01T00:00:00.000Z"),
+          team_annotation: DEF_X,
+          annotation_updated_at: new Date("2026-09-20T10:00:00.000Z"),
+          annotation_updated_by: "user-f",
+          annotation_updated_by_display_name: "Fran Facilitator",
+        },
+      ],
+      archived: [
+        {
+          id: "topic-y",
+          name: "Topic Y",
+          prompt: "Y?",
+          vote_type: "finger",
+          is_default: false,
+          archived_at: new Date("2026-09-29T12:00:00.000Z"),
+          archived_by: null,
+          archived_by_display_name: null,
+          restored_at: null,
+          restored_by: null,
+          restored_by_display_name: null,
+          team_annotation: DEF_Y,
+          annotation_updated_at: new Date("2026-09-21T10:00:00.000Z"),
+          annotation_updated_by: "user-f",
+          annotation_updated_by_display_name: "Fran Facilitator",
+        },
+      ],
+    });
 
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
 
     expect(res.statusCode).toBe(200);
+    const body = res.json() as GetAllTopicsResponse;
+    expect(body.active.map((t) => t.teamAnnotation)).toEqual([DEF_X]);
+    expect(body.archived.map((t) => t.teamAnnotation)).toEqual([DEF_Y]);
+    expect(body.canEditAnnotations).toBe(false);
+    expect(body.canAddTopics).toBe(true);
+
     const inserts = auditInsertCalls("admin.topic_config_accessed");
     expect(inserts).toHaveLength(1);
-    expect(auditInsertMetadata(inserts[0]!).membership_role).toBe("participant");
-  });
+    expect(auditInsertCalls()).toHaveLength(1);
+    const metadata = auditInsertMetadata(inserts[0]!);
+    expect(metadata).toMatchObject({ membership_role: "engineering_manager", annotated_count: 2 });
+    expect(JSON.stringify(metadata)).not.toContain(DEF_X);
+    expect(JSON.stringify(metadata)).not.toContain(DEF_Y);
 
-  // #232: the no-manager rule. A refactor that moves the team-name, topic or
-  // lock reads ahead of the administrator check MUST fail here -- the
-  // no-query assertion is by SQL text, never by mock position.
-  it("#232: an application_admin with an engineering_manager membership gets 403 with no topic/team/lock query", async () => {
-    routeTopic002({ globalRole: "application_admin", isMember: true, membershipRole: "engineering_manager" });
-
-    const { app, replySpy } = await buildAppWithReplySpy();
-    const before = Date.now();
-    const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
-
-    expect(res.statusCode).toBe(403);
-    expect(res.headers["cache-control"]).toBe("no-store");
-    expect(res.json().error).toMatchObject({ category: "forbidden", message: ADMIN_IS_TEAM_MANAGER_MESSAGE });
-    expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
-    const floorStart = mockApplyTimingFloor.mock.calls[0]![0] as number;
-    expect(floorStart).toBeGreaterThanOrEqual(before);
-    expect(floorStart).toBeLessThanOrEqual(Date.now());
-    const denials = auditInsertCalls("admin.topic_config_denied");
-    expect(denials).toHaveLength(1);
-    expect(auditInsertMetadata(denials[0]!).reason).toBe("membership_em");
-    expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(0);
-    expectAuditTailOrder("admin.topic_config_denied", replySpy);
-    expectNoTopicTeamOrLockQuery();
-    expect(mockGetTopicLockState).not.toHaveBeenCalled();
+    const events = eventCalls("admin.topic_config_accessed");
+    expect(events).toHaveLength(1);
+    const payload = events[0]![2] as Record<string, unknown>;
+    expect(payload["membershipRole"]).toBe("engineering_manager");
+    expect(JSON.stringify(payload)).not.toContain(DEF_X);
+    expect(JSON.stringify(payload)).not.toContain(DEF_Y);
   });
 
   // topic-add-form-and-empty-state task 1.3: this rejection is also the
@@ -1461,13 +1502,13 @@ describe("GET /api/v1/teams/:teamId/topics/all — team annotation (topic-annota
 });
 
 // ---------------------------------------------------------------------------
-// #232 (232-topic-002-admin-read-audit-no-manager) tasks 3.2–3.7 — TOPIC-002's
-// administrator arm: the no-manager rule, the text-free audit rows and
-// events, fail-closed handling, and the facilitator / global-EM regressions.
-// Every admin test uses the SQL-routed fixture (task 2.0) and imports the D3
-// message constants from content.ts.
+// #232 (232-topic-002-admin-read-audit-no-manager) tasks 3.2–3.7, as amended
+// by #208 (which reverses #232's admission bar) — TOPIC-002's administrator
+// arm: the text-free audit rows and events, fail-closed handling, and the
+// facilitator / global-EM regressions. Every admin test uses the SQL-routed
+// fixture (task 2.0).
 // ---------------------------------------------------------------------------
-describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule and audit (#232)", () => {
+describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #208)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDbQuery.mockReset();
@@ -1538,7 +1579,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
     "membership_role",
     "team_found",
   ];
-  const DENIED_METADATA_KEYS = ["actor_idp_roles_include_em", "endpoint", "http_status", "reason"];
   const ACCESS_EVENT_KEYS = [
     "activeCount",
     "actorGlobalRole",
@@ -1554,18 +1594,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
     "teamFound",
     "teamId",
   ];
-  const DENIED_EVENT_KEYS = [
-    "actorGlobalRole",
-    "actorIdpRolesIncludeEm",
-    "actorIp",
-    "actorRoles",
-    "actorUserId",
-    "endpoint",
-    "httpStatus",
-    "reason",
-    "teamId",
-  ];
-
   function eventPayload(event: string): Record<string, unknown> {
     const calls = eventCalls(event);
     expect(calls).toHaveLength(1);
@@ -1591,28 +1619,41 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
   }
 
   // -------------------------------------------------------------------------
-  // 3.2 — unrecognised membership value
+  // 3.2, converted by #208 (design.md D2, engineer E1): the membership role is
+  // recorded raw. An unrecognised value (the DB enum has no third value, so
+  // only a unit test can pin this) is admitted and recorded verbatim. If this
+  // fails because the value was mapped, dropped or denied, an allow-list has
+  // been put back: the membership role is audit data, not an admission input.
   // -------------------------------------------------------------------------
-  it("3.2: an unrecognised membership role (observer) gets 403 with the neutral message and no topic/team/lock query", async () => {
+  it("3.2: an unrecognised membership role (observer) gets 200 and is recorded verbatim in the access row and event", async () => {
     routeTopic002({ isMember: true, membershipRole: "observer" });
 
     const res = await get();
 
-    expect(res.statusCode).toBe(403);
-    expect(res.headers["cache-control"]).toBe("no-store");
-    expect(res.json().error).toMatchObject({ category: "forbidden", message: ADMIN_MEMBERSHIP_NOT_ADMITTED_MESSAGE });
-    const denials = auditInsertCalls("admin.topic_config_denied");
-    expect(denials).toHaveLength(1);
-    expect(auditInsertMetadata(denials[0]!).reason).toBe("membership_unrecognised");
-    expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(0);
-    expectNoTopicTeamOrLockQuery();
+    expect(res.statusCode).toBe(200);
+    const inserts = auditInsertCalls("admin.topic_config_accessed");
+    expect(inserts).toHaveLength(1);
+    expect(auditInsertCalls()).toHaveLength(1);
+    expect(auditInsertMetadata(inserts[0]!).membership_role).toBe("observer");
+    expect(eventPayload("admin.topic_config_accessed")["membershipRole"]).toBe("observer");
   });
 
   // -------------------------------------------------------------------------
   // 3.3 — rows and events (design.md D5)
   // -------------------------------------------------------------------------
-  it("3.3: the access row and event carry exactly the specified keys and values, text-free, with actor_roles", async () => {
-    routeTopic002({ active: [annotatedActive], archived: [annotatedArchived], roles: ["application_admin"] });
+  // #208: run with and without an engineering_manager membership; the key
+  // set is the same and only membership_role differs.
+  it.each([
+    ["no membership", false, null],
+    ["an engineering_manager membership", true, "engineering_manager"],
+  ] as const)("3.3: with %s, the access row and event carry exactly the specified keys and values, text-free, with actor_roles", async (_label, isMember, membershipRole) => {
+    routeTopic002({
+      isMember,
+      membershipRole,
+      active: [annotatedActive],
+      archived: [annotatedArchived],
+      roles: ["application_admin"],
+    });
 
     const res = await get();
 
@@ -1632,7 +1673,7 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
     expect(metadata).toEqual({
       endpoint: "GET /api/v1/teams/:teamId/topics/all",
       http_status: 200,
-      membership_role: null,
+      membership_role: membershipRole,
       actor_idp_roles_include_em: false,
       team_found: true,
       active_count: body.active.length,
@@ -1651,56 +1692,13 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
       teamId: TOPIC_002_TEAM_ID,
       endpoint: "GET /api/v1/teams/:teamId/topics/all",
       httpStatus: 200,
-      membershipRole: null,
+      membershipRole,
       actorRoles: ["application_admin"],
       actorIdpRolesIncludeEm: false,
       teamFound: true,
       activeCount: 1,
       archivedCount: 1,
       annotatedCount: 2,
-    });
-    expectTextFree(payload);
-  });
-
-  it("3.3: the denial row and event carry exactly the specified keys and values, text-free, with actor_roles", async () => {
-    routeTopic002({
-      isMember: true,
-      membershipRole: "engineering_manager",
-      active: [annotatedActive],
-      archived: [annotatedArchived],
-      roles: ["application_admin", "engineering_manager"],
-    });
-
-    const res = await get();
-
-    expect(res.statusCode).toBe(403);
-    expectTextFree(res.json());
-    const [insert] = auditInsertCalls("admin.topic_config_denied");
-    const params = insert![1] as unknown[];
-    expect(params[1]).toBe("application_admin");
-    expect(params[4]).toBe(TOPIC_002_TEAM_ID);
-    expect(params[6]).toEqual(["application_admin", "engineering_manager"]);
-    const metadata = auditInsertMetadata(insert!);
-    expect(Object.keys(metadata).sort()).toEqual(DENIED_METADATA_KEYS);
-    expect(metadata).toEqual({
-      endpoint: "GET /api/v1/teams/:teamId/topics/all",
-      http_status: 403,
-      reason: "membership_em",
-      actor_idp_roles_include_em: true,
-    });
-    expectTextFree(metadata);
-
-    const payload = eventPayload("admin.topic_config_denied");
-    expect(Object.keys(payload).sort()).toEqual(DENIED_EVENT_KEYS);
-    expect(payload).toMatchObject({
-      actorUserId: "actor-1",
-      actorGlobalRole: "application_admin",
-      teamId: TOPIC_002_TEAM_ID,
-      endpoint: "GET /api/v1/teams/:teamId/topics/all",
-      httpStatus: 403,
-      reason: "membership_em",
-      actorRoles: ["application_admin", "engineering_manager"],
-      actorIdpRolesIncludeEm: true,
     });
     expectTextFree(payload);
   });
@@ -1798,21 +1796,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
     expectAuditWriteFailed("admin.topic_config_accessed", "role_set_read", "57014");
   });
 
-  it("3.4: a rejected role-set read on the deny path is 500 (not 403 or 200) with no topic query", async () => {
-    routeTopic002({
-      isMember: true,
-      membershipRole: "engineering_manager",
-      reject: [{ match: /roles::text\[\] AS roles FROM users/, error: dbError("57014") }],
-    });
-
-    const res = await get();
-
-    expect(res.statusCode).toBe(500);
-    expectNoTopicQuery();
-    expect(auditInsertCalls()).toHaveLength(0);
-    expectAuditWriteFailed("admin.topic_config_denied", "role_set_read", "57014");
-  });
-
   it("3.4: a role-set read returning zero rows is 500, not 200 with a defaulted false", async () => {
     routeTopic002({ roles: null, active: [annotatedActive] });
 
@@ -1823,23 +1806,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
     expectNoTopicQuery();
     expect(auditInsertCalls()).toHaveLength(0);
     expectAuditWriteFailed("admin.topic_config_accessed", "role_set_read", null);
-  });
-
-  it("3.4: a rejected denial insert is 500 (not 200) with no topic query", async () => {
-    routeTopic002({
-      isMember: true,
-      membershipRole: "engineering_manager",
-      active: [annotatedActive],
-      reject: [{ match: /INSERT INTO audit_log/, error: dbError("23514") }],
-    });
-
-    const res = await get();
-
-    expect(res.statusCode).toBe(500);
-    expectTextFree(res.body);
-    expectNoTopicQuery();
-    expectAuditWriteFailed("admin.topic_config_denied", "audit_insert", "23514");
-    expect(eventCalls("admin.topic_config_denied")).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------
@@ -1937,9 +1903,10 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator no-manager rule
   });
 });
 
-// #232 implementation review (security N1): TOPIC-002 fails closed on any
-// authorized role other than the two it knows, so a role the shared helper
-// starts admitting later (#208) cannot reach the data unaudited.
+// #232 implementation review (security N1), kept by #208: the tripwire guards
+// the audited admin arm. TOPIC-002 fails closed on any authorized role other
+// than the two it knows, so a role the shared helper admits in future cannot
+// reach the data unaudited.
 describe("assertTopic002AuthorizedRole (#232 security N1)", () => {
   it("accepts facilitator and application_admin", () => {
     expect(() => assertTopic002AuthorizedRole("facilitator")).not.toThrow();

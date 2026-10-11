@@ -54,7 +54,7 @@ function fakeQuery(sql: string): Promise<{ rows: unknown[] }> {
   if (sql.includes("roles::text[] AS roles FROM users WHERE id")) {
     return Promise.resolve({ rows: currentCaller === null ? [] : [{ roles: [currentCaller.globalRole] }] });
   }
-  // TOPIC-002's admin audit insert (admin.topic_config_accessed / _denied).
+  // TOPIC-002's admin audit insert (admin.topic_config_accessed).
   if (sql.includes("INSERT INTO audit_log")) {
     return Promise.resolve({ rows: [] });
   }
@@ -134,13 +134,9 @@ async function buildApp() {
   return app;
 }
 
-// #232: `{ get: 403; post: 201 }` is used ONLY by the "application_admin with
-// an engineering_manager membership" row -- the recorded split between
-// TOPIC-002's no-manager rule and TOPIC-003..006, which #208 owns.
-type Expected =
-  | { get: 200; canAddTopics: boolean; post: 201 | 403 }
-  | { get: 403; post: 403 }
-  | { get: 403; post: 201 };
+// #208 (reverses #232's no-manager rule): TOPIC-002 and TOPIC-003 agree for
+// every caller class, with no exception.
+type Expected = { get: 200; canAddTopics: boolean; post: 201 | 403 } | { get: 403; post: 403 };
 
 const ADMITTED_CAN_ADD: Expected = { get: 200, canAddTopics: true, post: 201 };
 const REJECTED: Expected = { get: 403, post: 403 };
@@ -151,18 +147,16 @@ const CALLER_CLASSES: Array<{ label: string; caller: Caller | null; expected: Ex
   { label: "application_admin", caller: { globalRole: "application_admin", isMember: false }, expected: ADMITTED_CAN_ADD },
   {
     label: "application_admin who is a member of the team",
-    // #232 2.4a: pinned to a participant membership (the no-manager rule admits it).
+    // #232 2.4a: pinned to a participant membership.
     caller: { globalRole: "application_admin", isMember: true, membershipRole: "participant" },
     expected: ADMITTED_CAN_ADD,
   },
   {
     label: "application_admin with an engineering_manager membership",
-    // DELIBERATE SPLIT -- do NOT "fix" this row here. TOPIC-002 applies the
-    // no-manager rule (#232) and answers 403, while TOPIC-003..006 still admit
-    // this caller (POST 201) and stay unchanged until #208 is decided. Making
-    // the add endpoint deny too would decide #208 by accident.
+    // #208 decision: an administrator is admitted to TOPIC-002..006 whatever
+    // their membership on the team, in any role.
     caller: { globalRole: "application_admin", isMember: true, membershipRole: "engineering_manager" },
-    expected: { get: 403, post: 201 },
+    expected: ADMITTED_CAN_ADD,
   },
   { label: "engineer", caller: { globalRole: "engineer", isMember: true }, expected: REJECTED },
   { label: "engineering manager", caller: { globalRole: "engineering_manager", isMember: true }, expected: REJECTED },
@@ -227,9 +221,6 @@ describe("canAddTopics agrees with TOPIC-003's authorization for every caller cl
         const body = list.json() as GetAllTopicsResponse;
         expect(body.isCustomizationLocked).toBe(false);
         expect(body.canAddTopics).toBe(post.statusCode !== 403);
-      } else if (expected.get === 403 && expected.post === 201) {
-        // #232 / #208: the one recorded exception (see the row's comment).
-        expect(caller).toEqual({ globalRole: "application_admin", isMember: true, membershipRole: "engineering_manager" });
       } else {
         expect(list.statusCode).toBe(403);
         expect(post.statusCode).toBe(403);
