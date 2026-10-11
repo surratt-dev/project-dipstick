@@ -52,6 +52,7 @@ import Fastify from "fastify";
 import { contentRoutes, assertTopic002AuthorizedRole } from "../content.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
 import type { GetAllTopicsResponse } from "@dipstick/shared";
+import baseline403 from "./fixtures/topic-002-403-baseline.json";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1274,6 +1275,36 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #264 task 0.2 -- the TOPIC-002 403 baseline. The fixture was captured
+// against the pre-change handler and is never regenerated: later commits
+// must keep these exact bytes (status, Content-Type, body) on every denial
+// path, including audit-failure paths.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all -- 403 baseline snapshot (#264 task 0.2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.mockReset();
+    unroutedSql = [];
+  });
+  afterEach(() => expect(unroutedSql).toEqual([]));
+
+  it.each([
+    ["NOT_A_FACILITATOR", "engineer", false],
+    ["FACILITATOR_IS_TEAM_MEMBER", "facilitator", true],
+  ] as const)("%s 403 equals the committed snapshot", async (reason, globalRole, isMember) => {
+    routeTopic002({ globalRole, isMember });
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
+
+    const snap = baseline403[reason];
+    expect(res.statusCode).toBe(snap.status);
+    expect(res.headers["content-type"]).toBe(snap.contentType);
+    const parsed = res.json() as { error: { correlationId: string } };
+    expect(res.body.replace(parsed.error.correlationId, baseline403.correlationIdPlaceholder)).toBe(snap.body);
   });
 });
 

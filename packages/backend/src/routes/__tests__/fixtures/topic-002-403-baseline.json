@@ -1,0 +1,14 @@
+{
+  "_comment": "#264 task 0.2: TOPIC-002 403 baseline, captured against the PRE-change handler. Never regenerate or edit. The correlationId is random per response, so the body is stored with that one value replaced by the placeholder.",
+  "correlationIdPlaceholder": "<correlationId>",
+  "NOT_A_FACILITATOR": {
+    "status": 403,
+    "contentType": "application/json; charset=utf-8",
+    "body": "{\"error\":{\"category\":\"forbidden\",\"message\":\"Only a facilitator or an application admin can view this team's topic list.\",\"correlationId\":\"<correlationId>\"}}"
+  },
+  "FACILITATOR_IS_TEAM_MEMBER": {
+    "status": 403,
+    "contentType": "application/json; charset=utf-8",
+    "body": "{\"error\":{\"category\":\"forbidden\",\"message\":\"A facilitator cannot view topic management for a team they are a member of.\",\"correlationId\":\"<correlationId>\"}}"
+  }
+}
