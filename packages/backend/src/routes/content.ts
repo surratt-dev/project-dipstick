@@ -198,6 +198,16 @@ const TOPIC_002_ENDPOINT = "GET /api/v1/teams/:teamId/topics/all";
 type Topic002AdminOperation = "admin.topic_config_accessed";
 
 /**
+ * The pg SQLSTATE of a thrown value, or null. The one place the "SQLSTATE
+ * only, never err.message / err.detail" rule lives (#264 D3): both audit
+ * failure signals use it, because message and detail can echo row values.
+ */
+function sqlstateOf(err: unknown): string | null {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
+}
+
+/**
  * #232 D5b: run one admin-arm audit step (the role-set read or an audit
  * insert). On a throw, emit the log-only admin.audit_write_failed signal
  * with the SQLSTATE only (never err.message / err.detail, which can echo row
@@ -211,14 +221,13 @@ async function withAdminAuditFailureSignal<T>(
   try {
     return await step();
   } catch (err) {
-    const code = (err as { code?: unknown } | null)?.code;
     emitAuditEvent(request.log, "admin.audit_write_failed", {
       actorUserId: ctx.actorUserId,
       teamId: ctx.teamId,
       endpoint: TOPIC_002_ENDPOINT,
       operation: ctx.operation,
       stage: ctx.stage,
-      errorCode: typeof code === "string" ? code : null,
+      errorCode: sqlstateOf(err),
     });
     throw err;
   }
