@@ -176,7 +176,10 @@ export type AuditEventName =
   //
   // metadata (exactly): { endpoint: "GET /api/v1/teams/:teamId/topics/all",
   // http_status: 200, membership_role, actor_idp_roles_include_em,
-  // team_found, active_count, archived_count, annotated_count }.
+  // active_count, archived_count, annotated_count }. No team_found key (#265):
+  // a request for a team id that names no team is 404 before this arm runs and
+  // writes no row, so the key would always be true. Rows written before #265
+  // may carry team_found (true or false); readers treat it as optional.
   // membership_role is the caller's live active membership role on the team,
   // recorded raw as read: null (no active membership), or whatever value
   // team_memberships.role holds ("participant" or "engineering_manager"
@@ -185,7 +188,7 @@ export type AuditEventName =
   // (#208 design.md D2).
   // event payload (exactly): { actorUserId, actorGlobalRole, actorIp, teamId,
   // endpoint, httpStatus, membershipRole, actorRoles, actorIdpRolesIncludeEm,
-  // teamFound, activeCount, archivedCount, annotatedCount }.
+  // activeCount, archivedCount, annotatedCount }.
   //
   // NEVER annotation text, topic names or topic ids, in the metadata or the
   // event payload -- counts only.
@@ -249,6 +252,16 @@ export type AuditEventName =
   // reason: "membership_em" | "global_em" | "not_admitted" }. NEVER topic
   // names, topic ids, annotation text, or the lock flag.
   | "topic.config_read_denied_role"
+  // topic.config_read_unknown_team: #265. Fired by TOPIC-002 (GET
+  // /api/v1/teams/:teamId/topics/all, content.ts) when an AUTHORIZED caller (a
+  // standing facilitator or an application_admin) requests a well-formed team
+  // id that names no team, immediately before the timing floor and the 404.
+  // Log-only, no audit_log DB row: the 404 is deliberately unaudited (it
+  // records access to nothing, and an authorized caller can loop random ids),
+  // but a probing signal must not be silent. Unauthorized callers never reach
+  // it (they get the 403 first), so it reveals nothing to them. metadata:
+  // { userId, teamId, globalRole }. NEVER topic names, ids or annotation text.
+  | "topic.config_read_unknown_team"
   // team.role_change_denied: restrict-team-005-em-promotion, design.md
   // Decision F. Fired by TEAM-005 (PATCH .../members/:userId/role) when an
   // otherwise-authorized actor (passed checkAssignRolesAuthorization)

@@ -361,7 +361,7 @@ describe.skipIf(!infraAvailable)("topic-annotation — real Postgres", () => {
           [ADMIN, TEAM],
         );
         expect(adminReadRows.rows).toHaveLength(1);
-        expect(adminReadRows.rows[0]?.metadata).toMatchObject({ http_status: 200, annotated_count: 1, team_found: true });
+        expect(adminReadRows.rows[0]?.metadata).toMatchObject({ http_status: 200, annotated_count: 1 });
         expect(JSON.stringify(adminReadRows.rows[0]?.metadata)).not.toContain(markup);
 
         // Admin cannot write (FR-8.7), and nothing changes.

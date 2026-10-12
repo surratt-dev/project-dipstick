@@ -912,9 +912,11 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // Every application_admin the shared decision admits is served, whatever
     // their membership on the team, and every one of those reads is audited.
     //
-    // Runs ONLY when the shared decision admitted an application_admin, so a
-    // facilitator's request never reaches the membership or role-set read
-    // (facilitators gain no query).
+    // Runs ONLY when the shared decision admitted an application_admin AND
+    // the team exists (#265: the team-name read above it 404s a missing team
+    // first), so a facilitator's request never reaches the membership or
+    // role-set read (facilitators gain no query) and a missing team writes no
+    // access row.
     //
     // Two small reads, not one users/team_memberships join: content.ts runs
     // no SQL against team_memberships (access-control Decision 8) -- the
@@ -924,15 +926,16 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     //
     // The membership role is audit data only, never an admission input
     // (#208 design.md D2): it is recorded raw (no allow-list, no cast) as
-    // the access row's membership_role. Every admin request runs the same
-    // prefix (helper row -> membership row -> role-set row) and the same
-    // tail: data reads -> audit insert -> event -> timing floor -> send. The
-    // insert never sits between the floor and the send (timing parity,
-    // design review M3).
+    // the access row's membership_role. Every admin request for an existing
+    // team runs the same prefix (helper row -> team-name row -> membership
+    // row -> role-set row) and the same tail: data reads -> audit insert ->
+    // event -> timing floor -> send. The insert never sits between the floor
+    // and the send (timing parity, design review M3).
     //
-    // Fail closed: a throw from the membership read, the role-set read or
-    // the access insert propagates (500, no data). Both reads run before any
-    // team-name/topic/lock read; a failed membership read emits no
+    // Fail closed: a throw from the team-name read, the membership read, the
+    // role-set read or the access insert propagates (500, no data). The
+    // team-name read runs first (#265) and the membership and role-set reads
+    // run before any topic/lock read; a failed membership read emits no
     // admin.audit_write_failed (it is outside withAdminAuditFailureSignal).
     // -----------------------------------------------------------------------
     // #232 implementation review (security N1), kept by #208: the admin arm
@@ -941,6 +944,35 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // data reads unaudited. The shared decision types actorGlobalRole as
     // `string`; fail closed (500, no data, no read) on anything else.
     assertTopic002AuthorizedRole(decision.actorGlobalRole);
+
+    // #265: a canonical UUID that names no team is 404 once the caller is
+    // authorized (a participant never reaches here, so their 403 is identical
+    // for an existing and a non-existent team). This is the endpoint's
+    // existing team-name read moved ahead of the administrator arm -- not a
+    // new query, so a facilitator's SQL texts are unchanged. Keyed on the
+    // absent row (no deactivated_at filter, and the template team is a real
+    // row, so both stay 200). The 404 is deliberately unaudited and, for an
+    // admin, runs no membership or role-set read: it records access to
+    // nothing. TOPIC-001 answers an unknown team 403 (session-scoped,
+    // authorization before lookup); this role-scoped read answers 404 once
+    // the role is authorized.
+    //
+    // Task 9.2/Decision 10's confirmation-copy requirement: the dialog names
+    // both the topic and the team. No other endpoint reachable by a standing,
+    // non-member facilitator returns a team's display name, so this handler
+    // carries it directly.
+    const teamResult = await db.query<{ name: string }>(`SELECT name FROM teams WHERE id = $1`, [teamId]);
+    if (teamResult.rows.length === 0) {
+      // Log-only probing signal (audit-logger.ts); no audit_log row.
+      emitAuditEvent(request.log, "topic.config_read_unknown_team", {
+        userId: session.userId,
+        teamId,
+        globalRole: decision.actorGlobalRole,
+      });
+      await applyTimingFloor(startTime);
+      return noStore(reply).code(404).send(teamNotFoundEnvelope());
+    }
+    const teamName = teamResult.rows[0]!.name;
 
     let adminAudit: {
       membershipRole: string | null;
@@ -961,13 +993,6 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
 
       adminAudit = { membershipRole, actorRoles, actorIdpRolesIncludeEm };
     }
-
-    // Task 9.2/Decision 10's confirmation-copy requirement: the dialog
-    // names both the topic and the team. No other endpoint reachable by a
-    // standing, non-member facilitator returns a team's display name, so
-    // this handler carries it directly.
-    const teamResult = await db.query<{ name: string }>(`SELECT name FROM teams WHERE id = $1`, [teamId]);
-    const teamName = teamResult.rows[0]?.name ?? "";
 
     const activeResult = await db.query<{
       id: string;
@@ -1119,7 +1144,6 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // request is 500 and none of the data read above is sent.
     if (adminAudit !== null) {
       const { membershipRole, actorRoles, actorIdpRolesIncludeEm } = adminAudit;
-      const teamFound = teamResult.rows.length > 0;
       const activeCount = responseBody.active.length;
       const archivedCount = responseBody.archived.length;
       const annotatedCount =
@@ -1140,7 +1164,6 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
               http_status: 200,
               membership_role: membershipRole,
               actor_idp_roles_include_em: actorIdpRolesIncludeEm,
-              team_found: teamFound,
               active_count: activeCount,
               archived_count: archivedCount,
               annotated_count: annotatedCount,
@@ -1158,7 +1181,6 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
         membershipRole,
         actorRoles,
         actorIdpRolesIncludeEm,
-        teamFound,
         activeCount,
         archivedCount,
         annotatedCount,

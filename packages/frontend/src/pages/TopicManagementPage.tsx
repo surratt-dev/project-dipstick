@@ -221,6 +221,23 @@ function hasEnvelopeMessage(body: unknown): body is { error: { code?: unknown; f
   );
 }
 
+// #265: sibling of hasEnvelopeMessage for the initial-load not-found branch.
+// Keyed on the envelope's error.code only; the message is never read.
+function hasEnvelopeCode(body: unknown, code: string): boolean {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    typeof (body as ErrorEnvelope).error === "object" &&
+    (body as ErrorEnvelope).error !== null &&
+    (body as ErrorEnvelope).error?.code === code
+  );
+}
+
+// #265: rendered from this constant, never from body.error.message, so a
+// server wording change cannot alter the copy and nothing from the response
+// (or the team id) is reflected.
+const TEAM_NOT_FOUND_COPY = "Team not found.";
+
 // normalizeAnnotation / MAX_ANNOTATION_LENGTH come from @dipstick/shared --
 // the same definitions TOPIC-007 uses -- so every dirty / unchanged / clear
 // comparison and the character count agree with the server by construction
@@ -668,6 +685,14 @@ export function TopicManagementPage() {
         setError(
           hasEnvelopeMessage(body) ? body.error.message : "You do not have access to this team's topic management.",
         );
+        return;
+      }
+      if (res.status === 404) {
+        // #265: only an envelope with error.code TEAM_NOT_FOUND is labelled
+        // "Team not found." A proxy page, an empty or non-JSON body or any
+        // other code falls through to the generic message below.
+        const body: unknown = await res.json().catch(() => null);
+        setError(hasEnvelopeCode(body, "TEAM_NOT_FOUND") ? TEAM_NOT_FOUND_COPY : "Failed to load topics.");
         return;
       }
       if (!res.ok) {
