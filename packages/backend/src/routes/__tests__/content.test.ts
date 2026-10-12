@@ -1329,9 +1329,12 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
 
 // ---------------------------------------------------------------------------
 // #264 task 0.2 -- the TOPIC-002 403 baseline. The fixture was captured
-// against the pre-change handler and is never regenerated: later commits
-// must keep these exact bytes (status, Content-Type, body) on every denial
-// path, including audit-failure paths.
+// against the pre-change handler. #263 deliberately hand-edited it to add the
+// `code` member (exactly two insertions), so it is no longer a pre-change
+// baseline; the describe title keeps "baseline" on purpose. It is still never
+// regenerated from the handler: later commits must keep these exact bytes
+// (status, Content-Type, body) on every denial path, including audit-failure
+// paths.
 // ---------------------------------------------------------------------------
 describe("GET /api/v1/teams/:teamId/topics/all -- 403 baseline snapshot (#264 task 0.2)", () => {
   beforeEach(() => {
@@ -2023,6 +2026,8 @@ describe("GET /api/v1/teams/:teamId/topics/all -- non-admin denial audit (#264)"
     ["NOT_A_FACILITATOR", { globalRole: "engineer", isMember: false }, "engineer"],
     ["NOT_A_FACILITATOR", { globalRole: "engineering_manager", isMember: true }, "engineering_manager"],
     ["FACILITATOR_IS_TEAM_MEMBER", { globalRole: "facilitator", isMember: true }, "facilitator"],
+    // #263: a facilitator whose team membership role is engineering_manager.
+    ["FACILITATOR_IS_TEAM_MEMBER", { globalRole: "facilitator", isMember: true, membershipRole: "engineering_manager" }, "facilitator"],
   ] as const;
 
   async function get() {
@@ -2161,6 +2166,115 @@ describe("GET /api/v1/teams/:teamId/topics/all -- non-admin denial audit (#264)"
     const { app, replySpy } = await buildAppWithReplySpy();
     await app.inject({ method: "GET", url: TOPIC_002_URL });
     expectAuditTailOrder(OP, replySpy);
+  });
+
+  // ---- #263: error.code on the two 403s ---------------------------------
+  const MESSAGES = {
+    NOT_A_FACILITATOR: "Only a facilitator or an application admin can view this team's topic list.",
+    FACILITATOR_IS_TEAM_MEMBER: "A facilitator cannot view topic management for a team they are a member of.",
+  } as const;
+
+  it.each(CASES)("#263 %s (%s): 403 carries category, code and the exact message, no-store", async (reason, fixture) => {
+    routeTopic002(fixture);
+    const res = await get();
+    expect(res.statusCode).toBe(403);
+    expect(res.headers["content-type"]).toBe("application/json; charset=utf-8");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const body = res.json() as { error: { category: string; code: string; message: string } };
+    expect(body.error.category).toBe("forbidden");
+    expect(body.error.code).toBe(reason);
+    expect(body.error.message).toBe(MESSAGES[reason]);
+  });
+
+  // A distinct fixture from the active-member CASES row: a user who previously
+  // ran sessions for the team and is now a member of it. The helper decides on
+  // is_member alone, so the outcome is the member-facilitator denial.
+  it("returning facilitator who is a member of the team gets FACILITATOR_IS_TEAM_MEMBER", async () => {
+    routeTopic002({ globalRole: "facilitator", isMember: true, membershipRole: "participant" });
+    const res = await get();
+    expect(res.statusCode).toBe(403);
+    const body = res.json() as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
+    expect(body.error.message).toBe(MESSAGES.FACILITATOR_IS_TEAM_MEMBER);
+  });
+
+  it.each(CASES)("#263 %s (%s): error.code equals the audit row metadata.reason", async (reason, fixture) => {
+    routeTopic002(fixture);
+    const res = await get();
+    const code = (res.json() as { error: { code: string } }).error.code;
+    expect(code).toBe(auditInsertMetadata(auditInsertCalls(OP)[0]!).reason);
+    expect(code).toBe(reason);
+  });
+
+  it.each([
+    ["rejected insert", { match: /INSERT INTO audit_log/, error: new Error("boom") }],
+  ] as const)("#263 audit failure (%s): 403 still carries the code and equals the fixture", async (_label, rej) => {
+    for (const [reason, fixture] of [
+      ["NOT_A_FACILITATOR", { globalRole: "engineer", isMember: false }],
+      ["FACILITATOR_IS_TEAM_MEMBER", { globalRole: "facilitator", isMember: true }],
+    ] as const) {
+      mockDbQuery.mockReset();
+      routeTopic002({ ...fixture, reject: [rej] });
+      const res = await get();
+      expect((res.json() as { error: { code: string } }).error.code).toBe(reason);
+      expectBaseline403(res, reason);
+    }
+  });
+
+  it("#263 audit timeout: the hanging insert still gives the 403 with the code, equal to the fixture", async () => {
+    routeTopic002({ globalRole: "facilitator", isMember: true });
+    const route = mockDbQuery.getMockImplementation()!;
+    mockDbQuery.mockImplementation((sql: unknown, params: unknown) =>
+      /INSERT INTO audit_log/.test(String(sql)) ? new Promise(() => undefined) : route(sql, params),
+    );
+    const res = await get();
+    expect((res.json() as { error: { code: string } }).error.code).toBe("FACILITATOR_IS_TEAM_MEMBER");
+    expectBaseline403(res, "FACILITATOR_IS_TEAM_MEMBER");
+  });
+
+  it("#263 exactly two observable bodies and two codes across every denial fixture", async () => {
+    const normalise = (r: { body: string }) => {
+      const id = (JSON.parse(r.body) as { error: { correlationId: string } }).error.correlationId;
+      return r.body.replace(id, baseline403.correlationIdPlaceholder);
+    };
+    const bodies = new Set<string>();
+    const codes = new Set<string>();
+    for (const [, fixture] of CASES) {
+      mockDbQuery.mockReset();
+      routeTopic002(fixture);
+      const res = await get();
+      bodies.add(normalise(res));
+      codes.add((res.json() as { error: { code: string } }).error.code);
+    }
+    const message =
+      "A new or different TOPIC-002 denial code is a disclosure decision; get Security review before changing this test";
+    expect(bodies.size, message).toBe(2);
+    expect([...bodies].sort(), message).toEqual(
+      [baseline403.NOT_A_FACILITATOR.body, baseline403.FACILITATOR_IS_TEAM_MEMBER.body].sort(),
+    );
+    expect([...codes].sort(), message).toEqual(["FACILITATOR_IS_TEAM_MEMBER", "NOT_A_FACILITATOR"]);
+  });
+
+  it("#263 a spurious header and query parameter do not alter status, code or message", async () => {
+    routeTopic002({ globalRole: "engineer", isMember: false });
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `${TOPIC_002_URL}?reason=FACILITATOR_IS_TEAM_MEMBER&code=X`,
+      headers: { "x-denial-reason": "FACILITATOR_IS_TEAM_MEMBER" },
+    });
+    expect(res.statusCode).toBe(403);
+    const body = res.json() as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("NOT_A_FACILITATOR");
+    expect(body.error.message).toBe(MESSAGES.NOT_A_FACILITATOR);
+  });
+
+  it("#263 the Application Admin 200 has no code member", async () => {
+    routeTopic002({ globalRole: "application_admin" });
+    const res = await get();
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).not.toHaveProperty("code");
+    expect(res.json()).not.toHaveProperty("error");
   });
 
   // ---- fail-open --------------------------------------------------------

@@ -122,7 +122,7 @@ The non-member facilitator rule is shared by every topic-write endpoint. The `ap
 
 **Failure handling on the administrator arm (fail closed).** If the membership-role read, the read of the caller's stored role set used for audit (including that read returning no row), or the audit insert (see Requirement: The all-topics endpoint audits every administrator read) fails, the request SHALL respond `500` with the application's existing server-error response. That response SHALL contain no topic, annotation, team-name, or lock-state data. This fail-closed rule applies to this endpoint's administrator arm only. It SHALL NOT be read as a pattern for facilitator or live-session paths, which this rule does not touch.
 
-**Reason names are internal labels.** `NOT_A_FACILITATOR` and `FACILITATOR_IS_TEAM_MEMBER` name branches in code and in the REST API Contract's `403` table. They are not response fields. The observable difference between the `403`s is the envelope's `error.message`, and the scenarios below assert that message.
+**Reason names are envelope codes.** Every TOPIC-002 `403` to a non-administrator SHALL carry the denial reason as `error.code`, with `error.category = "forbidden"`: `NOT_A_FACILITATOR` for a caller without the facilitator role (including the global `engineering_manager` role) and `FACILITATOR_IS_TEAM_MEMBER` for a facilitator who is an active member of the target team. These are exactly the two members of the handler's denial-reason type, and `error.code` SHALL be that same value (the value written to the denial audit row's `metadata.reason`), taken from the authorization decision with no second mapping. The two codes are the same strings TOPIC-003..006 already return for the same refusals. `error.message` is unchanged for each reason, and so are the status, the headers (including `Cache-Control: no-store`), the denial audit row, the structured event, and the order insert, event, timing floor, send. The code only labels the refusal: it adds no way through it, no configuration and no alternate path, and the set of distinguishable denial bodies stays exactly two. Clients MUST NOT use `error.code` to grant, unlock or hide an access decision; they MAY use it to choose display text, and a client that does not recognise a code SHALL fall back to `error.message`. The server is the sole authority on access. No code may distinguish an engineering-manager or application-admin denial without Security review. The `error.correlationId` on this `403` is generated per response and is not currently recorded in the audit row or the event, so it is not searchable in logs or audit. This requirement does not apply to TOPIC-001, whose `403`s stay generic.
 
 **Team ids that name no team.** A `teamId` that is not a canonical UUID SHALL still receive `404` (`TEAM_NOT_FOUND`) before any query. A canonical UUID that names no team (no `teams` row; a deactivated team and the template team `DEFAULT_TOPICS_TEAM_ID` do have a row, so they are not "no team") SHALL be answered, once the caller's role is authorized, with `404` and the body `teamNotFoundEnvelope()` (`TEAM_NOT_FOUND`), `Cache-Control: no-store`, and the same `applyTimingFloor` call the `403` path makes before replying. The order is fixed: non-canonical boundary `404`, then the shared authorization check (`403`, audited under `topic.config_list_denied`), then the role assertion, then the team-name read (`404` here), then the administrator arm. The authorization check precedes the lookup so that a caller who is not authorized, a participant for example, receives a response byte-identical for an existing and a non-existent team and cannot probe which team ids exist. The team-name read SHALL be the endpoint's existing `SELECT name FROM teams WHERE id = $1`, moved ahead of the administrator arm, not a new query: a standing facilitator on an existing team SHALL execute exactly the same multiset of SQL texts as before this change. The lookup SHALL NOT filter on `deactivated_at` or exclude the template team. The authorization check and role assertion SHALL NOT read the `teams` table, so a caller who is not authorized triggers no `teams` query at all (existing or non-existent team alike). The `404` SHALL write no `audit_log` row and emit no `admin.*` event, and SHALL emit exactly one log-only structured event `topic.config_read_unknown_team` with metadata `{ userId, teamId, globalRole }` (no topic names, ids or annotation text), emitted immediately before `applyTimingFloor` and the reply, as a probing signal for an authorized caller (standing facilitator or `application_admin`). The event SHALL NOT be emitted for a caller who fails authorization (the `403` comes first), nor for an existing team (including the template team), and it has no database backing. On the administrator arm the `404` SHALL run no membership-role or role-set read. If the team-name read itself fails (a database error), the request SHALL follow the endpoint's existing `500` behaviour for a standing facilitator and an application admin alike, write no audit row, and on the administrator arm run no membership-role or role-set read. A team that exists with no topics SHALL still be answered `200` with empty lists and its real `teamName`; `404` is keyed on the absence of the `teams` row, never on empty lists.
 
@@ -233,14 +233,48 @@ This endpoint SHALL apply the same constant minimum response-time floor (`applyT
 #### Scenario: A global engineering manager is rejected whatever their membership
 - **WHEN** a caller with `global_role = 'engineering_manager'` and no membership, a `participant` membership, or an `engineering_manager` membership on the team requests the team's full topic list
 - **THEN** the response is `403 Forbidden` with the message "Only a facilitator or an application admin can view this team's topic list."
+- **AND** `error.category` is "forbidden" and `error.code` is "NOT_A_FACILITATOR"
 
 #### Scenario: A caller who is neither a standing facilitator nor an admin is rejected
-- **WHEN** a caller whose global role is neither `facilitator` nor `application_admin` requests a team's full topic list
-- **THEN** the response is `403 Forbidden`
+- **WHEN** a caller whose global role is neither `facilitator` nor `application_admin` (a participant, for example) requests a team's full topic list
+- **THEN** the response is `403 Forbidden` with the message "Only a facilitator or an application admin can view this team's topic list."
+- **AND** `error.category` is "forbidden" and `error.code` is "NOT_A_FACILITATOR"
 
 #### Scenario: A facilitator who is an active member of the team is rejected
 - **WHEN** a facilitator who is an active member of the target team, in any membership role, requests that team's full topic list
 - **THEN** the response is `403 Forbidden` with the message "A facilitator cannot view topic management for a team they are a member of.", even though the caller holds `global_role = 'facilitator'`
+- **AND** `error.category` is "forbidden" and `error.code` is "FACILITATOR_IS_TEAM_MEMBER"
+
+#### Scenario: A returning facilitator who is a member of the team is told why, by code
+- **WHEN** a facilitator who has become an active member of a team they used to run requests that team's full topic list
+- **THEN** the response is `403` with `error.code` "FACILITATOR_IS_TEAM_MEMBER" and the member message, so a client can tell this refusal from "no facilitator role" without matching message text
+- **AND** the refusal is still a hard block: no request field, header, flag or configuration changes the outcome
+
+#### Scenario: The code equals the audited reason and the shape is otherwise unchanged
+- **WHEN** a denied request is answered for each reason
+- **THEN** `error.code` equals the `metadata.reason` of the one `topic.config_list_denied` row written for that request
+- **AND** the status is `403`, `Content-Type` and `Cache-Control: no-store` are unchanged, and `error.message` is the exact text above for that reason
+- **AND** the body for both reasons is built from `decision.reason` by one envelope call, and `error.code` is never derived from the message
+
+#### Scenario: A participant gets the same code for an existing and a non-existent team
+- **WHEN** a participant requests TOPIC-002 for an existing team and for a canonical UUID that names no team
+- **THEN** both responses are `403` with `error.code` "NOT_A_FACILITATOR" and are otherwise identical after normalizing per-request values, because authorization precedes the team lookup; the `404` `TEAM_NOT_FOUND` applies only to authorized callers
+
+#### Scenario: A facilitator whose membership was removed is not blocked
+- **WHEN** a standing facilitator whose membership on the team is removed (not active) requests the team's full topic list
+- **THEN** the response is `200 OK` and no `topic.config_list_denied` row is written
+
+#### Scenario: The distinguishable non-admin denials are exactly two
+- **WHEN** the non-admin denials above are compared after normalizing `correlationId`
+- **THEN** there are exactly two distinct response bodies, one per code, and no code distinguishes an engineering manager or an administrator
+
+#### Scenario: Nothing in the request changes the denial
+- **WHEN** a denied caller adds a spurious header and query parameter to the request
+- **THEN** the status, `error.code` and `error.message` are the same as without them
+
+#### Scenario: An application admin's 200 carries no code
+- **WHEN** an `application_admin` requests the team's full topic list
+- **THEN** the response is `200 OK` and its body has no `code` member
 
 #### Scenario: A 403 rejection is not detectably faster than a 200 success
 - **WHEN** a caller who fails this endpoint's authorization check submits a request, and a separately measured authorized caller's request against the same endpoint is also submitted
@@ -507,7 +541,7 @@ Every `403` from TOPIC-002 (`GET /api/v1/teams/:teamId/topics/all`) with reason 
 
 ### Requirement: The denial response and timing are unchanged and never disclose the audit
 
-On the denial path the order SHALL be insert (which carries the role read), event, timing floor, send. The `403` status, `Content-Type`, and body SHALL equal a snapshot committed before this change, for each reason, on success and failure paths. No response field, header, banner, or toast SHALL imply an attempt was recorded.
+On the denial path the order SHALL be insert (which carries the role read), event, timing floor, send. The `403` status, `Content-Type`, and body SHALL equal the committed snapshot for each reason, on success and failure paths. That snapshot was hand-edited by #263 and differs from the one #264 committed only by the inserted `"code"` member (`"code":"<REASON>"` between `category` and `message`) in each of the two bodies; status, `Content-Type`, message text and every other byte are unchanged. No response field, header, banner, or toast SHALL imply an attempt was recorded.
 
 #### Scenario: Call order on the denial path
 
@@ -518,8 +552,13 @@ On the denial path the order SHALL be insert (which carries the role read), even
 #### Scenario: The 403 equals the committed baseline
 
 - **WHEN** a denied request is answered, with the audit succeeding or failing
-- **THEN** status, `Content-Type`, and body string equal the committed snapshot for that reason
+- **THEN** status, `Content-Type`, and body string equal the committed (#263-edited) snapshot for that reason
 - **AND** no header or field mentions auditing or logging
+
+#### Scenario: A failed denial audit still returns the 403 with the code
+- **WHEN** a denied request is answered and the denial audit insert fails or times out
+- **THEN** the response is the same `403` with the same `error.code` and body as when the insert succeeds (the denial audit is fail-open)
+- **AND** a failure elsewhere on the denial path (the helper call, the timing floor, the send) is still `500`, as before
 
 ### Requirement: A failed denial audit leaves the response a 403
 
