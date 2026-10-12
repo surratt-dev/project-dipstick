@@ -69,12 +69,16 @@ describe.skipIf(!infraUp)("eligible-for-session excludes the template team (#214
     expect(body.eligibleTeams.map((t) => t.teamName)).not.toContain("__default_topics__");
     expect(body.callerHasTeamMemberships).toBe(false);
 
-    // Every listed team is a real, non-deactivated team.
-    const real = await mods.db.query<{ id: string }>(
-      `SELECT id FROM teams WHERE id = ANY($1::uuid[]) AND deactivated_at IS NULL AND id <> $2`,
+    // No listed team is deactivated or the template. Other test files create
+    // and delete teams concurrently, so a listed team may already be gone by
+    // now; only a team that still exists and is deactivated (or is the
+    // template) is a failure (#215 M1 follow-up: the old rowCount equality
+    // raced with those deletions).
+    const bad = await mods.db.query<{ id: string }>(
+      `SELECT id FROM teams WHERE id = ANY($1::uuid[]) AND (deactivated_at IS NOT NULL OR id = $2)`,
       [ids, SENTINEL_TEAM_ID],
     );
-    expect(real.rowCount).toBe(ids.length);
+    expect(bad.rowCount).toBe(0);
   });
 
   it("the template is absent although it has no completed session (FR-1.7 does not apply to it)", async () => {

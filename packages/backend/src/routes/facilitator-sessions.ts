@@ -14,7 +14,8 @@ import { evaluateSessionSubscriberAccess } from "../auth/session-subscriber-acce
 import { evaluateStandingFacilitatorAccess } from "../auth/standing-facilitator-access-helper.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
-import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
+import { DEFAULT_TOPICS_TEAM_ID, copyCanonicalDefaults } from "../sessions/default-topics.js";
+import { readTemplateTopicFacts, detectTemplateAnomalies } from "../sessions/template-anomalies.js";
 import { isCanonicalUuid } from "./uuid.js";
 import {
   lockTeamTopics,
@@ -695,23 +696,13 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       }
       teamId = (teamResult.rows[0] as { id: string }).id;
 
-      // default-topic-provisioning: a real, independent row copy from the
-      // sentinel __default_topics__ team's is_default rows -- not a
-      // reference (design.md D5). display_order is preserved. No "locked"
-      // column or flag is written here or anywhere else in this step.
-      //
-      // topic-annotation design.md Decision 9: the column list stays
-      // EXPLICIT. team_annotation, annotation_updated_by, and
-      // annotation_updated_at are deliberately excluded, so a new team never
-      // inherits a definition (or its provenance) from the template team.
-      await client.query(
-        `INSERT INTO topics
-           (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
-         SELECT $1, name, prompt, vote_type, display_order, is_default, first_session_description
-         FROM topics
-         WHERE team_id = $2 AND is_default = true`,
-        [teamId, DEFAULT_TOPICS_TEAM_ID],
-      );
+      // default-topic-provisioning: a real, independent row copy of the
+      // CANONICAL defaults (active is_default rows of the sentinel team),
+      // renumbered 1..n -- not a reference (design.md D5; #215 D1/D2). No
+      // "locked" column or flag is written here. The column list is explicit
+      // inside copyCanonicalDefaults (annotation columns excluded). The
+      // route never passes a sourceTeamId (test seam only).
+      await copyCanonicalDefaults(client, teamId);
 
       // session-topics-snapshot-at-creation (#175) design.md Decision 4:
       // this session lands directly in lobby, so its creation IS its room
@@ -809,6 +800,23 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
       return reply.code(500).send(body);
     } finally {
       client.release();
+    }
+
+    // #215 D3: template anomaly signal. After COMMIT and on the pool, so a
+    // failure here cannot abort or fail creation. Ids and codes only, a
+    // constant message, never row text. The response is not changed.
+    try {
+      const { anomalies, topicIds: anomalousTopicIds } = detectTemplateAnomalies(await readTemplateTopicFacts(db));
+      if (anomalies.length > 0) {
+        request.log.warn(
+          { templateTeamId: DEFAULT_TOPICS_TEAM_ID, anomalies, topicIds: anomalousTopicIds, correlationId: request.id },
+          "template_anomaly",
+        );
+      }
+    } catch (err) {
+      // Error code only: no message, SQL text or row text.
+      const code = err instanceof DatabaseError ? err.code : undefined;
+      request.log.warn({ templateTeamId: DEFAULT_TOPICS_TEAM_ID, errCode: code }, "template_anomaly_check_failed");
     }
 
     emitAuditEvent(request.log, "team.created_with_session", {

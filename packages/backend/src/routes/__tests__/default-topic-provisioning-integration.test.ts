@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import pg from "pg";
 import Fastify from "fastify";
+import { acquireTemplateLock } from "./helpers/template-lock.js";
 
 // ---------------------------------------------------------------------------
 // Real Postgres coverage for default-topic-provisioning (inline-team-creation,
@@ -103,8 +104,15 @@ interface TopicRow {
 describe.skipIf(!dbUp)("default-topic-provisioning — real Postgres coverage (tasks.md 4.3/4.4/4.5)", () => {
   let mods: Awaited<ReturnType<typeof loadModules>>;
 
+  // #215 3.2: every test here swaps or reads the template as an absolute, so
+  // the whole file holds the template lock (released in afterAll).
+  let releaseTemplateLock: (() => Promise<void>) | undefined;
   beforeAll(async () => {
+    releaseTemplateLock = await acquireTemplateLock();
     mods = await loadModules();
+  });
+  afterAll(async () => {
+    await releaseTemplateLock?.();
   });
 
   function buildApp(userId: string) {

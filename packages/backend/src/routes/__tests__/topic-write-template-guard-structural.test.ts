@@ -9,6 +9,7 @@ import {
   SENTINEL_TEAM_ID,
 } from "./helpers/real-db.js";
 import type { Mods } from "./helpers/real-db.js";
+import { acquireTemplateLock } from "./helpers/template-lock.js";
 import { snapshotTemplate, assertTemplateUnchanged, restoreTemplate } from "./helpers/template-snapshot.js";
 
 // ---------------------------------------------------------------------------
@@ -103,7 +104,11 @@ describe.skipIf(!infraUp)("structural: every team-scoped topic-write route rejec
   let facilitatorId: string;
   const routes: RouteOptions[] = [];
 
+  // #215 M1: this file snapshots/restores the template, so it holds the lock.
+  let releaseTemplateLock: (() => Promise<void>) | undefined;
+
   beforeAll(async () => {
+    releaseTemplateLock = await acquireTemplateLock();
     mods = await loadModules();
     fx = new Fixture(mods.db);
     facilitatorId = await fx.user("facilitator");
@@ -114,6 +119,7 @@ describe.skipIf(!infraUp)("structural: every team-scoped topic-write route rejec
     await app?.close();
     await fx?.cleanup();
     await mods?.redis.quit();
+    await releaseTemplateLock?.();
   });
 
   it("selects the known topic-write routes from the registered route table", () => {
