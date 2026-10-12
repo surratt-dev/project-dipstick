@@ -963,6 +963,12 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // carries it directly.
     const teamResult = await db.query<{ name: string }>(`SELECT name FROM teams WHERE id = $1`, [teamId]);
     if (teamResult.rows.length === 0) {
+      // Log-only probing signal (audit-logger.ts); no audit_log row.
+      emitAuditEvent(request.log, "topic.config_read_unknown_team", {
+        userId: session.userId,
+        teamId,
+        globalRole: decision.actorGlobalRole,
+      });
       await applyTimingFloor(startTime);
       return noStore(reply).code(404).send(teamNotFoundEnvelope());
     }

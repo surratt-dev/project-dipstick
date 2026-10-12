@@ -252,6 +252,16 @@ export type AuditEventName =
   // reason: "membership_em" | "global_em" | "not_admitted" }. NEVER topic
   // names, topic ids, annotation text, or the lock flag.
   | "topic.config_read_denied_role"
+  // topic.config_read_unknown_team: #265. Fired by TOPIC-002 (GET
+  // /api/v1/teams/:teamId/topics/all, content.ts) when an AUTHORIZED caller (a
+  // standing facilitator or an application_admin) requests a well-formed team
+  // id that names no team, immediately before the timing floor and the 404.
+  // Log-only, no audit_log DB row: the 404 is deliberately unaudited (it
+  // records access to nothing, and an authorized caller can loop random ids),
+  // but a probing signal must not be silent. Unauthorized callers never reach
+  // it (they get the 403 first), so it reveals nothing to them. metadata:
+  // { userId, teamId, globalRole }. NEVER topic names, ids or annotation text.
+  | "topic.config_read_unknown_team"
   // team.role_change_denied: restrict-team-005-em-promotion, design.md
   // Decision F. Fired by TEAM-005 (PATCH .../members/:userId/role) when an
   // otherwise-authorized actor (passed checkAssignRolesAuthorization)

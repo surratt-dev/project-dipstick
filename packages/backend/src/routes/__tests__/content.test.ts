@@ -2465,6 +2465,13 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
     return mockEmitAuditEvent.mock.calls.filter((c) => /^(admin|topic)\./.test(String(c[1])));
   }
 
+  const UNKNOWN_TEAM_EVENT = "topic.config_read_unknown_team";
+
+  /** The log-only probing signal (user decision 2026-10-12): never an audit_log row, never admin.*. */
+  function unknownTeamEvents(): unknown[][] {
+    return mockEmitAuditEvent.mock.calls.filter((c) => c[1] === UNKNOWN_TEAM_EVENT);
+  }
+
   /**
    * Normalization named here (AC 7): `correlationId` in the body is replaced by
    * a placeholder, and the per-request `date` header is dropped. Nothing else
@@ -2509,6 +2516,7 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
       const res = await get(UNKNOWN_URL);
       expect(res.statusCode).toBe(status);
       expect(teamsQueries()).toHaveLength(0);
+      expect(unknownTeamEvents()).toEqual([]);
       expect(mockGetTopicLockState).not.toHaveBeenCalled();
     });
 
@@ -2529,6 +2537,7 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
       expect(body.teamName).toBe("Quiet Team");
       expect(body.active).toEqual([]);
       expect(body.archived).toEqual([]);
+      expect(unknownTeamEvents()).toEqual([]);
     });
 
     it.each([["facilitator"], ["application_admin"]])(
@@ -2551,6 +2560,7 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
       expect(res.statusCode).toBe(200);
       expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(1);
       expect(auditInsertCalls()).toHaveLength(1);
+      expect(unknownTeamEvents()).toEqual([]);
     });
 
     it("N2: a decision admitting an unexpected role is 500 with no teams query", async () => {
@@ -2595,6 +2605,14 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
       const res = await app.inject({ method: "GET", url: UNKNOWN_URL });
 
       expect(res.statusCode).toBe(404);
+      // Log-only probing signal: fired once, exact fields, no topic data, before the floor.
+      const events = unknownTeamEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0]![2]).toEqual({ userId: expect.any(String), teamId: UNKNOWN_TEAM_ID, globalRole: fixture.globalRole });
+      expect(Object.keys(events[0]![2] as object).sort()).toEqual(["globalRole", "teamId", "userId"]);
+      expect(mockEmitAuditEvent.mock.invocationCallOrder[mockEmitAuditEvent.mock.calls.indexOf(events[0]!)]!).toBeLessThan(
+        mockApplyTimingFloor.mock.invocationCallOrder[0]!,
+      );
       const body = res.json() as { error: Record<string, unknown> };
       expect(body.error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
       expect(Object.keys(body.error).sort()).toEqual(["category", "code", "correlationId", "message"]);
@@ -2633,32 +2651,35 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
       routeTopic002({ globalRole: "engineer", isMember: false, teamName: null });
       const res = await get(UNKNOWN_URL);
       expect(res.statusCode).toBe(403);
+      expect(unknownTeamEvents()).toEqual([]);
     });
   });
 
   // ---- Group C: audit and query shape -------------------------------------
   describe("audit and query shape", () => {
-    it("AC3: an admin 404 emits no audit event of any kind, writes no row, and runs no membership-role or role-set query", async () => {
+    it("AC3: an admin 404 writes no audit_log row and emits no admin.* event (only the log-only unknown-team event), and runs no membership-role or role-set query", async () => {
       routeTopic002({ globalRole: "application_admin", teamName: null });
       const res = await get(UNKNOWN_URL);
 
       expect(res.statusCode).toBe(404);
       expect(auditInsertCalls()).toHaveLength(0);
       expect(sqlCallsMatching(/INSERT INTO audit_log/)).toHaveLength(0);
-      expect(auditStyleEvents()).toEqual([]);
-      expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+      expect(mockEmitAuditEvent.mock.calls.filter((c) => /^admin\./.test(String(c[1])))).toEqual([]);
+      expect(auditStyleEvents().map((c) => c[1])).toEqual([UNKNOWN_TEAM_EVENT]);
+      expect(unknownTeamEvents()).toHaveLength(1);
       expect(sqlCallsMatching(/SELECT role FROM team_memberships/)).toHaveLength(0);
       expect(sqlCallsMatching(/roles::text\[\]/)).toHaveLength(0);
       expect(sqlCallsMatching(/FROM topics/)).toHaveLength(0);
       expect(mockGetTopicLockState).not.toHaveBeenCalled();
     });
 
-    it("AC3: a facilitator 404 emits no audit event of any kind and writes no row", async () => {
+    it("AC3: a facilitator 404 writes no audit_log row and emits no admin.* event (only the log-only unknown-team event)", async () => {
       routeTopic002({ globalRole: "facilitator", isMember: false, teamName: null });
       const res = await get(UNKNOWN_URL);
       expect(res.statusCode).toBe(404);
       expect(sqlCallsMatching(/INSERT INTO audit_log/)).toHaveLength(0);
-      expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+      expect(mockEmitAuditEvent.mock.calls.filter((c) => /^admin\./.test(String(c[1])))).toEqual([]);
+      expect(mockEmitAuditEvent.mock.calls.map((c) => c[1])).toEqual([UNKNOWN_TEAM_EVENT]);
     });
 
     it("AC5: a standing facilitator on an existing team executes exactly the pre-change multiset of SQL texts", async () => {
@@ -2684,7 +2705,7 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
     it.each([
       ["a standing facilitator", { globalRole: "facilitator", isMember: false }],
       ["an application admin", { globalRole: "application_admin", isMember: false }],
-    ] as const)("AC3: a failed team-name read for %s is the existing 500 with no row, no event and no data", async (_label, fixture) => {
+    ] as const)("AC3: a failed team-name read for %s is the existing 500 with no row, no unknown-team or other audit event and no data", async (_label, fixture) => {
       routeTopic002({
         ...fixture,
         active: [{ id: "SECRET-ID", name: "SECRET-NAME" }],
