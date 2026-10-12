@@ -28,7 +28,7 @@ import type {
   GetActiveTopicsResponse,
   GetAllTopicsResponse,
 } from "@dipstick/shared";
-import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
+import { DEFAULT_TOPICS_TEAM_ID, canonicalDefaultsWhere } from "../sessions/default-topics.js";
 import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
 
@@ -1066,7 +1066,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
               t.id AS team_topic_id, t.status AS team_topic_status
        FROM topics dt
        LEFT JOIN topics t ON t.team_id = $1 AND t.name = dt.name
-       WHERE dt.team_id = $2 AND dt.is_default = true
+       WHERE ${canonicalDefaultsWhere("dt", 2)}
        ORDER BY dt.display_order ASC`,
       [teamId, DEFAULT_TOPICS_TEAM_ID],
     );
