@@ -237,6 +237,7 @@ Application Admins (users with `global_role = 'application_admin'`) SHALL have a
 
 - **WHEN** a user with `global_role = 'engineering_manager'` and an active `participant` membership on the team requests TOPIC-002
 - **THEN** the response is `403` with the message "Only a facilitator or an application admin can view this team's topic list."
+- **AND** `error.category` is "forbidden" and `error.code` is "NOT_A_FACILITATOR"
 - **AND** no `admin.*` audit row is written
 - **AND** exactly one `audit_log` row with operation `topic.config_list_denied` and `metadata.reason = "NOT_A_FACILITATOR"` is written (see the topic-customization-lock capability)
 

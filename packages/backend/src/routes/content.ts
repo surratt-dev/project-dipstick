@@ -29,7 +29,7 @@ import type {
   GetAllTopicsResponse,
 } from "@dipstick/shared";
 import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
-import { teamNotFoundEnvelope } from "./error-envelope.js";
+import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
 
 // ---------------------------------------------------------------------------
@@ -893,16 +893,15 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       await applyTimingFloor(startTime);
       return noStore(reply)
         .code(403)
-        .send({
-          error: {
-            category: "forbidden" as const,
-            message:
-              decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
-                ? "A facilitator cannot view topic management for a team they are a member of."
-                : "Only a facilitator or an application admin can view this team's topic list.",
-            correlationId: crypto.randomUUID(),
-          },
-        });
+        .send(
+          buildErrorEnvelope(
+            "forbidden",
+            decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
+              ? "A facilitator cannot view topic management for a team they are a member of."
+              : "Only a facilitator or an application admin can view this team's topic list.",
+            decision.reason,
+          ),
+        );
     }
 
     // -----------------------------------------------------------------------

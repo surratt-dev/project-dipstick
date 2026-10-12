@@ -210,6 +210,26 @@ describe.skipIf(!infraUp)("TOPIC-002 non-admin denial audit (real Postgres, #264
     expect(eventsNamed("topic.audit_write_failed")).toHaveLength(0);
   });
 
+  // #263: authorization precedes the team lookup, so a participant cannot tell
+  // an existing team from a non-existent one by the 403 body (code included).
+  it("A participant gets the same code for an existing and a non-existent team", async () => {
+    const { teamId } = await seed();
+    const caller = await user(["engineer"]);
+    await fx.member(teamId, caller, "participant");
+
+    const normalise = (r: { body: string }) => {
+      const id = (JSON.parse(r.body) as { error: { correlationId: string } }).error.correlationId;
+      return r.body.replace(id, baseline403.correlationIdPlaceholder);
+    };
+    const existing = await getAll(caller, teamId);
+    const missing = await getAll(caller, randomUUID());
+
+    expect403(existing, "NOT_A_FACILITATOR");
+    expect403(missing, "NOT_A_FACILITATOR");
+    expect(normalise(missing)).toBe(normalise(existing));
+    expect((missing.json() as { error: { code: string } }).error.code).toBe("NOT_A_FACILITATOR");
+  });
+
   it("a deactivated team: 403 and a row with that team_id, no failure event", async () => {
     const { teamId } = await seed();
     await mods.db.query(`UPDATE teams SET deactivated_at = NOW() WHERE id = $1`, [teamId]);
