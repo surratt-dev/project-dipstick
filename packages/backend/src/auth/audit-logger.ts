@@ -176,7 +176,10 @@ export type AuditEventName =
   //
   // metadata (exactly): { endpoint: "GET /api/v1/teams/:teamId/topics/all",
   // http_status: 200, membership_role, actor_idp_roles_include_em,
-  // team_found, active_count, archived_count, annotated_count }.
+  // active_count, archived_count, annotated_count }. No team_found key (#265):
+  // a request for a team id that names no team is 404 before this arm runs and
+  // writes no row, so the key would always be true. Rows written before #265
+  // may carry team_found (true or false); readers treat it as optional.
   // membership_role is the caller's live active membership role on the team,
   // recorded raw as read: null (no active membership), or whatever value
   // team_memberships.role holds ("participant" or "engineering_manager"
@@ -185,7 +188,7 @@ export type AuditEventName =
   // (#208 design.md D2).
   // event payload (exactly): { actorUserId, actorGlobalRole, actorIp, teamId,
   // endpoint, httpStatus, membershipRole, actorRoles, actorIdpRolesIncludeEm,
-  // teamFound, activeCount, archivedCount, annotatedCount }.
+  // activeCount, archivedCount, annotatedCount }.
   //
   // NEVER annotation text, topic names or topic ids, in the metadata or the
   // event payload -- counts only.

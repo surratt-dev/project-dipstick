@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type * as TopicLockStateModule from "../../auth/topic-lock-state.js";
+import type * as StandingHelperModule from "../../auth/standing-facilitator-access-helper.js";
 import type * as TimingOracleModule from "../../content/timing-oracle.js";
 
 // NOTE: a module-level afterEach (in the #232 fixture section below) calls
@@ -49,6 +50,22 @@ vi.mock("../../auth/topic-lock-state.js", async (importOriginal) => {
   return { getTopicLockState: (...args: [string]) => mockGetTopicLockState(...args) };
 });
 
+// #265 security N2: a pass-through spy on the shared authorization decision so
+// one test can have it admit a role the real helper never admits.
+const { decisionOverride } = vi.hoisted(() => ({
+  decisionOverride: { value: null as null | { authorized: true; actorGlobalRole: string } },
+}));
+vi.mock("../../auth/standing-facilitator-access-helper.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof StandingHelperModule>();
+  return {
+    ...actual,
+    checkStandingFacilitatorOrAdminAuthorization: async (...args: Parameters<typeof actual.checkStandingFacilitatorOrAdminAuthorization>) => {
+      const real = await actual.checkStandingFacilitatorOrAdminAuthorization(...args);
+      return decisionOverride.value ?? real;
+    },
+  };
+});
+
 import Fastify from "fastify";
 import { contentRoutes, assertTopic002AuthorizedRole } from "../content.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
@@ -66,6 +83,39 @@ function buildApp(userId = "actor-1") {
   });
   app.register(contentRoutes);
   return app.ready().then(() => app);
+}
+
+/**
+ * buildApp plus a capturing error handler that answers the generic 500
+ * envelope. The production app registers no generic handler (Fastify's
+ * default echoes err.message and err.code in the body; see the report on #265
+ * implementation review N1), so a handler-level test cannot prove the real
+ * body is clean. What it can prove: the route propagates the raw error
+ * (no catch-and-forward into the body), sends no data of its own, and the
+ * propagated error is the one the DB raised. The leak assertions therefore run
+ * against this stand-in envelope and the captured error is asserted separately.
+ */
+async function buildAppWithErrorCapture(userId = "actor-1") {
+  const thrown: unknown[] = [];
+  const app = Fastify();
+  app.decorateRequest("session", null);
+  app.addHook("onRequest", async (request) => {
+    (request as unknown as Record<string, unknown>).session = { userId };
+  });
+  app.setErrorHandler((err, _req, reply) => {
+    thrown.push(err);
+    return reply.code(500).send({ error: { category: "internal" } });
+  });
+  app.register(contentRoutes);
+  await app.ready();
+  return { app, thrown };
+}
+
+/** Strings a 500 body must never carry: error text, SQLSTATE, SQL text. */
+const LEAK_STRINGS = ["leaked-detail", "boom", "08006", "FROM teams", "SELECT"];
+function expectGeneric500(body: string) {
+  for (const s of LEAK_STRINGS) expect(body).not.toContain(s);
+  expect(JSON.parse(body)).toEqual({ error: { category: "internal" } });
 }
 
 /**
@@ -937,7 +987,7 @@ const TOPIC_002_ROUTES: Array<[Topic002Route, RegExp]> = [
 interface Topic002Fixture {
   globalRole?: string;
   isMember?: boolean;
-  /** null = the team-name SELECT returns no row (team_found: false). */
+  /** null = the team-name SELECT returns no row (TOPIC-002 answers 404, #265). */
   teamName?: string | null;
   active?: Array<Record<string, unknown>>;
   archived?: Array<Record<string, unknown>>;
@@ -1069,16 +1119,6 @@ function expectAuditTailOrder(operation: string, replySpy: ReturnType<typeof vi.
   expect(insertOrder).toBeLessThan(eventOrder);
   expect(eventOrder).toBeLessThan(floorOrder);
   expect(floorOrder).toBeLessThan(replyOrder);
-}
-
-/** No topic, team-name or lock-state query ran (SQL match, never position). */
-function expectNoTopicTeamOrLockQuery() {
-  for (const call of mockDbQuery.mock.calls) {
-    const sql = String(call[0]);
-    expect(sql).not.toMatch(/FROM topics/);
-    expect(sql).not.toMatch(/FROM teams/);
-    expect(sql).not.toMatch(/COUNT\(\*\) AS count FROM sessions/);
-  }
 }
 
 describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
@@ -1617,7 +1657,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
     "endpoint",
     "http_status",
     "membership_role",
-    "team_found",
   ];
   const ACCESS_EVENT_KEYS = [
     "activeCount",
@@ -1631,7 +1670,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
     "endpoint",
     "httpStatus",
     "membershipRole",
-    "teamFound",
     "teamId",
   ];
   function eventPayload(event: string): Record<string, unknown> {
@@ -1715,7 +1753,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
       http_status: 200,
       membership_role: membershipRole,
       actor_idp_roles_include_em: false,
-      team_found: true,
       active_count: body.active.length,
       archived_count: body.archived.length,
       annotated_count: 2,
@@ -1735,7 +1772,6 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
       membershipRole,
       actorRoles: ["application_admin"],
       actorIdpRolesIncludeEm: false,
-      teamFound: true,
       activeCount: 1,
       archivedCount: 1,
       annotatedCount: 2,
@@ -1757,20 +1793,15 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
     expect(auditInsertMetadata(insert!).actor_idp_roles_include_em).toBe(actorRoles.includes("engineering_manager"));
   });
 
-  it("3.3: team_found is false when the team lookup returns no row", async () => {
+  // #265: replaces the pre-change "team_found is false" case. A team lookup
+  // that returns no row is a 404 and writes no access row at all.
+  it("3.3: a team lookup that returns no row is 404 with no access row (replaces team_found = false)", async () => {
     routeTopic002({ teamName: null });
 
     const res = await get();
 
-    expect(res.statusCode).toBe(200);
-    expect((res.json() as GetAllTopicsResponse).teamName).toBe("");
-    const [insert] = auditInsertCalls("admin.topic_config_accessed");
-    expect(auditInsertMetadata(insert!)).toMatchObject({
-      team_found: false,
-      active_count: 0,
-      archived_count: 0,
-      annotated_count: 0,
-    });
+    expect(res.statusCode).toBe(404);
+    expect(auditInsertCalls()).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------
@@ -1810,13 +1841,22 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
     expect(eventCalls("admin.topic_config_accessed")).toHaveLength(0);
   });
 
-  it("3.4: a rejected membership read is 500, runs no topic/team/lock query and emits no admin.audit_write_failed", async () => {
+  it("3.4: a rejected membership read is 500, runs no topic/lock query (the team-name read now precedes it, #265) and emits no admin.audit_write_failed", async () => {
     routeTopic002({ reject: [{ match: /SELECT role FROM team_memberships/, error: dbError("08006") }] });
 
-    const res = await get();
+    const { app, thrown } = await buildAppWithErrorCapture();
+    const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
 
     expect(res.statusCode).toBe(500);
-    expectNoTopicTeamOrLockQuery();
+    expectGeneric500(res.body);
+    expect(thrown).toHaveLength(1);
+    expect((thrown[0] as { code?: string }).code).toBe("08006");
+    // #265 deliberately changes the #259 order pinned here: the team-name
+    // read now runs before the membership read, so only topic and lock
+    // queries are still absent.
+    expect(sqlCallsMatching(/FROM topics/)).toHaveLength(0);
+    expect(sqlCallsMatching(/COUNT\(\*\) AS count FROM sessions/)).toHaveLength(0);
+    expect(res.body).not.toContain("Platform Squad");
     expect(eventCalls("admin.audit_write_failed")).toHaveLength(0);
     expect(auditInsertCalls()).toHaveLength(0);
   });
@@ -1868,7 +1908,7 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
     expect((await get()).statusCode).toBe(200);
     const inserts = auditInsertCalls("admin.topic_config_accessed");
     expect(inserts).toHaveLength(1);
-    expect(auditInsertMetadata(inserts[0]!)).toMatchObject({ annotated_count: 0, team_found: true, active_count: 1 });
+    expect(auditInsertMetadata(inserts[0]!)).toMatchObject({ annotated_count: 0, active_count: 1 });
   });
 
   it("3.5a: two admin requests for the same team write two access rows (no deduplication)", async () => {
@@ -2387,5 +2427,326 @@ describe("topic read routes — malformed teamId (#184 task 3.9)", () => {
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(mockDbQuery).not.toHaveBeenCalled();
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #265 -- TOPIC-002 answers a canonical UUID that names no team with 404.
+//
+// Group A (characterization): passes against the unmodified handler. It is
+// the control against re-introducing an enumeration oracle (authorization
+// precedes lookup) and pins the 200 shapes that must NOT become 404.
+// Group B/C/D: the 404 behaviour, the audit/query shape and the key sets.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
+  const UNKNOWN_TEAM_ID = "99999999-9999-4999-8999-999999999999";
+  const UNKNOWN_URL = `/api/v1/teams/${UNKNOWN_TEAM_ID}/topics/all`;
+  const DENIAL_OP = "topic.config_list_denied";
+  const TEAM_NAME_SQL = /SELECT name FROM teams WHERE id/;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.mockReset();
+    unroutedSql = [];
+  });
+  afterEach(() => expect(unroutedSql).toEqual([]));
+
+  async function get(url = TOPIC_002_URL) {
+    const app = await buildApp();
+    return app.inject({ method: "GET", url });
+  }
+
+  function teamsQueries(): unknown[][] {
+    return sqlCallsMatching(/FROM teams/);
+  }
+
+  /** Every audit-style event emitted: anything under admin.* or topic.*. */
+  function auditStyleEvents(): unknown[][] {
+    return mockEmitAuditEvent.mock.calls.filter((c) => /^(admin|topic)\./.test(String(c[1])));
+  }
+
+  /**
+   * Normalization named here (AC 7): `correlationId` in the body is replaced by
+   * a placeholder, and the per-request `date` header is dropped. Nothing else
+   * is normalized, so status, every other header and the body must match.
+   */
+  function normalize(res: { statusCode: number; headers: Record<string, unknown>; body: string }) {
+    const headers = { ...res.headers };
+    delete headers["date"];
+    const id = (JSON.parse(res.body) as { error: { correlationId: string } }).error.correlationId;
+    return { status: res.statusCode, headers, body: res.body.replace(id, "<correlationId>") };
+  }
+
+  // ---- Group A: characterization (already green before the handler change) --
+  describe("characterization (passes before and after)", () => {
+    it("AC7: a participant gets an identical 403 NOT_A_FACILITATOR for an existing and a non-existent team, each with one denial row equal except team_id", async () => {
+      routeTopic002({ globalRole: "engineer", isMember: false });
+      const existing = await get(TOPIC_002_URL);
+      const existingRows = auditInsertCalls(DENIAL_OP);
+      mockDbQuery.mockReset();
+      mockEmitAuditEvent.mockClear();
+
+      routeTopic002({ globalRole: "engineer", isMember: false, teamName: null });
+      const unknown = await get(UNKNOWN_URL);
+      const unknownRows = auditInsertCalls(DENIAL_OP);
+
+      expect(existing.statusCode).toBe(403);
+      expect(normalize(unknown)).toEqual(normalize(existing));
+      expect(existingRows).toHaveLength(1);
+      expect(unknownRows).toHaveLength(1);
+      const strip = (call: unknown[]) => (call[1] as unknown[]).filter((_p, i) => i !== 4);
+      expect((existingRows[0]![1] as unknown[])[4]).toBe(TOPIC_002_TEAM_ID);
+      expect((unknownRows[0]![1] as unknown[])[4]).toBe(UNKNOWN_TEAM_ID);
+      expect(strip(unknownRows[0]!)).toEqual(strip(existingRows[0]!));
+      expect(teamsQueries()).toHaveLength(0);
+    });
+
+    it.each([
+      ["a participant", { globalRole: "engineer", isMember: false }, 403],
+      ["a member-facilitator", { globalRole: "facilitator", isMember: true }, 403],
+    ] as const)("AC7: %s requesting a non-existent team runs zero SQL against teams", async (_label, fixture, status) => {
+      routeTopic002({ ...fixture, teamName: null });
+      const res = await get(UNKNOWN_URL);
+      expect(res.statusCode).toBe(status);
+      expect(teamsQueries()).toHaveLength(0);
+      expect(mockGetTopicLockState).not.toHaveBeenCalled();
+    });
+
+    it("AC7: a member-facilitator of an existing team still gets FACILITATOR_IS_TEAM_MEMBER", async () => {
+      routeTopic002({ globalRole: "facilitator", isMember: true });
+      const res = await get();
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.message).toBe("A facilitator cannot view topic management for a team they are a member of.");
+      expect(auditInsertCalls(DENIAL_OP)).toHaveLength(1);
+      expect(teamsQueries()).toHaveLength(0);
+    });
+
+    it("AC6: an existing team with zero topics is 200 with empty lists and its real teamName", async () => {
+      routeTopic002({ globalRole: "facilitator", isMember: false, teamName: "Quiet Team" });
+      const res = await get();
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as GetAllTopicsResponse;
+      expect(body.teamName).toBe("Quiet Team");
+      expect(body.active).toEqual([]);
+      expect(body.archived).toEqual([]);
+    });
+
+    it.each([["facilitator"], ["application_admin"]])(
+      "AC6: a deactivated team is 200 for %s: the name lookup filters nothing on deactivated_at",
+      async (globalRole) => {
+        // The mock cannot mark a team deactivated; what is pinned is that the
+        // lookup SQL has no deactivated_at filter, so a deactivated row is found.
+        routeTopic002({ globalRole, isMember: false, teamName: "Retired Team" });
+        const res = await get();
+        expect(res.statusCode).toBe(200);
+        const [call] = sqlCallsMatching(TEAM_NAME_SQL);
+        expect(String(call![0])).not.toMatch(/deactivated_at/);
+        expect(call![1]).toEqual([TOPIC_002_TEAM_ID]);
+      },
+    );
+
+    it("AC6: the template team is 200 for an admin with exactly one access row", async () => {
+      routeTopic002({ teamName: "__default_topics__" });
+      const res = await get(`/api/v1/teams/${DEFAULT_TOPICS_TEAM_ID}/topics/all`);
+      expect(res.statusCode).toBe(200);
+      expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(1);
+      expect(auditInsertCalls()).toHaveLength(1);
+    });
+
+    it("N2: a decision admitting an unexpected role is 500 with no teams query", async () => {
+      routeTopic002({ globalRole: "facilitator", isMember: false });
+      decisionOverride.value = { authorized: true, actorGlobalRole: "engineering_manager" };
+      let res;
+      let thrown: unknown[];
+      try {
+        const built = await buildAppWithErrorCapture();
+        thrown = built.thrown;
+        res = await built.app.inject({ method: "GET", url: TOPIC_002_URL });
+      } finally {
+        decisionOverride.value = null;
+      }
+
+      expect(res.statusCode).toBe(500);
+      expectGeneric500(res.body);
+      expect(thrown).toHaveLength(1);
+      expect((thrown[0] as Error).message).toMatch(/unexpected role/);
+      expect(teamsQueries()).toHaveLength(0);
+      expect(sqlCallsMatching(/FROM topics/)).toHaveLength(0);
+      expect(sqlCallsMatching(/INSERT INTO audit_log/)).toHaveLength(0);
+    });
+
+    it("AC8: TOPIC-001 for an unknown team still answers 403 (no TOPIC-001 change)", async () => {
+      mockNoGrant();
+      const app = await buildApp();
+      const res = await app.inject({ method: "GET", url: `/api/v1/teams/${UNKNOWN_TEAM_ID}/topics` });
+      expect(res.statusCode).toBe(403);
+      expect(sqlCallsMatching(/FROM teams/)).toHaveLength(0);
+    });
+  });
+
+  // ---- Group B: the 404 ---------------------------------------------------
+  describe("404 behaviour", () => {
+    it.each([
+      ["a standing facilitator", { globalRole: "facilitator", isMember: false }],
+      ["an application admin", { globalRole: "application_admin", isMember: false }],
+    ] as const)("AC1/AC3: %s requesting a canonical UUID with no team gets 404 teamNotFoundEnvelope, no-store, floor once before the reply", async (_label, fixture) => {
+      routeTopic002({ ...fixture, teamName: null });
+      const { app, replySpy } = await buildAppWithReplySpy();
+      const res = await app.inject({ method: "GET", url: UNKNOWN_URL });
+
+      expect(res.statusCode).toBe(404);
+      const body = res.json() as { error: Record<string, unknown> };
+      expect(body.error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+      expect(Object.keys(body.error).sort()).toEqual(["category", "code", "correlationId", "message"]);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      expect(mockApplyTimingFloor.mock.invocationCallOrder[0]!).toBeLessThan(replySpy.mock.invocationCallOrder[0]!);
+    });
+
+    it("AC3: a standing facilitator on a missing team gets 404, explicitly not 403", async () => {
+      routeTopic002({ globalRole: "facilitator", isMember: false, teamName: null });
+      const res = await get(UNKNOWN_URL);
+      expect(res.statusCode).not.toBe(403);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("AC2: an upper-case canonical UUID that matches no team is 404", async () => {
+      routeTopic002({ globalRole: "facilitator", isMember: false, teamName: null });
+      const res = await get(`/api/v1/teams/${UNKNOWN_TEAM_ID.toUpperCase()}/topics/all`);
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error.code).toBe("TEAM_NOT_FOUND");
+    });
+
+    it.each([
+      ["a participant", { globalRole: "engineer", isMember: false }],
+      ["a facilitator", { globalRole: "facilitator", isMember: false }],
+      ["an application admin", { globalRole: "application_admin", isMember: false }],
+    ] as const)("AC2: a non-canonical id is 404 for %s before any query", async (_label, fixture) => {
+      routeTopic002(fixture);
+      const res = await get("/api/v1/teams/not-a-uuid/topics/all");
+      expect(res.statusCode).toBe(404);
+      expect(mockDbQuery).not.toHaveBeenCalled();
+    });
+
+    it("AC2: the order is authorization (403) before the name read (404): a participant on a missing team is 403, not 404", async () => {
+      routeTopic002({ globalRole: "engineer", isMember: false, teamName: null });
+      const res = await get(UNKNOWN_URL);
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  // ---- Group C: audit and query shape -------------------------------------
+  describe("audit and query shape", () => {
+    it("AC3: an admin 404 emits no audit event of any kind, writes no row, and runs no membership-role or role-set query", async () => {
+      routeTopic002({ globalRole: "application_admin", teamName: null });
+      const res = await get(UNKNOWN_URL);
+
+      expect(res.statusCode).toBe(404);
+      expect(auditInsertCalls()).toHaveLength(0);
+      expect(sqlCallsMatching(/INSERT INTO audit_log/)).toHaveLength(0);
+      expect(auditStyleEvents()).toEqual([]);
+      expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+      expect(sqlCallsMatching(/SELECT role FROM team_memberships/)).toHaveLength(0);
+      expect(sqlCallsMatching(/roles::text\[\]/)).toHaveLength(0);
+      expect(sqlCallsMatching(/FROM topics/)).toHaveLength(0);
+      expect(mockGetTopicLockState).not.toHaveBeenCalled();
+    });
+
+    it("AC3: a facilitator 404 emits no audit event of any kind and writes no row", async () => {
+      routeTopic002({ globalRole: "facilitator", isMember: false, teamName: null });
+      const res = await get(UNKNOWN_URL);
+      expect(res.statusCode).toBe(404);
+      expect(sqlCallsMatching(/INSERT INTO audit_log/)).toHaveLength(0);
+      expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it("AC5: a standing facilitator on an existing team executes exactly the pre-change multiset of SQL texts", async () => {
+      // Baseline recorded in task 0.1 against the unmodified handler: the
+      // shared helper row, the team-name read, active, archived, defaults, lock.
+      routeTopic002({ globalRole: "facilitator", isMember: false });
+      const res = await get();
+      expect(res.statusCode).toBe(200);
+      const classified = mockDbQuery.mock.calls.map((c) => classifyTopic002Sql(String(c[0])));
+      expect([...classified].sort()).toEqual(["active", "archived", "defaults", "helper", "lock", "team_name"]);
+    });
+
+    it("AC5: the admin query order is helper, team_name, membership, role_set, topics reads, lock, audit insert", async () => {
+      // Deliberate change from #259: the name read now precedes the admin arm.
+      routeTopic002({ globalRole: "application_admin" });
+      const res = await get();
+      expect(res.statusCode).toBe(200);
+      const classified = mockDbQuery.mock.calls.map((c) => classifyTopic002Sql(String(c[0])));
+      expect(classified.slice(0, 4)).toEqual(["helper", "team_name", "membership", "role_set"]);
+      expect(classified.at(-1)).toBe("audit_insert");
+    });
+
+    it.each([
+      ["a standing facilitator", { globalRole: "facilitator", isMember: false }],
+      ["an application admin", { globalRole: "application_admin", isMember: false }],
+    ] as const)("AC3: a failed team-name read for %s is the existing 500 with no row, no event and no data", async (_label, fixture) => {
+      routeTopic002({
+        ...fixture,
+        active: [{ id: "SECRET-ID", name: "SECRET-NAME" }],
+        reject: [{ match: TEAM_NAME_SQL, error: Object.assign(new Error("boom: leaked-detail"), { code: "08006" }) }],
+      });
+      const { app, thrown } = await buildAppWithErrorCapture();
+      const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).not.toContain("SECRET");
+      expect(res.body).not.toContain("Platform Squad");
+      expectGeneric500(res.body);
+      expect(thrown).toHaveLength(1);
+      expect((thrown[0] as { code?: string }).code).toBe("08006");
+      expect(sqlCallsMatching(/INSERT INTO audit_log/)).toHaveLength(0);
+      expect(sqlCallsMatching(/FROM topics/)).toHaveLength(0);
+      expect(auditStyleEvents()).toEqual([]);
+      if (fixture.globalRole === "application_admin") {
+        expect(sqlCallsMatching(/SELECT role FROM team_memberships/)).toHaveLength(0);
+        expect(sqlCallsMatching(/roles::text\[\]/)).toHaveLength(0);
+      }
+    });
+  });
+
+  // ---- Group D: key sets --------------------------------------------------
+  describe("key sets", () => {
+    it("AC4: the admin 200 metadata and event key sets are exact and carry no team_found / teamFound", async () => {
+      routeTopic002({ globalRole: "application_admin" });
+      const res = await get();
+      expect(res.statusCode).toBe(200);
+
+      const [insert] = auditInsertCalls("admin.topic_config_accessed");
+      const metadata = auditInsertMetadata(insert!);
+      expect(Object.keys(metadata).sort()).toEqual([
+        "active_count",
+        "actor_idp_roles_include_em",
+        "annotated_count",
+        "archived_count",
+        "endpoint",
+        "http_status",
+        "membership_role",
+      ]);
+      expect(metadata).not.toHaveProperty("team_found");
+
+      const events = eventCalls("admin.topic_config_accessed");
+      expect(events).toHaveLength(1);
+      const payload = events[0]![2] as Record<string, unknown>;
+      expect(Object.keys(payload).sort()).toEqual([
+        "activeCount",
+        "actorGlobalRole",
+        "actorIdpRolesIncludeEm",
+        "actorIp",
+        "actorRoles",
+        "actorUserId",
+        "annotatedCount",
+        "archivedCount",
+        "endpoint",
+        "httpStatus",
+        "membershipRole",
+        "teamId",
+      ]);
+      expect(payload).not.toHaveProperty("teamFound");
+    });
   });
 });

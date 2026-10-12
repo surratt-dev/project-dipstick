@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { probeInfra, requireInfraOrThrow, loadModules, buildApp, Fixture } from "./helpers/real-db.js";
+import { probeInfra, requireInfraOrThrow, loadModules, buildApp, Fixture, SENTINEL_TEAM_ID } from "./helpers/real-db.js";
 import type { Mods } from "./helpers/real-db.js";
 import type { GlobalRole } from "../../auth/role-map.js";
 
@@ -182,7 +182,6 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator audit (real Postgres, #232, #
       http_status: 200,
       membership_role: null,
       actor_idp_roles_include_em: false,
-      team_found: true,
       active_count: 1,
       archived_count: 1,
       annotated_count: 2,
@@ -259,24 +258,90 @@ describe.skipIf(!infraUp)("TOPIC-002 administrator audit (real Postgres, #232, #
     expect(rows[0]!.metadata.membership_role).toBeNull();
   });
 
-  it("admin, canonical UUID that names no team: 200 unchanged, one access row with the requested team_id, zero counts and team_found false", async () => {
-    fx = new Fixture(mods.db);
-    const admin = await user(["application_admin"]);
-    const missingTeamId = randomUUID();
+  // #265: a canonical UUID that names no team is 404 and unaudited, for a
+  // facilitator and an admin. Scoped to the 404 cases: a participant's 403
+  // writes a #264 topic.config_list_denied row, so no delta-0 claim is made
+  // for it.
+  async function auditCountFor(actorUserId: string): Promise<number> {
+    const r = await mods.db.query<{ n: string }>(`SELECT count(*) AS n FROM audit_log WHERE actor_user_id = $1`, [actorUserId]);
+    return Number(r.rows[0]!.n);
+  }
 
-    const res = await getAll(admin, missingTeamId);
+  it.each([
+    ["application admin", ["application_admin"]],
+    ["standing facilitator", ["facilitator"]],
+  ] as const)("%s, canonical UUID that names no team: 404 TEAM_NOT_FOUND, no-store, zero audit rows of any kind", async (_label, roles) => {
+    fx = new Fixture(mods.db);
+    const actor = await user(roles);
+    const missingTeamId = randomUUID();
+    const before = await auditCountFor(actor);
+
+    const res = await getAll(actor, missingTeamId);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.json().error).toMatchObject({ category: "not_found", code: "TEAM_NOT_FOUND", message: "Team not found." });
+    expect(await auditCountFor(actor)).toBe(before);
+    expect(await adminRows(actor)).toHaveLength(0);
+  });
+
+  it.each([
+    ["application admin", ["application_admin"]],
+    ["standing facilitator", ["facilitator"]],
+  ] as const)("%s, deactivated team: still 200 (the name lookup does not filter deactivated_at)", async (_label, roles) => {
+    const { teamId } = await seedTeam();
+    await mods.db.query(`UPDATE teams SET deactivated_at = now() WHERE id = $1`, [teamId]);
+    const actor = await user(roles);
+
+    const res = await getAll(actor, teamId);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ teamId: missingTeamId, teamName: "", active: [], archived: [] });
+  });
+
+  it("admin read of the template team is still 200 with one access row", async () => {
+    fx = new Fixture(mods.db);
+    const admin = await user(["application_admin"]);
+
+    const res = await getAll(admin, SENTINEL_TEAM_ID);
+
+    expect(res.statusCode).toBe(200);
     const rows = await adminRows(admin);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ operation: "admin.topic_config_accessed", team_id: missingTeamId });
-    expect(rows[0]!.metadata).toMatchObject({
-      team_found: false,
-      active_count: 0,
-      archived_count: 0,
-      annotated_count: 0,
-    });
+    expect(rows[0]).toMatchObject({ operation: "admin.topic_config_accessed", team_id: SENTINEL_TEAM_ID });
+    expect(rows[0]!.metadata).not.toHaveProperty("team_found");
+  });
+
+  it("participant: the 403 is identical for an existing and a non-existent team, and the two denial rows are equal except team_id", async () => {
+    const { teamId } = await seedTeam();
+    const participant = await user(["engineer"]);
+    const missingTeamId = randomUUID();
+
+    const existing = await getAll(participant, teamId);
+    const unknown = await getAll(participant, missingTeamId);
+
+    // Normalization: correlationId replaced, per-request `date` header dropped.
+    const norm = (res: typeof existing) => {
+      const headers = { ...res.headers };
+      delete headers["date"];
+      const id = (JSON.parse(res.body) as { error: { correlationId: string } }).error.correlationId;
+      return { status: res.statusCode, headers, body: res.body.replace(id, "<correlationId>") };
+    };
+    expect(existing.statusCode).toBe(403);
+    expect(norm(unknown)).toEqual(norm(existing));
+
+    const rows = (
+      await mods.db.query<AuditRow>(
+        `SELECT operation, actor_user_id, actor_global_role, team_id, actor_roles::text[] AS actor_roles, metadata
+           FROM audit_log WHERE actor_user_id = $1 AND operation = 'topic.config_list_denied'`,
+        [participant],
+      )
+    ).rows;
+    expect(rows).toHaveLength(2);
+    const byTeam = (id: string) => rows.find((r) => r.team_id === id)!;
+    const withoutTeam = (r: AuditRow) => ({ ...r, team_id: undefined });
+    const existingRow = withoutTeam(byTeam(teamId));
+    const unknownRow = withoutTeam(byTeam(missingTeamId));
+    expect(unknownRow).toEqual(existingRow);
   });
 
   // -------------------------------------------------------------------------

@@ -116,7 +116,7 @@ Every topic-write request rejected with `409 Conflict` under the customization l
 
 The non-member facilitator rule is shared by every topic-write endpoint. The `application_admin` arm is shared with add, `DELETE`, restore, and reorder (TOPIC-003/004/005/006), and is identical to theirs: an administrator is admitted on any team whatever their membership (#208: the product owner decided that administrators are a trusted role and are not barred from topic configuration by team membership; that decision covers TOPIC-002..006 only and does not change any other administrator restriction). `PUT /api/v1/teams/:teamId/topics/:topicId/annotation` (TOPIC-007, BRD FR-8.7) rejects administrators with `403`. This read endpoint still admits them and returns `canEditAnnotations: false` and `canAddTopics: true` to them. This endpoint SHALL NOT require that the caller currently hold, or have ever held, an active session for the target team. No completed-session relationship, and no prior facilitation history with the specific team, is required.
 
-**No membership rule on the administrator arm (#208, reversing #232).** This endpoint SHALL NOT deny an `application_admin` because of their membership role on the target team. The no-manager rule #232 added to this arm, and its `ADMIN_IS_TEAM_MANAGER` and `ADMIN_MEMBERSHIP_NOT_ADMITTED` `403`s, are removed. On the administrator arm the handler SHALL read the caller's live active membership role on the target team once per request, with no cache, and SHALL use it only as audit data (see Requirement: The all-topics endpoint audits every administrator read). Only an active membership counts: a membership whose `removed_at` is set is recorded as no membership. The membership role SHALL be read only for a caller already admitted on the administrator arm, so a facilitator's request performs no additional query.
+**No membership rule on the administrator arm (#208, reversing #232).** This endpoint SHALL NOT deny an `application_admin` because of their membership role on the target team. The no-manager rule #232 added to this arm, and its `ADMIN_IS_TEAM_MANAGER` and `ADMIN_MEMBERSHIP_NOT_ADMITTED` `403`s, are removed. On the administrator arm the handler SHALL read the caller's live active membership role on the target team once per request, with no cache, and SHALL use it only as audit data (see Requirement: The all-topics endpoint audits every administrator read). Only an active membership counts: a membership whose `removed_at` is set is recorded as no membership. The membership role SHALL be read only for a caller already admitted on the administrator arm and only for a team that exists, so a facilitator's request performs no additional query and a request for a non-existent team performs none of the administrator arm's reads.
 
 **Only two authorized roles reach the data.** After the shared authorization check admits a caller, the handler SHALL accept only `facilitator` (the unaudited read) and `application_admin` (the audited administrator arm) as the authorized global role. Any other authorized role value, including a different spelling or casing of `application_admin`, SHALL fail the request with `500` before any membership, role-set, topic, annotation, team-name, or lock-state read, and SHALL write no audit row. The error message SHALL name no role value, team, or user. This guards against a later change to the shared helper admitting a third role that would otherwise reach the data with no audit.
 
@@ -124,7 +124,7 @@ The non-member facilitator rule is shared by every topic-write endpoint. The `ap
 
 **Reason names are internal labels.** `NOT_A_FACILITATOR` and `FACILITATOR_IS_TEAM_MEMBER` name branches in code and in the REST API Contract's `403` table. They are not response fields. The observable difference between the `403`s is the envelope's `error.message`, and the scenarios below assert that message.
 
-**Team ids that name no team.** A `teamId` that is not a canonical UUID SHALL still receive `404` (`TEAM_NOT_FOUND`) before any query. A canonical UUID that names no team is answered `200` with `teamName: ""` and empty lists. An administrator's request for such an id is admitted and audited like any other administrator `200`, with `team_id` set to the requested id.
+**Team ids that name no team.** A `teamId` that is not a canonical UUID SHALL still receive `404` (`TEAM_NOT_FOUND`) before any query. A canonical UUID that names no team (no `teams` row; a deactivated team and the template team `DEFAULT_TOPICS_TEAM_ID` do have a row, so they are not "no team") SHALL be answered, once the caller's role is authorized, with `404` and the body `teamNotFoundEnvelope()` (`TEAM_NOT_FOUND`), `Cache-Control: no-store`, and the same `applyTimingFloor` call the `403` path makes before replying. The order is fixed: non-canonical boundary `404`, then the shared authorization check (`403`, audited under `topic.config_list_denied`), then the role assertion, then the team-name read (`404` here), then the administrator arm. The authorization check precedes the lookup so that a caller who is not authorized, a participant for example, receives a response byte-identical for an existing and a non-existent team and cannot probe which team ids exist. The team-name read SHALL be the endpoint's existing `SELECT name FROM teams WHERE id = $1`, moved ahead of the administrator arm, not a new query: a standing facilitator on an existing team SHALL execute exactly the same multiset of SQL texts as before this change. The lookup SHALL NOT filter on `deactivated_at` or exclude the template team. The authorization check and role assertion SHALL NOT read the `teams` table, so a caller who is not authorized triggers no `teams` query at all (existing or non-existent team alike). The `404` SHALL write no `audit_log` row and emit no audit event of any kind (no `admin.*` and no `topic.*` audit or denial event, whether a database row or a structured log-only event), and on the administrator arm SHALL run no membership-role or role-set read. If the team-name read itself fails (a database error), the request SHALL follow the endpoint's existing `500` behaviour for a standing facilitator and an application admin alike, write no audit row, and on the administrator arm run no membership-role or role-set read. A team that exists with no topics SHALL still be answered `200` with empty lists and its real `teamName`; `404` is keyed on the absence of the `teams` row, never on empty lists.
 
 **Engineering managers by global role.** A caller whose global role is `engineering_manager` SHALL receive `403` for reason `NOT_A_FACILITATOR`, whatever their membership on the team (none, `participant`, or `engineering_manager`). The messages are: `NOT_A_FACILITATOR` is "Only a facilitator or an application admin can view this team's topic list." and `FACILITATOR_IS_TEAM_MEMBER` is "A facilitator cannot view topic management for a team they are a member of."
 
@@ -153,10 +153,49 @@ This endpoint SHALL apply the same constant minimum response-time floor (`applyT
 - **THEN** the response is `200 OK`
 - **AND** the `admin.topic_config_accessed` row records `metadata.membership_role = null`
 
-#### Scenario: An application admin's request for a team id that names no team is audited like any other read
+#### Scenario: A standing facilitator's request for a team id that names no team is a 404
+- **WHEN** a standing facilitator requests the full topic list for a canonical UUID that names no team
+- **THEN** the response is `404` with a body equal to `teamNotFoundEnvelope()` and `Cache-Control: no-store`
+- **AND** `applyTimingFloor` is called exactly once, before the reply is sent (observed by a spy on `applyTimingFloor` and on the reply)
+- **AND** no `audit_log` row is written and no audit event of any kind is emitted
+- **AND** the response is not `403` (a facilitator with no membership on a missing team is authorized, not denied)
+
+#### Scenario: An application admin's request for a team id that names no team is not found and writes no audit row
 - **WHEN** an `application_admin` requests the full topic list for a canonical UUID that names no team
-- **THEN** the response is `200 OK` with `teamName: ""` and empty `active` and `archived` lists
-- **AND** exactly one `admin.topic_config_accessed` row is written with `team_id` equal to the requested id, all counts `0`, and `metadata.team_found = false`
+- **THEN** the response is NOT audited and NOT `200`: it is `404` with a body equal to `teamNotFoundEnvelope()` and `Cache-Control: no-store` (the pre-#265 `200` with `team_found = false` behaviour is replaced, not kept)
+- **AND** the `audit_log` row count is unchanged
+- **AND** no membership-role or role-set query ran, and no audit event of any kind was emitted
+
+#### Scenario: A failed team-name read fails the request with no data
+- **WHEN** the team-name read fails with a database error for a standing facilitator, and separately for an `application_admin`
+- **THEN** each response is the endpoint's existing `500`, no `audit_log` row is written, and for the administrator no membership-role or role-set query ran
+
+#### Scenario: An uppercase canonical UUID that matches no team is a 404
+- **WHEN** a standing facilitator requests the full topic list for an upper-case canonical UUID that matches no team
+- **THEN** the response is `404` `TEAM_NOT_FOUND`
+
+#### Scenario: A team with no topics is a 200
+- **WHEN** a standing facilitator requests the full topic list for an existing team that has no topics
+- **THEN** the response is `200` with empty `active` and `archived` lists and the team's real `teamName`
+
+#### Scenario: A deactivated team is a 200
+- **WHEN** a standing facilitator requests the full topic list for a team whose `deactivated_at` is set
+- **THEN** the response is `200`, unchanged by this change
+
+#### Scenario: The template team is unchanged
+- **WHEN** a standing facilitator requests TOPIC-002 for `DEFAULT_TOPICS_TEAM_ID`
+- **THEN** the response is `200` as before
+- **AND** when the caller is an `application_admin`, exactly one `admin.topic_config_accessed` row is written
+
+#### Scenario: An unauthorized caller cannot tell whether a team exists
+- **WHEN** a participant requests TOPIC-002 for a canonical UUID that names no team, and for one that names an existing team
+- **THEN** both responses are the same `403 NOT_A_FACILITATOR`: identical status, identical headers and identical body once the per-request values (the body's `correlationId` and any per-request header such as `date` or a request id) are normalized, and the test SHALL name what it normalizes
+- **AND** each is audited under `topic.config_list_denied`, and the two audit rows are equal in every field except `team_id` (and per-row identifiers and timestamps)
+- **AND** neither request executed any query against the `teams` table
+
+#### Scenario: A standing facilitator on an existing team runs no extra query
+- **WHEN** a non-member standing facilitator requests the full topic list for an existing team
+- **THEN** the multiset of SQL texts executed equals the multiset executed before this change
 
 #### Scenario: An unexpected authorized role fails closed (unit test only)
 - **WHEN** the shared authorization check admits a caller whose global role is neither `facilitator` nor `application_admin` (for example `engineering_manager`, `Application_Admin`, or an empty string)
@@ -170,7 +209,7 @@ This endpoint SHALL apply the same constant minimum response-time floor (`applyT
 #### Scenario: A failed membership read fails the request with no data
 - **WHEN** an `application_admin` requests the team's full topic list and the membership-role read fails
 - **THEN** the response is `500`
-- **AND** no topic, annotation, team-name, or lock-state query ran for the request
+- **AND** no topic, annotation, or lock-state query ran for the request, and the response contains no team name
 
 #### Scenario: A failed role-set read fails the request with no data
 - **WHEN** an `application_admin` requests the team's full topic list and the read of the caller's stored role set (`users.roles`) fails or returns no row
@@ -296,17 +335,17 @@ Every `200` response from `GET /api/v1/teams/:teamId/topics/all` to an `applicat
 - `operation = 'admin.topic_config_accessed'`
 - `actor_user_id`, `actor_global_role = 'application_admin'`, `actor_ip`, and `team_id`
 - `actor_roles` = the caller's stored role set (`users.roles`) at the time of the request, highest precedence first
-- `metadata = { endpoint: "GET /api/v1/teams/:teamId/topics/all", http_status: 200, membership_role, actor_idp_roles_include_em, team_found, active_count, archived_count, annotated_count }`, with exactly these keys
+- `metadata = { endpoint: "GET /api/v1/teams/:teamId/topics/all", http_status: 200, membership_role, actor_idp_roles_include_em, active_count, archived_count, annotated_count }`, with exactly these keys
 
 `membership_role` SHALL be the caller's live active membership role on the team as read (`null` when there is none; today `"participant"` or `"engineering_manager"` otherwise), recorded without an allow-list because no admission decision depends on it. A membership role added later SHALL be recorded verbatim and needs no change to this requirement; "today" does not describe a closed set. It is the durable record of whether the reader holds a role on the team, including whether they manage it.
 
-This SHALL apply to every team, the template team included, whether or not any topic carries a definition. `annotated_count` SHALL be the number of entries in the response's `active` and `archived` lists that carry a non-null `teamAnnotation`. `team_found` SHALL be whether the endpoint's existing lookup of the team's name found a `teams` row.
+A request for a team id that names no team is answered `404` before this arm runs and writes no row (see Requirement: The all-topics endpoint uses the standing, org-wide facilitator authorization model). This SHALL apply to every team that exists, the template team included, whether or not any topic carries a definition. `annotated_count` SHALL be the number of entries in the response's `active` and `archived` lists that carry a non-null `teamAnnotation`. The row SHALL carry no `team_found` key: the administrator arm is reached only for a team that exists, so such a key would always be `true`. Rows written before this change may carry `team_found` with either value and are not rewritten or purged as noise (they are the only evidence of past ghost-team admin reads); a reader SHALL treat the key as optional.
 
 The caller's role set SHALL be read once per administrator request. `actor_roles` is the durable record of it. `actor_idp_roles_include_em` SHALL be derived from the same read, as whether `engineering_manager` is in that set, so the two cannot disagree. It SHALL be `false` whenever `users.roles` does not contain `engineering_manager`. That includes users whose roles were backfilled to `{global_role}` by migration 21 and who have not signed in since #245, so `false` (and an `actor_roles` without `engineering_manager`) does not prove the caller holds no manager role in the IdP. The role set is audit data only and SHALL NOT be an input to admission. If the read returns no row, the request SHALL fail as described under "Failure handling on the administrator arm"; it SHALL NOT record a default value.
 
 The row SHALL be written after the response data has been read, and before the timing floor and the response. If the membership-role read, the role-set read, or the audit write fails, the request SHALL fail with `500` and the response SHALL contain none of the data read. One row SHALL be written per request, with no deduplication.
 
-The matching structured event `admin.topic_config_accessed` SHALL carry exactly `{ actorUserId, actorGlobalRole, actorIp, teamId, endpoint, httpStatus, membershipRole, actorRoles, actorIdpRolesIncludeEm, teamFound, activeCount, archivedCount, annotatedCount }`.
+The matching structured event `admin.topic_config_accessed` SHALL carry exactly `{ actorUserId, actorGlobalRole, actorIp, teamId, endpoint, httpStatus, membershipRole, actorRoles, actorIdpRolesIncludeEm, activeCount, archivedCount, annotatedCount }`, with no `teamFound`.
 
 When the role-set read or the insert fails on the administrator arm, the endpoint SHALL emit the log-only structured event `admin.audit_write_failed` with exactly `{ actorUserId, teamId, endpoint, operation, stage, errorCode }` before failing the request. `operation` is `"admin.topic_config_accessed"`, `stage` is `"role_set_read"` or `"audit_insert"`, and `errorCode` is the database error code when there is one, otherwise `null`. It SHALL NOT carry the database error's message or detail. It writes no `audit_log` row.
 
