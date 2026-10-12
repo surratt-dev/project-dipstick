@@ -555,12 +555,56 @@ export type AuditEventName =
   // write of any kind for that request.
   | "topic.write_rate_limited"
   | "topic.write_rate_limit_exceeded"
-  | "topic.write_rate_limit_check_failed";
+  | "topic.write_rate_limit_check_failed"
+  // topic.config_list_denied: 264-topic-002-audit-non-admin-denials (#264),
+  // design.md D1/D2/D4. DURABLE: written by TOPIC-002 (GET
+  // /api/v1/teams/:teamId/topics/all, content.ts) on EVERY non-admin denial
+  // (one audit_log row plus this event, never deduplicated), for both
+  // reasons: metadata.reason is "NOT_A_FACILITATOR" (the probing signal) or
+  // "FACILITATOR_IS_TEAM_MEMBER". The latter is INFORMATIONAL: a member
+  // facilitator opening their own team's Topic Management hits it on every
+  // page load, so its volume is not a signal and nobody should alert on it.
+  // The log-only sibling is topic.config_read_denied_role (TOPIC-001).
+  //
+  // Row: operation, actor_user_id, actor_global_role (the decision's role,
+  // "unknown" when the caller has no users row), actor_ip (request.ip),
+  // team_id (the requested id as validated; NOT a verified team, no teams
+  // lookup is made), metadata { endpoint, http_status: 403, reason }, and
+  // actor_roles. actor_roles is NULL when it was not captured or is
+  // unavailable (no users row); it is read inside the insert statement.
+  // NEVER team names, topic names or ids, or annotation text.
+  //
+  // Event payload (exactly nine keys): { actorUserId, actorGlobalRole,
+  // actorIp, teamId, endpoint, httpStatus, reason, actorRoles, rowWritten }.
+  // It is emitted on every denial; when the insert failed rowWritten is
+  // false and actorRoles is null, so the log copy survives exactly when the
+  // database copy is lost. The enforcing pin is the exact-equality test in
+  // content.test.ts.
+  //
+  // No application endpoint or screen reads these rows: access is database
+  // and log-sink operators only. Retention follows the existing audit_log
+  // policy. Fail-open on the response: a failed insert never changes the 403
+  // (see topic.audit_write_failed).
+  | "topic.config_list_denied"
+  // topic.audit_write_failed: #264, design.md D3/D5. LOG-ONLY, no audit_log
+  // row (a row about the database failing to take a row is not a fallback),
+  // emitted at ERROR level, and no alert consumes it today (#131). Fired by
+  // TOPIC-002 when the topic.config_list_denied insert throws or times out;
+  // the 403 is unaffected and the event is swallowed. Operators grep for it.
+  //
+  // Payload (exactly eight keys): { actorUserId, teamId, endpoint,
+  // operation, stage, reason, failureMode, errorCode }. stage is always
+  // "audit_insert"; failureMode is "error" | "timeout"; errorCode is the pg
+  // SQLSTATE or null -- NEVER err.message or err.detail, which can echo row
+  // values. Distinct from admin.audit_write_failed (admin arm, fail-closed)
+  // and auth.audit_write_failed (auth trail).
+  | "topic.audit_write_failed";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,
   event: AuditEventName,
   fields: Record<string, unknown>,
+  level: "info" | "error" = "info",
 ): void {
   // Audit events must be written regardless of the application log level.
   //
@@ -582,7 +626,9 @@ export function emitAuditEvent(
   // before adopting a filtering transport.
   const auditLogger = logger.child({ audit: true });
   auditLogger.level = "info";
-  auditLogger.info({
+  // #264: a log-only failure signal that nothing consumes (#131) is emitted at
+  // "error"; every other event stays at "info".
+  auditLogger[level]({
     event,
     timestamp: new Date().toISOString(),
     ...fields,

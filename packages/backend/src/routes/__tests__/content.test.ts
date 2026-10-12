@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type * as TopicLockStateModule from "../../auth/topic-lock-state.js";
+import type * as TimingOracleModule from "../../content/timing-oracle.js";
 
 // NOTE: a module-level afterEach (in the #232 fixture section below) calls
 // mockDbQuery.mockReset() after EVERY test in this file, not only #232's.
@@ -52,6 +53,7 @@ import Fastify from "fastify";
 import { contentRoutes, assertTopic002AuthorizedRole } from "../content.js";
 import { DEFAULT_TOPICS_TEAM_ID } from "../../sessions/default-topics.js";
 import type { GetAllTopicsResponse } from "@dipstick/shared";
+import baseline403 from "./fixtures/topic-002-403-baseline.json";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -945,6 +947,10 @@ interface Topic002Fixture {
   membershipRole?: string | null;
   /** users.roles as served by the role-set read; null = zero rows. */
   roles?: string[] | null;
+  /** #264: the shared helper's read returns zero rows (the caller has no users row). */
+  noUsersRow?: boolean;
+  /** #264: actor_roles as returned by the denial insert's RETURNING; null = no users row. */
+  denialRoles?: string[] | null;
   /** Explicit injected failures: reject when the SQL matches. */
   reject?: Array<{ match: RegExp; error: Error }>;
 }
@@ -973,6 +979,8 @@ function routeTopic002(fixture: Topic002Fixture = {}) {
     completedSessions: "1",
     membershipRole: null as string | null,
     roles: ["application_admin"] as string[] | null,
+    noUsersRow: false,
+    denialRoles: ["participant", "engineering_manager"] as string[] | null,
     reject: [] as Array<{ match: RegExp; error: Error }>,
     ...fixture,
   };
@@ -983,7 +991,7 @@ function routeTopic002(fixture: Topic002Fixture = {}) {
     }
     switch (classifyTopic002Sql(sql)) {
       case "helper":
-        return { rows: [{ global_role: f.globalRole, is_member: f.isMember }] };
+        return { rows: f.noUsersRow ? [] : [{ global_role: f.globalRole, is_member: f.isMember }] };
       case "membership":
         return { rows: f.membershipRole === null ? [] : [{ role: f.membershipRole }] };
       case "role_set":
@@ -999,7 +1007,7 @@ function routeTopic002(fixture: Topic002Fixture = {}) {
       case "lock":
         return { rows: [{ count: f.completedSessions }] };
       case "audit_insert":
-        return { rows: [], rowCount: 1 };
+        return { rows: [{ actor_roles: f.denialRoles }], rowCount: 1 };
       default:
         unroutedSql.push(sql);
         throw new Error(`unrouted SQL in TOPIC-002 fixture: ${sql}`);
@@ -1211,8 +1219,10 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
 
     expect(res.statusCode).toBe(403);
-    // Only the auth query ran — no resource queries reached.
-    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    // Only the auth query and the #264 denial audit insert ran -- no
+    // resource queries reached.
+    expect(mockDbQuery).toHaveBeenCalledTimes(2);
+    expect(String(mockDbQuery.mock.calls[1]![0])).toMatch(/INSERT INTO audit_log/);
   });
 
   it("a facilitator who is an active member of the team is rejected 403, even though they hold the facilitator role", async () => {
@@ -1274,6 +1284,36 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
     const app = await buildApp();
     await app.inject({ method: "GET", url: "/api/v1/teams/11111111-1111-4111-8111-111111111111/topics/all" });
     expect(mockApplyTimingFloor).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #264 task 0.2 -- the TOPIC-002 403 baseline. The fixture was captured
+// against the pre-change handler and is never regenerated: later commits
+// must keep these exact bytes (status, Content-Type, body) on every denial
+// path, including audit-failure paths.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all -- 403 baseline snapshot (#264 task 0.2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.mockReset();
+    unroutedSql = [];
+  });
+  afterEach(() => expect(unroutedSql).toEqual([]));
+
+  it.each([
+    ["NOT_A_FACILITATOR", "engineer", false],
+    ["FACILITATOR_IS_TEAM_MEMBER", "facilitator", true],
+  ] as const)("%s 403 equals the committed snapshot", async (reason, globalRole, isMember) => {
+    routeTopic002({ globalRole, isMember });
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
+
+    const snap = baseline403[reason];
+    expect(res.statusCode).toBe(snap.status);
+    expect(res.headers["content-type"]).toBe(snap.contentType);
+    const parsed = res.json() as { error: { correlationId: string } };
+    expect(res.body.replace(parsed.error.correlationId, baseline403.correlationIdPlaceholder)).toBe(snap.body);
   });
 });
 
@@ -1869,7 +1909,7 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
     expect(res.statusCode).toBe(403);
     expect(res.json().error.message).toBe("A facilitator cannot view topic management for a team they are a member of.");
     expect(sqlCallsMatching(/SELECT role FROM team_memberships/)).toHaveLength(0);
-    expect(auditInsertCalls()).toHaveLength(0);
+    expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(0);
   });
 
   it("3.6: a global facilitator with an engineering_manager membership gets 403 as a member-facilitator", async () => {
@@ -1880,7 +1920,7 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
     expect(res.statusCode).toBe(403);
     expect(res.json().error.message).toBe("A facilitator cannot view topic management for a team they are a member of.");
     expect(sqlCallsMatching(/SELECT role FROM team_memberships/)).toHaveLength(0);
-    expect(auditInsertCalls()).toHaveLength(0);
+    expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(0);
     expect(adminEvents()).toHaveLength(0);
   });
 
@@ -1898,8 +1938,353 @@ describe("GET /api/v1/teams/:teamId/topics/all — administrator audit (#232, #2
 
     expect(res.statusCode).toBe(403);
     expect(res.json().error.message).toBe("Only a facilitator or an application admin can view this team's topic list.");
-    expect(auditInsertCalls()).toHaveLength(0);
+    expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(0);
     expect(adminEvents()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #264 -- TOPIC-002 non-admin denial audit. Fail-open on the response, one
+// durable row and one event per denial, 403 byte-identical to the 0.2
+// snapshot on every path. Uses the SQL-routed fixture.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all -- non-admin denial audit (#264)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.mockReset();
+    unroutedSql = [];
+  });
+  afterEach(() => expect(unroutedSql).toEqual([]));
+
+  const OP = "topic.config_list_denied";
+  const ENDPOINT = "GET /api/v1/teams/:teamId/topics/all";
+  const DENIAL_EVENT_KEYS = [
+    "actorGlobalRole",
+    "actorIp",
+    "actorRoles",
+    "actorUserId",
+    "endpoint",
+    "httpStatus",
+    "reason",
+    "rowWritten",
+    "teamId",
+  ];
+  const FAILURE_EVENT_KEYS = [
+    "actorUserId",
+    "endpoint",
+    "errorCode",
+    "failureMode",
+    "operation",
+    "reason",
+    "stage",
+    "teamId",
+  ];
+  const CASES = [
+    ["NOT_A_FACILITATOR", { globalRole: "engineer", isMember: false }, "engineer"],
+    ["NOT_A_FACILITATOR", { globalRole: "engineering_manager", isMember: true }, "engineering_manager"],
+    ["FACILITATOR_IS_TEAM_MEMBER", { globalRole: "facilitator", isMember: true }, "facilitator"],
+  ] as const;
+
+  async function get() {
+    const app = await buildApp();
+    return app.inject({ method: "GET", url: TOPIC_002_URL });
+  }
+
+  function denialEvents() {
+    return eventCalls(OP);
+  }
+  function failureEvents() {
+    return eventCalls("topic.audit_write_failed");
+  }
+
+  /** The 403 equals the committed 0.2 snapshot (status, Content-Type, body string). */
+  function expectBaseline403(res: { statusCode: number; headers: Record<string, unknown>; body: string }, reason: "NOT_A_FACILITATOR" | "FACILITATOR_IS_TEAM_MEMBER") {
+    const snap = baseline403[reason];
+    expect(res.statusCode).toBe(snap.status);
+    expect(res.headers["content-type"]).toBe(snap.contentType);
+    const id = (JSON.parse(res.body) as { error: { correlationId: string } }).error.correlationId;
+    expect(res.body.replace(id, baseline403.correlationIdPlaceholder)).toBe(snap.body);
+    // No header or field mentions auditing.
+    expect(Object.keys(res.headers).join(",").toLowerCase()).not.toContain("audit");
+    expect(res.body.toLowerCase()).not.toContain("audit");
+  }
+
+  it.each(CASES)("%s (%s): exactly one durable row with the decision's role, request.ip, and the pinned metadata", async (reason, fixture, role) => {
+    routeTopic002(fixture);
+    const res = await get();
+
+    expectBaseline403(res, reason);
+    const inserts = auditInsertCalls(OP);
+    expect(inserts).toHaveLength(1);
+    expect(auditInsertCalls()).toHaveLength(1);
+    const params = inserts[0]![1] as unknown[];
+    expect(params).toEqual(["actor-1", role, "127.0.0.1", OP, TOPIC_002_TEAM_ID, expect.any(String)]);
+    expect(auditInsertMetadata(inserts[0]!)).toEqual({ endpoint: ENDPOINT, http_status: 403, reason });
+    expect(Object.keys(auditInsertMetadata(inserts[0]!)).sort()).toEqual(["endpoint", "http_status", "reason"]);
+    expect(failureEvents()).toHaveLength(0);
+  });
+
+  it("the insert SQL is a constant string: casts on every parameter, no request data interpolated (Security A2)", async () => {
+    routeTopic002({ globalRole: "engineer" });
+    await get();
+    const sql = String(auditInsertCalls(OP)[0]![0]);
+    for (const cast of ["$1::uuid", "$2::text", "$3::inet", "$4::text", "$5::uuid", "$6::jsonb"]) {
+      expect(sql).toContain(cast);
+    }
+    expect(sql).toMatch(/FROM \(SELECT 1\) s LEFT JOIN users u ON u\.id = \$1::uuid/);
+    expect(sql).toMatch(/RETURNING actor_roles/);
+    for (const datum of ["actor-1", TOPIC_002_TEAM_ID, "127.0.0.1", "NOT_A_FACILITATOR", "engineer"]) {
+      expect(sql).not.toContain(datum);
+    }
+    // The text is the same constant on a second request.
+    mockDbQuery.mockClear();
+    await get();
+    expect(String(auditInsertCalls(OP)[0]![0])).toBe(sql);
+  });
+
+  it("the denial event carries exactly nine keys; actorRoles is what the insert returned", async () => {
+    routeTopic002({ globalRole: "engineer", denialRoles: ["participant", "engineering_manager"] });
+    await get();
+    const events = denialEvents();
+    expect(events).toHaveLength(1);
+    const payload = events[0]![2] as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(DENIAL_EVENT_KEYS);
+    expect(payload).toEqual({
+      actorUserId: "actor-1",
+      actorGlobalRole: "engineer",
+      actorIp: "127.0.0.1",
+      teamId: TOPIC_002_TEAM_ID,
+      endpoint: ENDPOINT,
+      httpStatus: 403,
+      reason: "NOT_A_FACILITATOR",
+      actorRoles: ["participant", "engineering_manager"], // stored order, not sorted
+      rowWritten: true,
+    });
+  });
+
+  it("a caller with no users row: row with 'unknown' and NULL roles, 403 unchanged, no failure event", async () => {
+    routeTopic002({ noUsersRow: true, denialRoles: null });
+    const res = await get();
+
+    expectBaseline403(res, "NOT_A_FACILITATOR");
+    const inserts = auditInsertCalls(OP);
+    expect(inserts).toHaveLength(1);
+    expect((inserts[0]![1] as unknown[])[1]).toBe("unknown");
+    expect(auditInsertMetadata(inserts[0]!).reason).toBe("NOT_A_FACILITATOR");
+    const payload = denialEvents()[0]![2] as Record<string, unknown>;
+    expect(payload["actorGlobalRole"]).toBe("unknown");
+    expect(payload["actorRoles"]).toBeNull();
+    expect(payload["rowWritten"]).toBe(true);
+    expect(failureEvents()).toHaveLength(0);
+  });
+
+  it("the same caller denied twice writes two rows and two events (no dedup)", async () => {
+    routeTopic002({ globalRole: "engineer" });
+    const app = await buildApp();
+    await app.inject({ method: "GET", url: TOPIC_002_URL });
+    await app.inject({ method: "GET", url: TOPIC_002_URL });
+    expect(auditInsertCalls(OP)).toHaveLength(2);
+    expect(denialEvents()).toHaveLength(2);
+  });
+
+  it("reason precedence: a non-facilitator member is NOT_A_FACILITATOR, only a member facilitator is FACILITATOR_IS_TEAM_MEMBER", async () => {
+    routeTopic002({ globalRole: "engineering_manager", isMember: true });
+    await get();
+    expect(auditInsertMetadata(auditInsertCalls(OP)[0]!).reason).toBe("NOT_A_FACILITATOR");
+    mockDbQuery.mockReset();
+    routeTopic002({ globalRole: "facilitator", isMember: true });
+    await get();
+    expect(auditInsertMetadata(auditInsertCalls(OP)[0]!).reason).toBe("FACILITATOR_IS_TEAM_MEMBER");
+  });
+
+  it("a malformed team id is the untouched 404: no helper call, no row, no event", async () => {
+    routeTopic002({ globalRole: "engineer" });
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/teams/not-a-uuid/topics/all" });
+    expect(res.statusCode).toBe(404);
+    expect(mockDbQuery).not.toHaveBeenCalled();
+    expect(denialEvents()).toHaveLength(0);
+  });
+
+  it("a random valid team id writes a row with that team_id, no teams lookup, no failure event", async () => {
+    routeTopic002({ globalRole: "engineer" });
+    const other = "99999999-9999-4999-8999-999999999999";
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: `/api/v1/teams/${other}/topics/all` });
+    expect(res.statusCode).toBe(403);
+    expect((auditInsertCalls(OP)[0]![1] as unknown[])[4]).toBe(other);
+    expect(failureEvents()).toHaveLength(0);
+  });
+
+  it.each(CASES)("call order on %s (%s): insert, event, floor, send", async (_reason, fixture) => {
+    routeTopic002(fixture);
+    const { app, replySpy } = await buildAppWithReplySpy();
+    await app.inject({ method: "GET", url: TOPIC_002_URL });
+    expectAuditTailOrder(OP, replySpy);
+  });
+
+  // ---- fail-open --------------------------------------------------------
+  it.each(CASES)("a rejected insert (%s, %s): 403 equals the snapshot, one failure event, denial event with rowWritten false", async (reason, fixture) => {
+    routeTopic002({
+      ...fixture,
+      reject: [{ match: /INSERT INTO audit_log/, error: Object.assign(new Error("boom: leaked-sensitive-detail"), { code: "53100", detail: "Key (x)=(leaked-detail)" }) }],
+    });
+    const res = await get();
+
+    expectBaseline403(res, reason);
+    const failures = failureEvents();
+    expect(failures).toHaveLength(1);
+    const payload = failures[0]![2] as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(FAILURE_EVENT_KEYS);
+    expect(payload).toEqual({
+      actorUserId: "actor-1",
+      teamId: TOPIC_002_TEAM_ID,
+      endpoint: ENDPOINT,
+      operation: OP,
+      stage: "audit_insert",
+      reason,
+      failureMode: "error",
+      errorCode: "53100",
+    });
+    expect(failures[0]![3]).toBe("error"); // error level
+    const text = JSON.stringify(payload);
+    expect(text).not.toContain("boom");
+    expect(text).not.toContain("leaked");
+
+    const denial = denialEvents();
+    expect(denial).toHaveLength(1);
+    const dp = denial[0]![2] as Record<string, unknown>;
+    expect(Object.keys(dp).sort()).toEqual(DENIAL_EVENT_KEYS);
+    expect(dp["rowWritten"]).toBe(false);
+    expect(dp["actorRoles"]).toBeNull();
+    expect(dp["reason"]).toBe(reason);
+  });
+
+  it("a failure without a SQLSTATE reports errorCode null", async () => {
+    routeTopic002({ globalRole: "engineer", reject: [{ match: /INSERT INTO audit_log/, error: new Error("no code") }] });
+    await get();
+    expect((failureEvents()[0]![2] as Record<string, unknown>)["errorCode"]).toBeNull();
+  });
+
+  it("a hanging insert times out at the 500 ms bound: 403 unchanged, failureMode timeout, no extra wait", async () => {
+    routeTopic002({ globalRole: "engineer" });
+    const route = mockDbQuery.getMockImplementation()!;
+    mockDbQuery.mockImplementation((sql: unknown, params: unknown) =>
+      /INSERT INTO audit_log/.test(String(sql)) ? new Promise(() => undefined) : route(sql, params),
+    );
+    const started = Date.now();
+    const res = await get();
+    const elapsed = Date.now() - started;
+
+    expectBaseline403(res, "NOT_A_FACILITATOR");
+    expect(elapsed).toBeGreaterThanOrEqual(450);
+    expect(elapsed).toBeLessThan(900);
+    const payload = failureEvents()[0]![2] as Record<string, unknown>;
+    expect(payload["failureMode"]).toBe("timeout");
+    expect(payload["errorCode"]).toBeNull();
+    expect((denialEvents()[0]![2] as Record<string, unknown>)["rowWritten"]).toBe(false);
+  });
+
+  it("fail-open covers the insert only: a throwing helper query is still 500, with no row", async () => {
+    routeTopic002({ reject: [{ match: /FROM users u/, error: new Error("helper down") }] });
+    const res = await get();
+    expect(res.statusCode).toBe(500);
+    expect(auditInsertCalls()).toHaveLength(0);
+    expect(denialEvents()).toHaveLength(0);
+  });
+
+  it("fail-open covers the insert only: a throwing timing floor is still 500", async () => {
+    routeTopic002({ globalRole: "engineer" });
+    mockApplyTimingFloor.mockRejectedValueOnce(new Error("floor broke"));
+    const res = await get();
+    expect(res.statusCode).toBe(500);
+  });
+
+  // ---- timing -----------------------------------------------------------
+  it("the floor is a minimum measured from handler entry: helper plus audit of 20 ms still answers at about 150 ms, not 170 ms", async () => {
+    const { applyTimingFloor: realFloor } = await vi.importActual<typeof TimingOracleModule>(
+      "../../content/timing-oracle.js",
+    );
+    mockApplyTimingFloor.mockImplementation(realFloor);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      routeTopic002({ globalRole: "engineer" });
+      const route = mockDbQuery.getMockImplementation()!;
+      // 10 ms for the helper read and 10 ms for the audit insert.
+      mockDbQuery.mockImplementation(
+        (sql: unknown, params: unknown) =>
+          new Promise((resolve, reject) => {
+            setTimeout(() => route(sql, params).then(resolve, reject), 10);
+          }),
+      );
+      const app = await buildApp();
+      let doneAt: number | null = null;
+      const t0 = Date.now();
+      const pending = app.inject({ method: "GET", url: TOPIC_002_URL }).then((r) => {
+        doneAt = Date.now() - t0;
+        return r;
+      });
+      await vi.advanceTimersByTimeAsync(149);
+      expect(doneAt).toBeNull(); // the floor has not elapsed yet
+      await vi.advanceTimersByTimeAsync(1);
+      const res = await pending;
+      expect(res.statusCode).toBe(403);
+      expect(doneAt).toBe(150); // not 170
+    } finally {
+      vi.useRealTimers();
+      mockApplyTimingFloor.mockReset();
+      mockApplyTimingFloor.mockResolvedValue(undefined);
+    }
+  });
+
+  // ---- scope guards -----------------------------------------------------
+  it("an admitted facilitator and an admitted admin run no denial insert and no added query", async () => {
+    routeTopic002({ globalRole: "facilitator", isMember: false });
+    const resF = await get();
+    expect(resF.statusCode).toBe(200);
+    expect(auditInsertCalls()).toHaveLength(0);
+    expect(denialEvents()).toHaveLength(0);
+    // Same SQL set as the #259 fixture: helper, team name, active, archived, defaults, lock.
+    const facilitatorSql = mockDbQuery.mock.calls.map((c) => classifyTopic002Sql(String(c[0])));
+    expect(facilitatorSql).not.toContain("audit_insert");
+    expect(facilitatorSql).not.toContain("membership");
+    expect(facilitatorSql).not.toContain("role_set");
+
+    mockDbQuery.mockReset();
+    routeTopic002({ globalRole: "application_admin" });
+    const resA = await get();
+    expect(resA.statusCode).toBe(200);
+    expect(auditInsertCalls()).toHaveLength(1);
+    expect(auditInsertCalls(OP)).toHaveLength(0);
+    expect(auditInsertCalls("admin.topic_config_accessed")).toHaveLength(1);
+  });
+
+  it("a denied request reads no teams, topics, annotations or lock state, and nothing identifying them reaches the row or event", async () => {
+    const SENTINELS = ["Platform Squad", "SECRET-TOPIC-NAME", "SECRET-TOPIC-ID", "SECRET-ANNOTATION"];
+    routeTopic002({
+      globalRole: "engineer",
+      teamName: "Platform Squad",
+      active: [{ id: "SECRET-TOPIC-ID", name: "SECRET-TOPIC-NAME", team_annotation: "SECRET-ANNOTATION" }],
+    });
+    await get();
+    for (const call of mockDbQuery.mock.calls) {
+      const sql = String(call[0]);
+      expect(sql).not.toMatch(/FROM teams/);
+      expect(sql).not.toMatch(/FROM topics/);
+      expect(sql).not.toMatch(/COUNT\(\*\) AS count FROM sessions/);
+      expect(sql).not.toMatch(/annotation/);
+    }
+    const serialized = JSON.stringify([auditInsertCalls(OP).map((c) => c[1]), denialEvents(), failureEvents()]);
+    for (const sentinel of SENTINELS) expect(serialized).not.toContain(sentinel);
+    expect(mockGetTopicLockState).not.toHaveBeenCalled();
+  });
+
+  it("the administrator arm stays fail-closed (#232): a rejected admin insert is still 500 and writes no denial row or event", async () => {
+    routeTopic002({ reject: [{ match: /INSERT INTO audit_log/, error: Object.assign(new Error("x"), { code: "53100" }) }] });
+    const res = await get();
+    expect(res.statusCode).toBe(500);
+    expect(failureEvents()).toHaveLength(0);
+    expect(denialEvents()).toHaveLength(0);
   });
 });
 

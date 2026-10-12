@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
+import { AUDIT_WRITE_TIMEOUT_MS, AuditWriteTimeoutError, withTimeout } from "../auth/audit-write-timeout.js";
 import {
   evaluateTeamAccess,
   readActiveMembershipRole,
@@ -198,6 +199,16 @@ const TOPIC_002_ENDPOINT = "GET /api/v1/teams/:teamId/topics/all";
 type Topic002AdminOperation = "admin.topic_config_accessed";
 
 /**
+ * The pg SQLSTATE of a thrown value, or null. The one place the "SQLSTATE
+ * only, never err.message / err.detail" rule lives (#264 D3): both audit
+ * failure signals use it, because message and detail can echo row values.
+ */
+function sqlstateOf(err: unknown): string | null {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
+}
+
+/**
  * #232 D5b: run one admin-arm audit step (the role-set read or an audit
  * insert). On a throw, emit the log-only admin.audit_write_failed signal
  * with the SQLSTATE only (never err.message / err.detail, which can echo row
@@ -211,16 +222,109 @@ async function withAdminAuditFailureSignal<T>(
   try {
     return await step();
   } catch (err) {
-    const code = (err as { code?: unknown } | null)?.code;
     emitAuditEvent(request.log, "admin.audit_write_failed", {
       actorUserId: ctx.actorUserId,
       teamId: ctx.teamId,
       endpoint: TOPIC_002_ENDPOINT,
       operation: ctx.operation,
       stage: ctx.stage,
-      errorCode: typeof code === "string" ? code : null,
+      errorCode: sqlstateOf(err),
     });
     throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// #264: the non-admin denial audit (change 264-topic-002-audit-non-admin-
+// denials). Every TOPIC-002 denial writes one topic.config_list_denied row
+// and emits one event, for both reasons, never deduplicated.
+//
+// FAIL-OPEN on the response (design D3, Security P1): what is audited is a
+// rejection, not a disclosure, so a failed insert never changes the 403. The
+// administrator arm above stays fail-closed (it audits a disclosure). The
+// try/catch in runDenialAuditStep wraps ONLY the insert, so anything else on
+// the denial path that throws (the helper call, applyTimingFloor,
+// reply.send) is still a 500.
+// ---------------------------------------------------------------------------
+const TOPIC_002_DENIAL_OPERATION = "topic.config_list_denied" as const;
+
+/**
+ * Constant SQL text, numbered placeholders only (no request data is ever
+ * interpolated). Every parameter carries an explicit cast: in an
+ * INSERT ... SELECT a bare parameter gets no type inference from the target
+ * column (unlike VALUES) and would resolve as text, so the insert would fail
+ * every time against the UUID / INET / JSONB columns. Fail-open would hide
+ * that behind a stream of topic.audit_write_failed events, so the real
+ * Postgres integration test is mandatory. The caller's role set is read
+ * inside the insert (LEFT JOIN users): a missing users row gives
+ * actor_roles = NULL, not a failure, and there is exactly one query and one
+ * timeout.
+ */
+const TOPIC_002_DENIAL_INSERT_SQL = `INSERT INTO audit_log
+       (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata, actor_roles)
+     SELECT $1::uuid, $2::text, $3::inet, $4::text, $5::uuid, $6::jsonb, u.roles::text[]
+     FROM (SELECT 1) s LEFT JOIN users u ON u.id = $1::uuid
+     RETURNING actor_roles`;
+
+type Topic002DenialReason = "NOT_A_FACILITATOR" | "FACILITATOR_IS_TEAM_MEMBER";
+
+/**
+ * Inserts the denial row and returns the stored actor_roles (null when the
+ * caller has no users row). `actorGlobalRole` null (no users row) is stored
+ * as 'unknown', the existing convention; that mapping lives here, not in the
+ * shared helper.
+ */
+async function insertTopic002DenialAuditRow(args: {
+  actorUserId: string;
+  actorGlobalRole: string | null;
+  actorIp: string;
+  teamId: string;
+  reason: Topic002DenialReason;
+}): Promise<readonly string[] | null> {
+  const result = await withTimeout(
+    db.query<{ actor_roles: string[] | null }>(TOPIC_002_DENIAL_INSERT_SQL, [
+      args.actorUserId,
+      args.actorGlobalRole ?? "unknown",
+      args.actorIp,
+      TOPIC_002_DENIAL_OPERATION,
+      args.teamId,
+      JSON.stringify({ endpoint: TOPIC_002_ENDPOINT, http_status: 403, reason: args.reason }),
+    ]),
+    AUDIT_WRITE_TIMEOUT_MS,
+  );
+  return result.rows[0]?.actor_roles ?? null;
+}
+
+/**
+ * Runs the denial insert fail-open. On a throw or a timeout, emits the
+ * log-only topic.audit_write_failed (error level; SQLSTATE only, never
+ * err.message) and swallows. Reports whether a row was written and the roles
+ * the insert captured.
+ */
+async function runDenialAuditStep(
+  request: FastifyRequest,
+  ctx: { actorUserId: string; teamId: string; reason: Topic002DenialReason },
+  insert: () => Promise<readonly string[] | null>,
+): Promise<{ rowWritten: boolean; actorRoles: readonly string[] | null }> {
+  try {
+    return { rowWritten: true, actorRoles: await insert() };
+  } catch (err) {
+    emitAuditEvent(
+      request.log,
+      "topic.audit_write_failed",
+      {
+        actorUserId: ctx.actorUserId,
+        teamId: ctx.teamId,
+        endpoint: TOPIC_002_ENDPOINT,
+        operation: TOPIC_002_DENIAL_OPERATION,
+        stage: "audit_insert",
+        reason: ctx.reason,
+        failureMode: err instanceof AuditWriteTimeoutError ? "timeout" : "error",
+        errorCode: sqlstateOf(err),
+      },
+      "error",
+    );
+    return { rowWritten: false, actorRoles: null };
   }
 }
 
@@ -759,6 +863,33 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     // shared function does neither.
     const decision = await checkStandingFacilitatorOrAdminAuthorization(session.userId, teamId);
     if (!decision.authorized) {
+      // #264: audit the denial (fail-open), emit the event, THEN the floor,
+      // then the unchanged 403. The insert never sits between the floor and
+      // the send, and applyTimingFloor is measured from handler entry so the
+      // audit time is absorbed into the floor.
+      const denial = await runDenialAuditStep(
+        request,
+        { actorUserId: session.userId, teamId, reason: decision.reason },
+        () =>
+          insertTopic002DenialAuditRow({
+            actorUserId: session.userId,
+            actorGlobalRole: decision.actorGlobalRole,
+            actorIp: request.ip,
+            teamId,
+            reason: decision.reason,
+          }),
+      );
+      emitAuditEvent(request.log, TOPIC_002_DENIAL_OPERATION, {
+        actorUserId: session.userId,
+        actorGlobalRole: decision.actorGlobalRole ?? "unknown",
+        actorIp: request.ip,
+        teamId,
+        endpoint: TOPIC_002_ENDPOINT,
+        httpStatus: 403,
+        reason: decision.reason,
+        actorRoles: denial.actorRoles,
+        rowWritten: denial.rowWritten,
+      });
       await applyTimingFloor(startTime);
       return noStore(reply)
         .code(403)

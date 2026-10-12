@@ -188,7 +188,7 @@ Application Admins (users with `global_role = 'application_admin'`) SHALL have a
 
 **Audit logging of denied admin access to session content:** Any Application Admin request to a session content endpoint, whatever the response code, MUST be logged in the `audit_log` table with the standard audit fields plus the HTTP status code of the response. The audit entry MUST be written even when the response is 403. The same logging applies to an Application Admin request to TOPIC-001, under the existing operation `admin.session_content_denied` with `metadata.endpoint = "GET /api/v1/teams/:teamId/topics"`. The operation name SHALL NOT be changed, because audit consumers may key on it.
 
-**Audit visibility guard:** `admin.topic_config_accessed` rows (and any historical `admin.topic_config_denied` rows) SHALL NOT be exposed through any endpoint or screen available to team members or engineering managers. To make this checkable, no application query that serves a non-administrator caller SHALL select from `audit_log` using a wildcard, prefix, pattern, or `IN` list on `operation` that could match `admin.topic_config_*`. Every such query SHALL filter `operation` by equality on a single named operation.
+**Audit visibility guard:** `admin.topic_config_accessed` rows, `topic.config_list_denied` rows (and any historical `admin.topic_config_denied` rows) SHALL NOT be exposed through any endpoint or screen available to team members or engineering managers. To make this checkable, no application query that serves a non-administrator caller SHALL select from `audit_log` using a wildcard, prefix, pattern, or `IN` list on `operation` that could match `admin.topic_config_*` or `topic.config_list_denied`. Every such query SHALL filter `operation` by equality on a single named operation.
 
 #### Scenario: Application Admin can access team membership list
 
@@ -237,7 +237,8 @@ Application Admins (users with `global_role = 'application_admin'`) SHALL have a
 
 - **WHEN** a user with `global_role = 'engineering_manager'` and an active `participant` membership on the team requests TOPIC-002
 - **THEN** the response is `403` with the message "Only a facilitator or an application admin can view this team's topic list."
-- **AND** no `admin.*` audit row is written (this pins only that no administrator operation is written; it does not decide SEC-13 auditing of non-administrator denials)
+- **AND** no `admin.*` audit row is written
+- **AND** exactly one `audit_log` row with operation `topic.config_list_denied` and `metadata.reason = "NOT_A_FACILITATOR"` is written (see the topic-customization-lock capability)
 
 #### Scenario: A failed admin-read audit write returns no data
 
@@ -249,7 +250,7 @@ Application Admins (users with `global_role = 'application_admin'`) SHALL have a
 
 - **WHEN** the backend source is searched for every query that selects from `audit_log` and serves a caller who is not an `application_admin`
 - **THEN** each such query filters `operation` by equality on a single named operation
-- **AND** none uses a wildcard, prefix, pattern, or `IN` list that could match `admin.topic_config_accessed` or the retired `admin.topic_config_denied`
+- **AND** none uses a wildcard, prefix, pattern, or `IN` list that could match `admin.topic_config_accessed`, `topic.config_list_denied`, or the retired `admin.topic_config_denied`
 
 ---
 
