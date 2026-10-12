@@ -25,3 +25,6 @@ Reviewer: Devon Calloway (Internal Champion). Read: proposal, design, security c
 2. Release check still owed at PR time: Priya's usability pass (a member-facilitator clicks Topics and sees no difference), the `trustProxy` / `request.ip` statement, and the edge rate-limit statement.
 3. Follow-up 1 (hide the Topics link for member-facilitators) is where the real user problem is solved. Please keep it scheduled. Until then every member-facilitator page load writes a benign row.
 4. Docs honestly say no alert consumes these signals (#131). Nobody should read this as detection. The change gives post-hoc reconstruction only.
+
+## Update (follow-ups filed)
+Follow-up issues were filed after sign-off: #276 (Topics link/denial copy), #277 (volume control), #278 (growth/retention note), #279 (Product question). The placeholders noted above are resolved; `Closes #264` is now permitted once the PR links #277.

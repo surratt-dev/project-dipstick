@@ -25,3 +25,6 @@ No other statement that TOPIC-002 non-admin denials are unaudited. Remaining "un
 
 - The REST contract 403 table row for TOPIC-002 does not mention the audit; the Notes bullet "Denial audit (#264)" carries it. Acceptable.
 - Proposal follow-up issue numbers are still placeholders (#TBD, #TBD-A, #TBD-B); the PR must not use `Closes #264` until #TBD-A exists (per proposal). Process item, not doc drift.
+
+## Update (follow-ups filed)
+Follow-up issues were filed after sign-off: #276 (Topics link/denial copy), #277 (volume control), #278 (growth/retention note), #279 (Product question). The placeholders noted above are resolved; `Closes #264` is now permitted once the PR links #277.

@@ -54,10 +54,10 @@ None.
 
 ## Follow-ups
 
-1. Hide or disable the Topics link for a member-facilitator, and improve the denial copy. **Issue number: PLACEHOLDER (#TBD). No GitHub issue has been created by this change; the user files it and the number is cited here.**
-2. Product question: does a member-facilitator have a route to the definitions she needs to prepare? (P3) Non-blocking; handed to Product (owner: Product Owner), recorded in the PR description so it is not lost; no issue is created by this change.
-3. Bounded volume control for denial rows (episode shape of `topic.write_rate_limited`; Redis; its fail-open/closed choice decided there). **Issue: PLACEHOLDER (#TBD-A).** Required by Security before the issue is closed: the PR must not use `Closes #264` until #TBD-A exists and is linked.
-4. `audit_log` growth/retention statement and a top-N denial-writers query for operators. **Issue: PLACEHOLDER (#TBD-B).**
+1. Hide or disable the Topics link for a member-facilitator, and improve the denial copy. **Issue: #276.**
+2. Product question: does a member-facilitator have a route to the definitions she needs to prepare? (P3) Non-blocking; handed to Product (owner: Product Owner), recorded in the PR description so it is not lost; issue #279.
+3. Bounded volume control for denial rows (episode shape of `topic.write_rate_limited`; Redis; its fail-open/closed choice decided there). **Issue: #277.** Required by Security before the issue is closed: #277 now exists; `Closes #264` is permitted once the PR links it.
+4. `audit_log` growth/retention statement and a top-N denial-writers query for operators. **Issue: #278.**
 
 ## Release check
 
