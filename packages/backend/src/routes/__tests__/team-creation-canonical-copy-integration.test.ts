@@ -224,6 +224,41 @@ describe.skipIf(!infraUp)("team creation copies the canonical defaults (#215)", 
     expect((await teamTopics(targetTeam)).length).toBe(0);
   });
 
+  // ---- #200 2.3 copyCanonicalDefaults returns the inserted ids -------------
+  it("#200 2.3: returns the inserted ids; their count equals the template's active default count", async () => {
+    await begin();
+    const targetTeam = await fx.team(facilitatorId);
+    const client = await mods.db.connect();
+    try {
+      await client.query("BEGIN");
+      const ids = await copyCanonicalDefaults(client, targetTeam);
+      const inserted = (
+        await client.query<{ id: string }>(`SELECT id FROM topics WHERE team_id = $1`, [targetTeam])
+      ).rows.map((r) => r.id);
+      await client.query("ROLLBACK");
+
+      expect(ids.length).toBe(activeDefaults().length);
+      expect([...ids].sort()).toEqual([...inserted].sort());
+    } finally {
+      client.release();
+    }
+  });
+
+  it("#200 2.3: an empty source returns [] and inserts nothing", async () => {
+    await begin();
+    const emptySource = await fx.team(facilitatorId);
+    const targetTeam = await fx.team(facilitatorId);
+    const client = await mods.db.connect();
+    try {
+      await client.query("BEGIN");
+      await expect(copyCanonicalDefaults(client, targetTeam, emptySource)).resolves.toEqual([]);
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    expect((await teamTopics(targetTeam)).length).toBe(0);
+  });
+
   // ---- 4.4 zero active defaults -------------------------------------------
   it("4.4: an empty template is HTTP 500 internal_error, leaks nothing, persists nothing, logs at error level", async () => {
     await begin();

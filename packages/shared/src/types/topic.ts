@@ -55,6 +55,18 @@ export interface AddCustomTopicResponse {
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/v1/teams/:teamId/topics/assign-defaults (zero-topic-team-recovery
+// #200, design.md D1/D2). Takes no request body. 201 body: the number of
+// topics written, which is also the count in the success line the Topic
+// Management screen shows ("{n} default topic(s) assigned."), so the screen
+// never hardcodes the template's size. Never carries topic text or the
+// template team's id.
+// ---------------------------------------------------------------------------
+export interface AssignDefaultsResponse {
+  topicCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // Why a team's topics are locked — template-team-not-usable (#214) design.md
 // D6. Set beside isCustomizationLocked on TOPIC-001 and TOPIC-002, both from
 // the backend's one getTopicLockState (auth/topic-lock-state.ts), so the two
@@ -120,6 +132,18 @@ export interface GetAllTopicsResponse {
   // Presentation only -- TOPIC-003 enforces authorization and the lock
   // independently. Does not consider isCustomizationLocked.
   canAddTopics: boolean;
+  // zero-topic-team-recovery (#200) design.md D6: true if and only if the
+  // caller is an application_admin, the team has zero ACTIVE topics, and the
+  // team is not the template team; false in every other case. Computed with
+  // the same isApplicationAdmin predicate the assign-defaults endpoint
+  // authorizes with. Presentation only -- the endpoint enforces its own
+  // authorization and precondition, and nothing reads this back from a
+  // client. Required here so the backend cannot forget it; the screen reads
+  // `=== true`, so a missing value (an older backend) renders no button. Does
+  // not consider isCustomizationLocked: an unlocked zero-topic team still
+  // reports true for an admin, and the screen shows its normal Add control
+  // there, not the Assign button.
+  canAssignDefaults: boolean;
   active: Array<{
     topicId: string;
     name: string;

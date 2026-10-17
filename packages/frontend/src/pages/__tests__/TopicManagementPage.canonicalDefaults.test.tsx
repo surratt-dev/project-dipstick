@@ -38,6 +38,7 @@ function canonicalDefaults(teamId = "template-team") {
     lockReason: "canonical_defaults",
     canEditAnnotations: true,
     canAddTopics: true,
+    canAssignDefaults: false,
     active: [
       activeTopic("topic-1", "Pairing Effectiveness", { displayOrder: 1, teamAnnotation: "A note" }),
       activeTopic("topic-2", "Pipeline", { displayOrder: 2 }),

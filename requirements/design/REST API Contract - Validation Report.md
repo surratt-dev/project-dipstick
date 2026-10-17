@@ -66,7 +66,7 @@
 | FR-8.3 | Historical vote data retained when topic removed | TOPIC-004 (soft-delete only; votes unaffected) | Covered |
 | FR-8.4 | Removed topics labeled "Archived" in history views | TOPIC-002 (`archived` array), TREND-001 (`topicStatus: 'archived'`) | Covered |
 | FR-8.5 | Warn and confirm before removing topic with open action items (PREF) | TOPIC-004 (confirmation flow via `requiresConfirmation` response) | Covered |
-| FR-8.6 | Default topic set visible and restorable at any time | TOPIC-002 (`defaultTopicsNotActive` array), TOPIC-005 (restore endpoint) | Covered |
+| FR-8.6 | Default topic set visible and restorable at any time | TOPIC-002 (`defaultTopicsNotActive` array), TOPIC-005 (restore endpoint), TOPIC-008 (assign defaults, zero-active-topics case only, #200) | Partially met (zero-active case only; partial restore and "visible" on a customized team remain open) |
 | FR-9.1 | Trend Dashboard accessible to participants, facilitators, EMs, admins | TREND-001 authorization covers all four roles | Covered |
 | FR-9.2 | Per-topic aggregate score chart; default 6 sessions; expandable | TREND-001 (`sessionLimit` param, default 6), TREND-002 (full history) | Covered |
 | FR-9.3 | Archived topics accessible via toggle with historical data (PREF) | TOPIC-002 and TREND-001 include archived topic data | Covered |

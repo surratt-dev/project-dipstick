@@ -2885,3 +2885,94 @@ describe("GET /api/v1/teams/:teamId/topics/all -- unknown team (#265)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// zero-topic-team-recovery (#200) tasks.md 4.1 (design.md D6): canAssignDefaults
+// on TOPIC-002. True only for (application admin, zero ACTIVE topics, not the
+// template team); computed with the same isApplicationAdmin predicate as the
+// assign-defaults endpoint. One table over all eight combinations. The
+// agreement with the endpoint's own 403 for every caller class, and a template
+// whose active topics are all archived, are proved against real Postgres in
+// assign-defaults-flag-integration.test.ts.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all -- canAssignDefaults truth table (#200 4.1)", () => {
+  const REAL_TEAM = "11111111-1111-4111-8111-111111111111";
+  const oneActive = {
+    id: "topic-1",
+    name: "Pipeline",
+    prompt: "Confidence in the pipeline",
+    vote_type: "finger",
+    display_order: 1,
+    is_default: true,
+    first_session_description: null,
+    team_annotation: null,
+    created_at: new Date("2026-09-01T00:00:00.000Z"),
+    updated_at: new Date("2026-09-01T00:00:00.000Z"),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.mockReset();
+    unroutedSql = [];
+  });
+  afterEach(() => expect(unroutedSql).toEqual([]));
+
+  async function flagFor(role: "application_admin" | "facilitator", zeroActive: boolean, template: boolean) {
+    routeTopic002({ globalRole: role, active: zeroActive ? [] : [oneActive] });
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/teams/${template ? DEFAULT_TOPICS_TEAM_ID : REAL_TEAM}/topics/all`,
+    });
+    expect(res.statusCode).toBe(200);
+    return (res.json() as GetAllTopicsResponse).canAssignDefaults;
+  }
+
+  const rows: Array<[admin: boolean, zeroActive: boolean, template: boolean]> = [];
+  for (const admin of [true, false]) for (const zero of [true, false]) for (const template of [true, false]) rows.push([admin, zero, template]);
+
+  it.each(rows)("admin=%s zeroActive=%s template=%s", async (admin, zeroActive, template) => {
+    const flag = await flagFor(admin ? "application_admin" : "facilitator", zeroActive, template);
+
+    // Only (admin, zero active, not template) is true; the rest are false (the
+    // handler always sends a boolean; the screen also treats absent as false).
+    expect(flag).toBe(admin && zeroActive && !template);
+  });
+
+  it("an unlocked team with zero active topics still reports true for an admin (the screen picks the control from the lock state)", async () => {
+    routeTopic002({ globalRole: "application_admin", active: [], completedSessions: "1" });
+    const app = await buildApp();
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/teams/${REAL_TEAM}/topics/all` });
+
+    expect(res.json()).toMatchObject({ isCustomizationLocked: false, canAssignDefaults: true });
+  });
+
+  it("archived topics do not count as active: a team with only archived topics reports true for an admin", async () => {
+    routeTopic002({
+      globalRole: "application_admin",
+      active: [],
+      archived: [
+        {
+          id: "topic-old",
+          name: "Old",
+          prompt: "Old?",
+          vote_type: "finger",
+          is_default: false,
+          archived_at: new Date("2026-09-29T12:00:00.000Z"),
+          archived_by: null,
+          archived_by_display_name: null,
+          restored_at: null,
+          restored_by: null,
+          restored_by_display_name: null,
+          team_annotation: null,
+        },
+      ],
+    });
+    const app = await buildApp();
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/teams/${REAL_TEAM}/topics/all` });
+
+    expect(res.json()).toMatchObject({ canAssignDefaults: true });
+  });
+});

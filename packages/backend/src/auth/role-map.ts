@@ -367,6 +367,19 @@ export function parseRoleArray(value: unknown): readonly GlobalRole[] {
 }
 
 /**
+ * zero-topic-team-recovery (#200) design.md D2/D6: the ONE admin test for the
+ * assign-defaults carve-out. The endpoint's authorization and the TOPIC-002
+ * `canAssignDefaults` flag both call it, so the two cannot be kept in step by
+ * a parity test alone. Takes the caller's live `users.global_role` (never a
+ * session or token claim); a missing user row (null / undefined) and any
+ * other value is a non-admin. Strict equality on purpose: no role outranks
+ * application_admin, and no role "implies" it.
+ */
+export function isApplicationAdmin(role: string | null | undefined): boolean {
+  return role === "application_admin";
+}
+
+/**
  * True when the token signals that `claimName` was omitted for overage
  * (Entra: `_claim_names.groups`), checked as an own property of a plain
  * object so inherited names never match (S8).

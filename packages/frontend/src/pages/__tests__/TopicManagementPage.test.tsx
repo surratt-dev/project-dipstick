@@ -40,6 +40,7 @@ const baseTopicsResponse: GetAllTopicsResponse = {
   isCustomizationLocked: false,
   canEditAnnotations: true,
   canAddTopics: true,
+  canAssignDefaults: false,
   active: [
     {
       topicId: "topic-1",

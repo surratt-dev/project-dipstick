@@ -7,6 +7,7 @@ import {
   PERMITTED_TARGETS,
   RANK,
   RoleMapConfigError,
+  isApplicationAdmin,
   isClaimOverage,
   mapValues,
   normalizeClaim,
@@ -481,4 +482,20 @@ describe("parseRoleArray", () => {
   ])("rejects %s", (_label, value) => {
     expect(() => parseRoleArray(value)).toThrow();
   });
+});
+
+describe("isApplicationAdmin (#200 2.4)", () => {
+  it.each(GLOBAL_ROLES.map((role) => [role, role === "application_admin"] as const))(
+    "%s -> %s",
+    (role, expected) => {
+      expect(isApplicationAdmin(role)).toBe(expected);
+    },
+  );
+
+  it.each([null, undefined, "", "unknown", "APPLICATION_ADMIN", "application_admin "])(
+    "%j is not an admin (a missing user row or a near-miss never passes)",
+    (role) => {
+      expect(isApplicationAdmin(role)).toBe(false);
+    },
+  );
 });

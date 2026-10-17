@@ -39,6 +39,11 @@ requireInfraOrThrow(infraUp, "topic-write-rate-limit-placement-integration.test.
 const TOPIC_WRITE_PREFIX = "/api/v1/teams/:teamId/topics";
 const WRITE_METHODS = new Set(["POST", "PUT", "DELETE"]);
 
+// zero-topic-team-recovery (#200): assign-defaults admits application_admin
+// only (a facilitator is 403 NOT_AN_ADMIN), so its "authorized actor" in step
+// (b) below is an admin whose own budget is seeded over the limit.
+const ADMIN_ONLY_ROUTES = new Set(["POST /api/v1/teams/:teamId/topics/assign-defaults"]);
+
 interface WriteRoute {
   method: "POST" | "PUT" | "DELETE";
   url: string;
@@ -79,6 +84,7 @@ describe.skipIf(!infraUp)("topic-write limiter placement — behavioural (#184 5
     fx = new Fixture(mods.db);
     const engineer = await fx.user("engineer");
     const facilitator = await fx.user("facilitator");
+    const admin = await fx.user("application_admin");
 
     const routes: WriteRoute[] = [];
     const collect = (route: RouteOptions) => {
@@ -91,11 +97,13 @@ describe.skipIf(!infraUp)("topic-write limiter placement — behavioural (#184 5
     };
     const engineerApp = await buildFullApp(mods, engineer, collect);
     const facilitatorApp = await buildFullApp(mods, facilitator);
+    const adminApp = await buildFullApp(mods, admin);
 
     expect(routes.map((r) => `${r.method} ${r.url}`).sort()).toEqual(
       expect.arrayContaining([
         "DELETE /api/v1/teams/:teamId/topics/:topicId",
         "POST /api/v1/teams/:teamId/topics",
+        "POST /api/v1/teams/:teamId/topics/assign-defaults",
         "POST /api/v1/teams/:teamId/topics/:topicId/restore",
         "PUT /api/v1/teams/:teamId/topics/:topicId/annotation",
         "PUT /api/v1/teams/:teamId/topics/order",
@@ -104,6 +112,7 @@ describe.skipIf(!infraUp)("topic-write limiter placement — behavioural (#184 5
 
     await seedOverBudget(engineer);
     await seedOverBudget(facilitator);
+    await seedOverBudget(admin);
     const engineerBefore = await topicWriteWindowState(engineer);
 
     try {
@@ -120,7 +129,8 @@ describe.skipIf(!infraUp)("topic-write limiter placement — behavioural (#184 5
 
         // (b) before team existence: 429 with zero queries against teams.
         const spy = vi.spyOn(mods.db, "query");
-        const limited = await injectWrite(facilitatorApp, route, concreteUrl(route, missingTeam, topicId), payloadFor(route, topicId));
+        const authorizedApp = ADMIN_ONLY_ROUTES.has(label) ? adminApp : facilitatorApp;
+        const limited = await injectWrite(authorizedApp, route, concreteUrl(route, missingTeam, topicId), payloadFor(route, topicId));
         const teamsQueries = spy.mock.calls.filter((c) => /\bFROM\s+teams\b/i.test(String(c[0])));
         spy.mockRestore();
         expect(limited.statusCode, label).toBe(429);
@@ -129,6 +139,7 @@ describe.skipIf(!infraUp)("topic-write limiter placement — behavioural (#184 5
     } finally {
       await engineerApp.close();
       await facilitatorApp.close();
+      await adminApp.close();
     }
   });
 });

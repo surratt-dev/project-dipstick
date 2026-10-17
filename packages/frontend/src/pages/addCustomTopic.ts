@@ -140,19 +140,32 @@ export function fieldErrorForServerField(
   return { field: null, message: SERVER_UNKNOWN_FIELD_MESSAGE };
 }
 
-export type ActiveEmptyStateVariant = "locked" | "unlocked_with_archived" | "unlocked_none_archived";
+// zero-topic-team-recovery (#200): the locked team splits in two. "locked" is
+// the viewer who must ask someone else (the original variant); "locked_assign"
+// is the application admin, who can assign the default topics here.
+export type ActiveEmptyStateVariant =
+  | "locked"
+  | "locked_assign"
+  | "unlocked_with_archived"
+  | "unlocked_none_archived";
 
 /**
  * The empty active-topics state's message and structure are a pure function
- * of the lock and the archived count (topic-003-admin-authorization design.md
- * D4). The variant does not encode add permission: whether "Add custom topic"
+ * of the lock, the archived count and the server's canAssignDefaults flag
+ * (topic-003-admin-authorization design.md D4; #200 design.md D7). This is
+ * the single place that decides. The flag is read with `=== true`, so a
+ * missing value (a frontend deployed ahead of its backend) fails closed to
+ * the ask-an-administrator variant, and it matters only on a locked team:
+ * an unlocked team keeps its Add / Show archived variants even for an admin.
+ * The variant does not encode add permission: whether "Add custom topic"
  * renders is decided by ActiveTopicsEmptyState's `addAllowed` prop.
  */
 export function activeEmptyStateVariant(
   isCustomizationLocked: boolean,
   archivedCount: number,
+  canAssignDefaults?: boolean,
 ): ActiveEmptyStateVariant {
-  if (isCustomizationLocked) return "locked";
+  if (isCustomizationLocked) return canAssignDefaults === true ? "locked_assign" : "locked";
   return archivedCount > 0 ? "unlocked_with_archived" : "unlocked_none_archived";
 }
 

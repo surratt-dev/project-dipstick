@@ -30,7 +30,7 @@
 
 ## Postconditions
 - **Success:** The new team has a complete topic configuration containing all default topics in their canonical order. The configuration is locked pending the team's first session completion. No custom topics exist yet.
-- **Failure:** The team record exists but has no topic configuration. The session cannot be started until the configuration is resolved.
+- **Failure:** No team or session is created; a team that nonetheless has zero active topics is recovered through Recover Zero-Topic Team.
 
 ---
 
@@ -51,7 +51,7 @@
 - The application must maintain a canonical default topic set as a system-level configuration.
 
 ## Notes
-- The default topic set is a system-level constant. If the canonical defaults change in a future application version, existing teams retain their assigned configuration and are not automatically updated.
+- The default topic set is a system-level constant. If the canonical defaults change in a future application version, existing teams retain their assigned configuration and are not automatically updated. The one exception is a team recovered through Recover Zero-Topic Team, which receives the *current* template, not the template of its creation date; that is intended.
 - Each team owns its own copy of the topic configuration — changes to one team's topics do not affect others.
 
 ---
@@ -87,7 +87,7 @@
 
 ## Postconditions
 - **Success (lock enforced):** The team's topic configuration is unchanged. The Facilitator sees a clear explanation of why editing is unavailable.
-- **Failure (lock not enforced):** A topic modification is applied before the first session, resulting in a first session that does not use the default topic set — this is the failure state the use case exists to prevent.
+- **Failure (lock not enforced):** A topic modification is applied before the first session, resulting in a first session that does not use the default topic set — this is the failure state the use case exists to prevent. (Assigning the canonical default set to a team with zero active topics is not a lock failure; see Recover Zero-Topic Team.)
 
 ---
 
@@ -98,7 +98,7 @@
 - [ ] After the team's first session is marked complete, the topic management controls become available without requiring a page reload (or at minimum, become available on next navigation to the screen).
 
 ## Out of Scope
-- Providing a bypass or override mechanism for the customization lock (no exceptions are defined).
+- The lock can be released for a team only by completing a first session, except that an application administrator may assign the canonical default set to a team with zero active topics (see Recover Zero-Topic Team). This does not permit customization. Any further exception requires explicit product owner sign-off.
 - Allowing Engineers to view or interact with topic management in any state.
 
 ## Dependencies
@@ -106,8 +106,67 @@
 - Use Case: Session Wrap-up / Mark Session Complete — completion of the first session triggers the unlock.
 
 ## Notes
-- The lock is based on session completion, not session creation or participation. A session that was started but abandoned does not count.
+- The lock is based on session completion, not session creation or participation. A session that was started but abandoned does not count. (The one exception is Recover Zero-Topic Team, which assigns the canonical defaults to a team with zero active topics and does not unlock the team.)
 - The lock applies to all forms of topic modification: adding, removing, reordering, and annotating.
+
+---
+
+---
+
+# Use Case: Recover Zero-Topic Team
+
+*(Added by `zero-topic-team-recovery`, #200. Traceable to FR-8.6 [HARD], **zero-active-topics case only** (status: partially met; partial restore and a "visible" canonical set on a customized team remain open), and to FR-8.2.)*
+
+## Summary
+**Actor:** Application Administrator (any membership on the target team, or none, per FR-8.2 / #208)
+
+**Trigger:** A facilitator reports being blocked at room open ("This team has no active topics..."), or the administrator opens Topic Management for a team and sees the locked, zero-topic empty state, or an operator's diagnostic query lists the team.
+
+**Goal:** As an Application Administrator, I want to give a team that has no active topics the canonical default topic set so that its facilitator can open a room and complete a first session. The team is otherwise left exactly as it was.
+
+---
+
+## Preconditions
+- The team exists; it is not the template team; it has zero ACTIVE topics (any number may be archived).
+- The actor's `global_role` is `application_admin`.
+
+## Main Flow
+1. The administrator opens Topic Management for the team and sees "This team has no active topics, so its sessions can't run. Assign the default topics to restore the standard set." with "Assign default topics".
+2. The administrator activates the button. No confirmation is asked.
+3. The Application, in one transaction under the team's topic lock, re-checks that the team has zero active topics, copies the template's active topics (name, prompt, vote type, description; marked default; numbered 1..n in template order, no annotations), writes one `topic.defaults_assigned` audit row, and commits.
+4. The screen refetches and shows the topics and "{n} default topic(s) assigned."
+5. The facilitator, told by the administrator or on retry, opens the room from the same draft session; the session snapshots the assigned topics.
+
+## Alternate Flows
+- **A. Actor is not an application admin:** 403 `NOT_AN_ADMIN`, a denial audit row, nothing changes.
+- **B. Target is the template team:** 404, template-denial audit, never a target.
+- **C. Team does not exist:** 404 `TEAM_NOT_FOUND` (non-admins get 403 first).
+- **D. Team already has active topics (double click, second admin, stale view):** 409 `TEAM_HAS_ACTIVE_TOPICS`, no change; the screen refetches.
+- **E. The template has no active topics:** 500 `DEFAULT_TOPICS_UNAVAILABLE`, rollback, a fail-open `topic.defaults_assign_failed` audit row and a log line; the administrator is pointed at the runbook "Zero-topic teams" section.
+- **F. Rate limited, or any other failure:** the screen's generic failure message; the button stays.
+- **G. Unlocked zero-topic team:** the normal Add / restore path applies; the Assign button is not shown (the endpoint would still accept).
+
+## Postconditions
+- **Success:** The team has the template's current active topics (not the template of its creation date), is still `first_session`-locked, has zero sessions, and is indistinguishable from a new team; archived rows are unchanged; one audit row.
+- **Failure:** Nothing changed.
+
+---
+
+## Acceptance Criteria
+- [ ] Only an Application Administrator can assign the defaults; every other caller is refused with `403 NOT_AN_ADMIN`.
+- [ ] Assignment succeeds only for a team with zero active topics, and is refused with `409` otherwise.
+- [ ] The result is identical to a freshly created team's topic set, and no other team or the template changes.
+- [ ] The customization lock is unchanged afterwards.
+- [ ] A blocked facilitator can open the room from the same draft session after the assignment.
+
+## Out of Scope
+- Any customization; partial top-up for teams with some defaults; notification; undo; a directory of administrators; editing the template.
+
+## Dependencies
+- Use Case: Assign Default Topic Set to New Team; Enforce Topic Customization Lock for First Session (this is its single exception).
+
+## Notes
+- The last active topic cannot be archived (`TOPIC_LAST_ACTIVE`), so a zero-topic team arises only from legacy data or a data fault; the expected count for the diagnostic query is 0.
 
 ---
 

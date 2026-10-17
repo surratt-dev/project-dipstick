@@ -651,6 +651,7 @@ interface GetAllTopicsResponse {
   isCustomizationLocked: boolean;
   canEditAnnotations: boolean;  // Added (`topic-annotation` design.md Decision 8). true for a standing facilitator, false for an application_admin (TOPIC-007 is facilitator-only, FR-8.7). Presentation only; TOPIC-007 enforces independently.
   canAddTopics: boolean;  // Added (`topic-add-form-and-empty-state` design.md Decision 1). true for every caller TOPIC-002 admits: a standing facilitator or an application_admin (FR-8.2; admin branch added by #176). Not derived from canEditAnnotations, whose admin exclusion (FR-8.7) is permanent. Does not consider isCustomizationLocked. Presentation only; TOPIC-003 enforces authorization and the lock independently.
+  canAssignDefaults: boolean;  // Added (`zero-topic-team-recovery` #200, design.md D6). true if and only if the caller is an `application_admin`, the team has zero ACTIVE topics (archived rows do not count) and the team is not the template team; false in every other case. Computed with the same `isApplicationAdmin` predicate TOPIC-008 authorizes with. Does not consider isCustomizationLocked: an unlocked zero-topic team still reports true for an admin, and the screen shows its normal Add control there, not the Assign button. Presentation only; TOPIC-008 enforces its own authorization and precondition, and nothing reads this back from a client. Required in the shared type; the screen treats only `=== true` as true (a missing value renders no button).
   active: Array<{
     topicId: string;
     name: string;
@@ -701,6 +702,7 @@ TOPIC-001 and TOPIC-002 answer an unknown team differently on purpose: TOPIC-001
 Each `403` carries `error.category = "forbidden"` and the reason as `error.code` (`NOT_A_FACILITATOR` or `FACILITATOR_IS_TEAM_MEMBER`), the same value written to the denial audit row's `metadata.reason`; the two bodies differ in `error.code` and `error.message` (and the random per-response `error.correlationId`). Clients MUST NOT use `error.code` to grant, unlock or hide an access decision; clients MAY use it to choose display text; a client that does not recognise a code falls back to `error.message`; the server is the sole authority on access. No code may distinguish an engineering-manager or application-admin denial without Security review. `error.correlationId` on this `403` is generated per response and is not currently recorded in the audit row or the event, so it is not searchable. Every `403` carries `Cache-Control: no-store` and the timing floor.
 
 **Notes**
+- **`defaultTopicsNotActive` has at most one entry per canonical default (`zero-topic-team-recovery` #200, design.md D3a).** A default for which the team has an ACTIVE topic of the same name is never listed, even if the team also has an archived topic of that name; when the team has only archived matches the entry reports the archived match. (Restore, TOPIC-005, has no name-collision check; that is unchanged here.)
 - **Annotation fields (`topic-annotation`):** `teamAnnotation`, `annotationUpdatedAt`, and `annotationUpdatedBy` are returned on active **and** archived entries, to standing facilitators and to administrators, whatever their membership on the team (#208). Administrators receive them **read-only** (`canEditAnnotations: false`): topic configuration is administrative data they already read, and TOPIC-007's administrator exclusion concerns who authors the team's words, not who may view the configuration.
 - `defaultTopicsNotActive` enables the "restore defaults" UI path (FR-8.6). It enumerates canonical default topics (`is_default = true`) that are currently absent from the team's active topic list — whether because they were archived or were never seeded. **Not read by the Topic Management screen** (`topic-add-form-and-empty-state`; `topic-management-screen` requirement "The screen does not read `defaultTopicsNotActive`"): its name-based join can mis-match a custom topic that shares a default topic's name, and its `topicId` can refer to the template team. Whether to fix or drop the field is tracked in #197.
 - **Scope boundary:** This endpoint serves topic *configuration* only. Trend dashboard consumers (participants, EMs, facilitators viewing history) must use TREND-001, which includes archived topics in its `topics` array via `topicStatus: 'archived'`. Do not call TOPIC-002 from trend dashboard UI flows.
@@ -1054,6 +1056,60 @@ Every non-2xx uses the standard envelope `{ error: { category, code, message, co
 - **Audit:** a changed value writes `topic.annotation_updated` with `metadata: { topic_id, action: "set" | "cleared", length }` in the same transaction. **The text is never written to the audit log or the structured application log.**
 - **Snapshot:** sessions never read this value live. When `session_topics` rows are written at room open (#175; see SESSION-001a), `session_topics.topic_annotation` is copied from `team_annotation` in the same write as the rest of the row. SESSION-005/012 return `currentTopic.topicAnnotation` from that snapshot, so an edit affects only sessions whose room is opened after it.
 - Annotations survive archive and restore. Default and custom topics are both annotatable. New-team seeding never copies an annotation from the template team.
+### TOPIC-008 — Assign Default Topics (zero-topic recovery)
+
+*Added by `zero-topic-team-recovery` (#200). Closes BRD FR-8.6 ("restorable for any team at any time") for the zero-ACTIVE-topics state only; partial restore and a "visible" canonical set remain open.*
+
+**Method and URL**
+```
+POST /api/v1/teams/:teamId/topics/assign-defaults
+```
+
+**Description**
+Copies the canonical default topic set (the template team's active default topics, as read inside the transaction) onto a team that has **zero active topics**, so its facilitator can open a room and run a first session. It is the **one exception to the customization lock** (TOPIC-003/004/005/006 are unchanged and still lock-gated) and can write only the canonical set, so it is not a customization route. The team is otherwise left exactly as it was: archived rows are untouched, the lock state is unchanged, no notification is sent and there is no undo.
+
+**Auth:** Protected. **Authorization: `application_admin` only**, read live from the `users` row at request time (never from the session or a token claim; a caller with no user row is a non-admin), whatever the caller's membership on the target team (none, or any `team_memberships.role`; FR-8.2, #208). Not `checkStandingFacilitatorOrAdminAuthorization`: a facilitator is never admitted.
+
+**Request**
+No body, no query parameter, no header is read. The endpoint never accepts a source team id or template id; the template is always the canonical sentinel. Any body, query or header sent changes nothing.
+
+| Location | Name | Type | Required | Description |
+|---|---|---|---|---|
+| Path | `teamId` | `uuid` (canonical 8-4-4-4-12) | Yes | The team to give the defaults to |
+
+**Response**
+
+`201 Created`, `Cache-Control: no-store`
+
+```typescript
+interface AssignDefaultsResponse {
+  topicCount: number;  // the number of topics created (the template's active default count); also the audit topic_count
+}
+```
+
+The body carries no topic list, no topic text and no team id other than what the caller supplied.
+
+**Check order** (stops at the first failure): non-canonical `teamId` (`404`, then the id is lowercased) -> authorization (`403`) -> the shared topic-write rate limit (`429` / fail-closed `503`, exactly as TOPIC-003..007; no new limit values) -> team existence and the template-team guard (`404`) -> **no customization-lock check** -> in one transaction at READ COMMITTED, under the team's topic advisory lock (the one room open also takes), the zero-active precondition read as a fresh statement after the lock (`409`) -> the copy -> the success audit row -> COMMIT. The timing floor is applied on every return.
+
+**Errors** (standard envelope `{ error: { category, code, message, correlationId } }`)
+
+| Status | `code` | When |
+|---|---|---|
+| `401 Unauthorized` | | No valid session |
+| `403 Forbidden` | `NOT_AN_ADMIN` | Caller is not an `application_admin` (a facilitator, member or not, an engineering manager, an engineer, or a caller with no user row), **whether or not the team exists** (a non-admin gets `403`, never `404`). The `403` reveals nothing about the team's lock state or topic count. Writes one `topic.defaults_assign_denied` audit row (fail-open, bounded to 10 per actor per minute; beyond that the response is the same `403` with no row). |
+| `404 Not Found` | `TEAM_NOT_FOUND` | Non-canonical `teamId`; a well-formed id that names no team (admin only; a non-admin has already had `403`); or the **template team**, which gets the identical response plus a `topic.write_denied_template` audit row with `attempted_operation: "topic.defaults_assigned"` |
+| `409 Conflict` | `TEAM_HAS_ACTIVE_TOPICS` | The team has one or more active topics (a repeated call, a second administrator, or a stale view). Nothing changes. |
+| `429 Too Many Requests` / `503 Service Unavailable` | the TOPIC-003 codes | The shared per-actor topic-write limit, unchanged. A Redis outage gives the fail-closed `503`, so recovery is unavailable until Redis returns. |
+| `500 Internal Server Error` | `DEFAULT_TOPICS_UNAVAILABLE` | The template has no active default topics. Rolled back, nothing written. Fixed message naming the "Zero-topic teams" runbook section; no template id in the body. Writes one fail-open `topic.defaults_assign_failed` audit row after the rollback. |
+| `500 Internal Server Error` | `ASSIGN_DEFAULTS_FAILED` | Any other failure inside the transaction (constraint drift, connection loss, audit insert failure). Rolled back; fixed generic message; the database error is logged with the `correlationId` and never returned. A client with an unknown 500 `code` shows its generic failure line. |
+
+**Notes**
+- **Copy.** Done by the routine team creation uses (`copyCanonicalDefaults`), so a recovered team is identical to a freshly created one: the template's current active topics in template order, numbered 1..n, each with the template's name, prompt, vote type and description, marked default, with no annotation fields. A team recovered later receives the current template, not the template of its creation date.
+- **Zero ACTIVE, not zero rows.** A team whose topics are all archived is a zero-topic team; its archived rows are left alone. An active topic with the same text as an archived one is acceptable (see the TOPIC-002 `defaultTopicsNotActive` note).
+- **Atomicity.** Two simultaneous calls on a zero-active team produce exactly one `201` and one `409`. A room open (SESSION-001a) queued behind the assignment snapshots the assigned topics.
+- **Audit.** `topic.defaults_assigned` is written in the same transaction as the inserts with `metadata: { topic_count, correlation_id }` only (never topic text, topic ids or the template id); the structured event follows COMMIT, and its loss never changes the response.
+- **Template team.** Never a target (see the `404` row).
+
 ---
 
 ## Group 4: Session Lifecycle
@@ -1150,7 +1206,7 @@ Opens the room for a `draft` session: transitions it to `lobby`, sets `room_open
 |---|---|
 | `403 Forbidden` | Not the session's team; not the session's facilitator; or the caller's live global role is no longer `facilitator` (including no user row). The role denial writes a `session.advance_denied_role` audit row. |
 | `404 Not Found` | No such session, including a `sessionId` that is not a canonical (8-4-4-4-12) UUID, which is rejected before any query |
-| `409 Conflict` | The team has no active topics when the advance runs (`NO_ACTIVE_TOPICS`, `category: "precondition_failed"`, message "This team has no active topics. Add or restore a topic on Topic Management before opening the room."). The session stays `draft`; nothing is audited. Evaluated after every authorization check and the status check, so a non-creator gets `403` and a non-draft session gets `422`, never this `409`. |
+| `409 Conflict` | The team has no active topics when the advance runs (`NO_ACTIVE_TOPICS`, `category: "precondition_failed"`). The message depends on the team's customization-lock state, read after the failed open has been rolled back (advisory; the `409` itself is unaffected): **locked** team: "This team has no active topics, so the room can't open yet. Ask an application administrator to assign the default topics, then try again. Your session is saved."; **unlocked** team: "This team has no active topics. Add or restore a topic on Topic Management before opening the room." There is no caller-role branch (an administrator never reaches `/advance`). After an administrator assigns the defaults (TOPIC-008) the same session id advances. The session stays `draft`; nothing is audited. Evaluated after every authorization check and the status check, so a non-creator gets `403` and a non-draft session gets `422`, never this `409`. |
 | `422 Unprocessable Entity` | The session is not in `draft` (`Session cannot be advanced from status '<status>'.`). A concurrent second advance that loses the race gets the same `422`, with the status re-read inside the transaction. |
 | `500` | Any other failure inside the room-open transaction (snapshot, lock, conditional update, audit write, commit): `category: "internal_error"` with a fixed message and the `correlationId`; the database error is logged, never returned. The message wording is not part of the contract. |
 
@@ -3073,6 +3129,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TOPIC-003 | No | Yes (non-member teams, post-lock) | No | Yes | Facilitator (non-member) or admin (any team, any membership, per FR-8.2 / #208); code: `checkAddCustomTopicAuthorization`, delegating to `checkStandingFacilitatorOrAdminAuthorization`; customization lock enforced |
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Facilitator (non-member) or admin (any team, any membership, per FR-8.2 / #208); customization lock enforced (FR-8.2) |
 | TOPIC-007 | No | Yes (non-member teams, post-lock) | No | **No** (`403 NOT_A_FACILITATOR`) | Facilitator-only (BRD FR-8.7); customization lock enforced (`409`) |
+| TOPIC-008 | No | **No** (`403 NOT_AN_ADMIN`) | No | Yes (any team, any membership; role read live from `users`) | Admin-only (#200). The one exception to the customization lock: allowed only when the team has zero active topics, and it can write only the canonical set. Not for the template team. |
 | SESSION-001 | No | Yes (non-member teams) | No | Yes | Cross-team check re-enforced |
 | SESSION-002 | If participant | If facilitator | No | No (#243 D11) | Live sessions only |
 | SESSION-003 | Yes (team member, participant role) | No | No | No (#243 D11) | EM role and App Admin blocked, even as team members |
