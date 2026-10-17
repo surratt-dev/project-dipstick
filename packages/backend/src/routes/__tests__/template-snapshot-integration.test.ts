@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { probeInfra, requireInfraOrThrow, loadModules, SENTINEL_TEAM_ID } from "./helpers/real-db.js";
 import type { Mods } from "./helpers/real-db.js";
+import { acquireTemplateLock } from "./helpers/template-lock.js";
 import { snapshotTemplate, assertTemplateUnchanged, restoreTemplate } from "./helpers/template-snapshot.js";
 
 // ---------------------------------------------------------------------------
@@ -16,12 +17,17 @@ requireInfraOrThrow(infraUp, "template-snapshot-integration.test.ts");
 describe.skipIf(!infraUp)("template snapshot helper (#188 tasks.md 3.2)", () => {
   let mods: Mods;
 
+  // #215 M1: this file snapshots/restores the template, so it holds the lock.
+  let releaseTemplateLock: (() => Promise<void>) | undefined;
+
   beforeAll(async () => {
+    releaseTemplateLock = await acquireTemplateLock();
     mods = await loadModules();
   });
 
   afterAll(async () => {
     await mods?.redis.quit();
+    await releaseTemplateLock?.();
   });
 
   // Runs entirely inside one transaction that is rolled back (architect

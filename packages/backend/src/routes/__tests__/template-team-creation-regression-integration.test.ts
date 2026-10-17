@@ -11,6 +11,7 @@ import {
   SENTINEL_TEAM_ID,
 } from "./helpers/real-db.js";
 import type { Mods } from "./helpers/real-db.js";
+import { acquireTemplateLock } from "./helpers/template-lock.js";
 import { snapshotTemplate, assertTemplateUnchanged, restoreTemplate } from "./helpers/template-snapshot.js";
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,11 @@ describe.skipIf(!infraUp)("team creation copies the pre-attempt template baselin
   let app: FastifyInstance;
   let facilitatorId: string;
 
+  // #215 M1: this file snapshots/restores the template, so it holds the lock.
+  let releaseTemplateLock: (() => Promise<void>) | undefined;
+
   beforeAll(async () => {
+    releaseTemplateLock = await acquireTemplateLock();
     mods = await loadModules();
     fx = new Fixture(mods.db);
     facilitatorId = await fx.user("facilitator");
@@ -65,6 +70,7 @@ describe.skipIf(!infraUp)("team creation copies the pre-attempt template baselin
     await app?.close();
     await fx?.cleanup();
     await mods?.redis.quit();
+    await releaseTemplateLock?.();
   });
 
   it("valid writes to TOPIC-003..007 on an unlocked template are 404 and leave the template and the next team's copy unchanged", async () => {
@@ -111,9 +117,18 @@ describe.skipIf(!infraUp)("team creation copies the pre-attempt template baselin
           [newTeamId],
         )
       ).rows;
+      // #215 C9: the copy takes the ACTIVE defaults only, renumbered 1..n in
+      // canonical order (display_order, then id).
       const expected = [...snap.values()]
-        .filter((row) => row.is_default)
-        .map(({ name, prompt, vote_type, display_order, is_default }) => ({ name, prompt, vote_type, display_order, is_default }));
+        .filter((row) => row.is_default && row.status === "active")
+        .sort((a, b) => a.display_order - b.display_order || a.id.localeCompare(b.id))
+        .map(({ name, prompt, vote_type, is_default }, i) => ({
+          name,
+          prompt,
+          vote_type,
+          display_order: i + 1,
+          is_default,
+        }));
       const byOrder = (a: { display_order: number; name: string }, b: { display_order: number; name: string }) =>
         a.display_order - b.display_order || a.name.localeCompare(b.name);
       expect(copied.sort(byOrder)).toEqual(expected.sort(byOrder));
