@@ -122,4 +122,4 @@ Built-versus-planned corrections applied to the main specs at sync (from the imp
 - Not spec-level, carried as PR notes: the structural allow-list widening in `topic-write-rate-limit-structural.test.ts` (architect F4); the lazy `import()` in `recordDenial` (architect N2); the duplicated settled 500 string (N3); runbook notes on Redis outage and the correlation-id search key (security N2, N3).
 
 
-**Update 2026-10-17 (PR review):** 9.1 decisions recorded in `ratification-decisions.md` (item 4 compliance concern reported resolved by the PO). 8.4 follow-ups filed as #293, #294, #295, #296; (d) dropped because the draft-page copy was fixed in PR #292. 8.1 is owned by the PO post-release.
+**Update 2026-10-17 (PR review):** 9.1 decisions recorded in `ratification-decisions.md` (item 4 compliance concern reported resolved by the PO). 8.4 follow-ups filed as #293, #294, #295, #296; (d) dropped because the draft-page copy was fixed in PR #292. 8.1 is owned by the PO and tracked in #297 (no production environment exists yet).

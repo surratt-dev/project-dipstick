@@ -9,7 +9,7 @@ Recorded 2026-10-17 from the product owner's answers at PR review (task 9.1).
 | 3 | Draft-page gap (`DraftSessionHost` ignored the server 409 message) | **Fix in this PR.** The draft page's fixed zero-topic line now names both paths: "This team has no active topics, so the room can't open yet. Add or restore a topic on Topic Management; if the team's topics are locked, ask an application administrator to assign the default topics." (Chosen because the page does not know the lock state.) Follow-up 8.4(d) is dropped. `session-creation` spec updated. |
 | 4 | Assign failure copy | **Keep as written:** "The default topics couldn't be assigned. Try again." |
 | 5a | Follow-up issues | Filed: #293 FR-8.6 residual (8.4a), #294 TOPIC-005 restore name collision (8.4b), #295 per-actor denial bound in TOPIC-002 (8.4c), #296 threat-model update (8.4e). 8.4(d) dropped per item 3. |
-| 5b | Diagnostic and legacy-lobby queries against staging/production | **PO runs post-release** (queries in the runbook, `docs/deployment.md` "Zero-topic teams"). If either returns rows, add the `/start` guard (task 5.3) before further rollout. |
+| 5b | Diagnostic and legacy-lobby queries against staging/production | **PO runs once a production environment exists (none yet); tracked in #297 (milestone "20 - Post-Launch Features")** (queries in the runbook, `docs/deployment.md` "Zero-topic teams"). If either returns rows, add the `/start` guard (task 5.3) before further rollout. |
 
 ## Still open
 - Post-release query counts (8.1) and the non-gating usability walk-through (8.3).
