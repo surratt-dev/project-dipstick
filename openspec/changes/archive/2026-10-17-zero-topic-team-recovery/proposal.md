@@ -158,7 +158,7 @@ The user ratifies these at PR review; merge waits for it. Each is a policy decis
 Recorded in full in `ratification-decisions.md`.
 
 - Items 1, 2 (as built, including the 10 rows/actor/minute bound), 3, 5, 6 and 8: **ratified as built.**
-- Item 4: accepted by the PO; the **compliance/security owner's recorded answer is still outstanding**. Fallback unchanged (log-only plus runbook search).
+- Item 4: accepted by the PO; the PO reported on 2026-10-17 that the compliance/security concern is resolved and everyone is OK with the row (approver and retention terms not recorded). The log-only fallback is not taken.
 - Item 7: **overridden.** The draft page's fixed line now reads "This team has no active topics, so the room can't open yet. Add or restore a topic on Topic Management; if the team's topics are locked, ask an application administrator to assign the default topics." Follow-up 8.4(d) is dropped.
 - Failure copy "The default topics couldn't be assigned. Try again." confirmed.
 - Follow-ups filed: #293 (FR-8.6 residual), #294 (TOPIC-005 restore name collision), #295 (denial bound in TOPIC-002), #296 (threat-model update).
