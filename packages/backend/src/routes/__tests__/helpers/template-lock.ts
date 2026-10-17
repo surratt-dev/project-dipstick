@@ -55,10 +55,14 @@ export async function withTemplateLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Throws unless NODE_ENV is "test" and the database host is local. Pure, exported for its own test. */
+/**
+ * Throws unless running under Vitest and the database host is local. Pure, exported for its own test.
+ * Keys on VITEST (always set by the runner) rather than NODE_ENV, because CI sets NODE_ENV=development
+ * for the whole job.
+ */
 export function assertSafeToDropIndex(env: NodeJS.ProcessEnv = process.env): void {
-  if (env["NODE_ENV"] !== "test") {
-    throw new Error("withDroppedActiveOrderIndex refuses to run unless NODE_ENV is 'test'");
+  if (!env["VITEST"]) {
+    throw new Error("withDroppedActiveOrderIndex refuses to run outside Vitest (VITEST is not set)");
   }
   let host: string;
   try {
