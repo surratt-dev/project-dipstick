@@ -120,3 +120,6 @@ Built-versus-planned corrections applied to the main specs at sync (from the imp
 - `NO_ACTIVE_TOPICS` locked/unlocked message: `session-creation` now states the lock read is advisory, happens after ROLLBACK, and falls back to the unlocked message if the read fails (no 500); plus the known draft-page limitation (F2, follow-up 8.4(d)).
 - Denial-audit limiter: `audit-logging-operations` now states that a failed limiter import or consult is treated as a `limiter_error` (no row, log-only suppression event, response stays 403), matching the try/catch in `auth/assign-defaults-audit.ts` (security review N1).
 - Not spec-level, carried as PR notes: the structural allow-list widening in `topic-write-rate-limit-structural.test.ts` (architect F4); the lazy `import()` in `recordDenial` (architect N2); the duplicated settled 500 string (N3); runbook notes on Redis outage and the correlation-id search key (security N2, N3).
+
+
+**Update 2026-10-17 (PR review):** 9.1 decisions recorded in `ratification-decisions.md` (compliance answer on item 4 still outstanding). 8.4 follow-ups filed as #293, #294, #295, #296; (d) dropped because the draft-page copy was fixed in PR #292. 8.1 is owned by the PO post-release.
