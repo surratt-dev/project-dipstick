@@ -190,6 +190,8 @@ Application Admins (users with `global_role = 'application_admin'`) SHALL have a
 
 **Audit visibility guard:** `admin.topic_config_accessed` rows, `topic.config_list_denied` rows (and any historical `admin.topic_config_denied` rows) SHALL NOT be exposed through any endpoint or screen available to team members or engineering managers. To make this checkable, no application query that serves a non-administrator caller SHALL select from `audit_log` using a wildcard, prefix, pattern, or `IN` list on `operation` that could match `admin.topic_config_*` or `topic.config_list_denied`. Every such query SHALL filter `operation` by equality on a single named operation.
 
+**Verification of the guard:** The structural test `packages/backend/src/routes/__tests__/audit-log-reader-structural.test.ts` provides mechanical evidence for the filter-shape portion of this obligation: every application touch of `audit_log` other than a column-listed `INSERT` writer is inventoried, and every inventory entry not marked admin-only is a single-table `SELECT` that filters `operation` by equality on one non-protected operation (protected: any `admin.` operation, any `topic.config_` operation) and is scoped by `team_id` or `metadata->>'scopeId'`. The test does not establish that the obligation is met. Which callers a query serves, whether an entry marked admin-only is in fact admin-only, queries the test cannot see (views and functions in migrations, other packages, SQL assembled from fragments), and the correctness of the scope value and the selected columns are verified by review, the Security Analyst role by convention. The repository has no CODEOWNERS file and the spec does not claim an enforced gate. The test header documents the rules and how to extend the inventory.
+
 #### Scenario: Application Admin can access team membership list
 
 - **WHEN** a user with `global_role = 'application_admin'` calls `GET /api/v1/teams/:id/members`
@@ -252,6 +254,16 @@ Application Admins (users with `global_role = 'application_admin'`) SHALL have a
 - **WHEN** the backend source is searched for every query that selects from `audit_log` and serves a caller who is not an `application_admin`
 - **THEN** each such query filters `operation` by equality on a single named operation
 - **AND** none uses a wildcard, prefix, pattern, or `IN` list that could match `admin.topic_config_accessed`, `topic.config_list_denied`, or the retired `admin.topic_config_denied`
+
+#### Scenario: Application audit-log reads are inventoried and non-admin readers filter by exact operation
+
+- **WHEN** the backend production source (`packages/backend/src`) is scanned for every statement that touches `audit_log` other than a column-listed `INSERT INTO audit_log (...)` writer
+- **THEN** each touch is listed in the inventory held by the structural test, keyed by file and enclosing function, with a non-blank reason, as `exact-match` or `admin-only`
+- **AND** each `exact-match` entry is a single-table `SELECT` that filters `operation` by equality on one string literal that is not a protected operation, with a `team_id` or `metadata->>'scopeId'` conjunct
+- **AND** a statement that cannot be classified statically fails the test
+- **AND** any other whole-word `audit_log` in production code (a constant, an array of table names, an identifier, error-message prose) fails the test (tripwire) and cannot be inventoried
+- **AND** each `admin-only` function is referenced by name (direct, aliased, namespace, string-literal-keyed, or through an exported wrapper in its defining file that the entry lists) from exactly the one file its entry lists as caller, and its statement count matches the entry
+- **AND** `admin-only` classification and queries the scanner cannot see (accepted limits) are verified by review, not by the test
 
 ---
 
