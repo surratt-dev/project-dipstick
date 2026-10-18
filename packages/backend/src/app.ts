@@ -47,7 +47,8 @@ export async function buildApp() {
     origin: getAllowedOrigins(),
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    // X-Requested-With: the mutation-control header of /api/v1/admin/default-topics (#216).
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   });
 
   // Security headers

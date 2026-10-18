@@ -163,11 +163,32 @@ async function restoreWholeTemplate(
 /** Generous: waiting for the shared template lock can take as long as the other lock-holding files. */
 const LOCK_WAIT_TIMEOUT_MS = 240_000;
 
+/**
+ * Makes app.inject send the default-topics mutation-control header (X-Requested-With: dipstick) on
+ * mutating requests to the admin family unless the request sets that header itself. Tests of the
+ * control use appFor(userId, { control: false }).
+ */
+export function withMutationControl(app: FastifyInstance): void {
+  const original = app.inject.bind(app) as (...a: unknown[]) => unknown;
+  (app as unknown as { inject: unknown }).inject = (...args: unknown[]) => {
+    const opts = args[0];
+    if (opts && typeof opts === "object") {
+      const o = opts as { method?: string; url?: string; headers?: Record<string, string> };
+      const mutating = o.method !== undefined && o.method !== "GET";
+      if (mutating && typeof o.url === "string" && o.url.startsWith("/api/v1/admin/default-topics")) {
+        const headers = { "x-requested-with": "dipstick", ...(o.headers ?? {}) };
+        return original({ ...o, headers }, ...args.slice(1));
+      }
+    }
+    return original(...args);
+  };
+}
+
 export interface MaintenanceHarness {
   readonly mods: Mods;
   readonly fx: Fixture;
   /** A Fastify app with every route, authenticated as userId (budget reset). */
-  appFor(userId: string): Promise<FastifyInstance>;
+  appFor(userId: string, opts?: { control?: boolean }): Promise<FastifyInstance>;
   /** The pre-test snapshot of the template (taken in beforeEach). */
   snapshot(): TemplateSnapshot;
   /** When the current test started, by the database clock. */
@@ -231,8 +252,9 @@ export function useMaintenanceTemplate(): MaintenanceHarness {
     get fx() {
       return fx;
     },
-    async appFor(userId: string) {
+    async appFor(userId: string, opts: { control?: boolean } = {}) {
       const app = await buildFullApp(mods, userId);
+      if (opts.control !== false) withMutationControl(app);
       apps.push(app);
       return app;
     },

@@ -1116,6 +1116,8 @@ The body carries no topic list, no topic text and no team id other than what the
 
 *Added by `admin-default-topic-maintenance` (#216). Traceable to BRD FR-8.1 (**partially met, API only**: there is no administrator screen; the Topic Management template screen is a follow-up, #308 read-only view and history, #309 editing), to FR-8.6 ("canonical" means the default set as currently maintained, decision D5) and to use case 08, "Maintain Default Topic Set". Authoritative behavior: openspec capability `admin-default-topic-maintenance`.*
 
+**Mutation control (CSRF).** Every mutating route (DEFTOPIC-002 to DEFTOPIC-006) must send the request header `X-Requested-With: dipstick`; without it (or with another value) the response is `403 MUTATION_CONTROL_HEADER_REQUIRED` (standard envelope; the received value is never echoed). It is checked after the role check, so a non-administrator still gets `403 DEFAULT_MAINTENANCE_ADMIN_ONLY`, and before the body is parsed. It exists because archive and restore carry no body and `SameSite=Strict` alone is site-scoped, not origin-scoped; the custom header forces a CORS preflight that only the allow-listed origin passes. GET routes need no header. Archive and restore take no body (an empty body with a JSON content type is accepted). If a request is accepted but the refreshed list cannot be read after the commit, the response is still `200`/`201` with `listUnavailable: true` and no `defaults`: a client must treat a missing `defaults` as "reload the list", never as an empty template or a failed write.
+
 **Routes** (exactly seven; none has a `:teamId` and none accepts a team id, the template id or `DELETE`):
 
 | ID | Method and URL | Success |

@@ -53,6 +53,17 @@ import { isCanonicalUuid } from "./uuid.js";
 const BASE = "/api/v1/admin/default-topics";
 const BODY_LIMIT = 16 * 1024;
 
+/**
+ * CSRF control for every mutating route in the family (security read S-A). Archive and restore take
+ * no body, so no media-type check protects them; SameSite=Strict alone is site-scoped, not
+ * origin-scoped. A request carrying a custom header cannot be sent cross-origin without a CORS
+ * preflight, and the preflight is only granted to the allow-listed origin (app.ts allowedHeaders
+ * includes this header). No such convention existed in the app; this is the first.
+ */
+export const MUTATION_CONTROL_HEADER = "x-requested-with";
+export const MUTATION_CONTROL_VALUE = "dipstick";
+const MUTATION_CONTROL_MESSAGE = "This request must be sent by the Dipstick client (missing or wrong X-Requested-With header).";
+
 const NOT_ADMIN_MESSAGE = "Only an application administrator can maintain the default topics.";
 const GENERIC_FAILURE_MESSAGE = "Something went wrong updating the default topics. Try again.";
 const BUSY_MESSAGE = "Another change to the default topics is in progress. Try again in a moment.";
@@ -236,6 +247,17 @@ async function admitAdminOrRefuse(request: FastifyRequest, reply: FastifyReply):
     return false;
   }
   if (isApplicationAdmin(globalRole)) {
+    // After the role check, so a non-admin still gets the 403 first. The received value is not echoed.
+    if (request.method !== "GET" && request.headers[MUTATION_CONTROL_HEADER] !== MUTATION_CONTROL_VALUE) {
+      await send(
+        reply,
+        startTime,
+        403,
+        buildErrorEnvelope("forbidden", MUTATION_CONTROL_MESSAGE, "MUTATION_CONTROL_HEADER_REQUIRED"),
+        { "Cache-Control": "no-store" },
+      );
+      return false;
+    }
     admittedAdmin.set(request, session.userId);
     return true;
   }

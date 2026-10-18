@@ -198,6 +198,54 @@ describe.skipIf(!infraUp)("admin default-topics authorization and rate limit (re
     });
   });
 
+  describe("mutation-control header (X-Requested-With: dipstick) on every mutating route (security read S-A)", () => {
+    const control = (id: string): RouteCase[] => [
+      { label: "add", method: "POST", url: BASE, payload: { name: "Csrf Add", prompt: "P?", firstSessionDescription: "D.", voteType: "finger" } },
+      { label: "edit", method: "PATCH", url: `${BASE}/${id}`, payload: { prompt: "Csrf edit?" } },
+      { label: "reorder", method: "PUT", url: `${BASE}/order`, payload: { order: [id] } },
+      { label: "archive", method: "POST", url: `${BASE}/${id}/archive` },
+      { label: "restore", method: "POST", url: `${BASE}/${id}/restore` },
+    ];
+
+    it("an admin without the header is refused 403 MUTATION_CONTROL_HEADER_REQUIRED on all five, with nothing changed and no value echoed; GETs need no header", async () => {
+      const app = await h.appFor(actors.admin, { control: false });
+      const id = (await app.inject({ method: "GET", url: BASE })).json().defaults[0].id as string;
+      const before = (await h.mods.db.query(`SELECT * FROM topics WHERE team_id = $1 ORDER BY id`, [SENTINEL_TEAM_ID])).rows;
+      for (const c of control(id)) {
+        for (const headers of [undefined, { "x-requested-with": "SECRET-WRONG-VALUE" }]) {
+          const res = await app.inject({ method: c.method, url: c.url, ...(headers ? { headers } : {}), ...(c.payload !== undefined ? { payload: c.payload as object } : {}) });
+          expect(res.statusCode, c.label).toBe(403);
+          expect(res.json().error).toMatchObject({ category: "forbidden", code: "MUTATION_CONTROL_HEADER_REQUIRED", correlationId: expect.any(String) });
+          expect(res.body).not.toContain("SECRET-WRONG-VALUE");
+        }
+      }
+      expect((await h.mods.db.query(`SELECT * FROM topics WHERE team_id = $1 ORDER BY id`, [SENTINEL_TEAM_ID])).rows).toEqual(before);
+      expect((await app.inject({ method: "GET", url: BASE })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: `${BASE}/history` })).statusCode).toBe(200);
+    });
+
+    it("with the header, archive and restore (and the other routes) succeed", async () => {
+      const app = await h.appFor(actors.admin, { control: false });
+      const headers = { "x-requested-with": "dipstick" };
+      const id = (await app.inject({ method: "GET", url: BASE })).json().defaults[0].id as string;
+      expect((await app.inject({ method: "POST", url: `${BASE}/${id}/archive`, headers })).statusCode).toBe(200);
+      expect((await app.inject({ method: "POST", url: `${BASE}/${id}/restore`, headers })).statusCode).toBe(200);
+      expect((await app.inject({ method: "PATCH", url: `${BASE}/${id}`, headers, payload: { prompt: "With header?" } })).statusCode).toBe(200);
+    });
+
+    it("a non-admin without the header still gets the role 403 first (and the denial row)", async () => {
+      const userId = await h.fx.user("facilitator");
+      denialActors.push(userId);
+      const app = await h.appFor(userId, { control: false });
+      for (const c of control(SOME_ID)) {
+        const res = await app.inject({ method: c.method, url: c.url, ...(c.payload !== undefined ? { payload: c.payload as object } : {}) });
+        expect(res.statusCode, c.label).toBe(403);
+        expect(res.json().error.code).toBe("DEFAULT_MAINTENANCE_ADMIN_ONLY");
+      }
+      expect(await denialRows(userId)).toHaveLength(5);
+    });
+  });
+
   it("an administrator who is on no team and one who is a member of a team are both admitted", async () => {
     for (const userId of [actors.admin, actors.adminOnTeam]) {
       const app = await h.appFor(userId);
