@@ -144,9 +144,19 @@ describe.skipIf(!infraUp)("read surfaces ignore removed memberships (#214 8.1-8.
       .map((r) => r.url);
 
     // 8.3: no admin-wide (non-team-addressed) session or trend listing.
-    expect(gets.filter((url) => /^\/api(\/v\d+)?\/(admin|sessions|trends)(\/|$)/.test(url) && !url.includes(":sessionId"))).toEqual(
-      [],
-    );
+    // admin-default-topic-maintenance (#216): the two reads of the default
+    // topic TEMPLATE (/api/v1/admin/default-topics and its /history) are the
+    // only admin routes; they list template topics and audit rows for it, never
+    // a session or a trend, and are application_admin-only (403 otherwise).
+    const TEMPLATE_MAINTENANCE_READS = new Set(["/api/v1/admin/default-topics", "/api/v1/admin/default-topics/history"]);
+    expect(
+      gets.filter(
+        (url) =>
+          /^\/api(\/v\d+)?\/(admin|sessions|trends)(\/|$)/.test(url) &&
+          !url.includes(":sessionId") &&
+          !TEMPLATE_MAINTENANCE_READS.has(url),
+      ),
+    ).toEqual([]);
 
     // 8.4: the team-addressed GETs outside /teams/:teamId/(sessions|members|
     // managers|join-links), each with the gate that closes it for the

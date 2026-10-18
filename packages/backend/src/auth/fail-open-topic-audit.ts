@@ -57,8 +57,11 @@ export interface FailOpenTopicAuditArgs {
   /** null (no users row) is stored as 'unknown', the existing convention. */
   actorGlobalRole: string | null;
   actorIp: string;
-  /** The requested id as validated; NOT a verified team (no foreign key). */
-  teamId: string;
+  /**
+   * The requested id as validated; NOT a verified team (no foreign key). null
+   * for the default-topic maintenance denial (#216), which names no team.
+   */
+  teamId: string | null;
   /**
    * Further metadata keys, after endpoint / http_status / reason. Counts, ids
    * and correlation ids only -- never topic text or the template id.

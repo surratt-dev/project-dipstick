@@ -5,6 +5,12 @@ import { DEFAULT_TOPICS_TEAM_ID } from "./default-topics.js";
 // Template anomaly detection (harden-team-creation-topic-copy #215, design.md
 // D3, proposal.md "Anomaly semantics" V1-V4).
 //
+// admin-default-topic-maintenance (#216) design.md E6: `non_active_default`
+// was retired. An archived default is now VALID state (it is how an
+// administrator retires a default for new teams) and is never copied, so
+// warning about it on every team creation would be noise forever. The three
+// remaining anomalies still cover damage.
+//
 // readTemplateTopicFacts reads ids and structural columns only -- never a
 // name, prompt or other row text -- so nothing it returns can reach a log
 // line as text. detectTemplateAnomalies is pure.
@@ -12,7 +18,6 @@ import { DEFAULT_TOPICS_TEAM_ID } from "./default-topics.js";
 
 export type TemplateAnomaly =
   | "duplicate_active_order"
-  | "non_active_default"
   | "non_contiguous_order"
   | "non_default_row";
 
@@ -57,11 +62,6 @@ export function detectTemplateAnomalies(facts: readonly TemplateTopicFact[]): {
   if (duplicatedPositions.size > 0) {
     anomalies.push("duplicate_active_order");
     for (const f of activeDefaults) if (duplicatedPositions.has(f.display_order)) affected.add(f.id);
-  }
-  const nonActiveDefaults = ordered.filter((f) => f.is_default && f.status !== "active");
-  if (nonActiveDefaults.length > 0) {
-    anomalies.push("non_active_default");
-    for (const f of nonActiveDefaults) affected.add(f.id);
   }
   if (!contiguous) anomalies.push("non_contiguous_order");
   const nonDefaults = ordered.filter((f) => !f.is_default);

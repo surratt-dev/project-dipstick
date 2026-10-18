@@ -51,7 +51,7 @@
 - The application must maintain a canonical default topic set as a system-level configuration.
 
 ## Notes
-- The default topic set is a system-level constant. If the canonical defaults change in a future application version, existing teams retain their assigned configuration and are not automatically updated. The one exception is a team recovered through Recover Zero-Topic Team, which receives the *current* template, not the template of its creation date; that is intended.
+- The default topic set is a system-level constant. If the canonical defaults change in a future application version, existing teams retain their assigned configuration and are not automatically updated. The one exception is a team recovered through Recover Zero-Topic Team, which receives the *current* template, not the template of its creation date; that is intended. An Application Administrator can change that template (Maintain Default Topic Set); an edit changes what *future* teams and recovered teams receive, and never an existing team's topics.
 - Each team owns its own copy of the topic configuration — changes to one team's topics do not affect others.
 
 ---
@@ -167,6 +167,72 @@
 
 ## Notes
 - The last active topic cannot be archived (`TOPIC_LAST_ACTIVE`), so a zero-topic team arises only from legacy data or a data fault; the expected count for the diagnostic query is 0.
+- The template this recovery copies is whatever it is **at the moment of recovery**: an administrator edit through Maintain Default Topic Set changes what a recovered team receives, so a team recovered after an edit gets the edited wording.
+
+---
+
+---
+
+# Use Case: Maintain Default Topic Set
+
+*(Added by `admin-default-topic-maintenance`, #216. Traceable to FR-8.1 [HARD] and FR-8.6 [HARD] ("canonical" here means the template as currently maintained, not a fixed factory list), and to BRD 6.4 (copy-on-create). Status: **API only**; the Topic Management template screen is a follow-up (#308 read-only view and history, #309 editing), so FR-8.1 is "partially met, API only", not administrator self-service.)*
+
+## Summary
+**Actor:** Application Administrator (`users.global_role = application_admin`; no team membership is involved)
+
+**Trigger:** The administrator decides the starting topics that every new team receives should change: add a topic, reword one, retire one, bring one back, or reorder them.
+
+**Goal:** As an Application Administrator, I want to maintain the default topic set without a database migration so that teams created from now on start with the topics we currently believe are right, with a trail of who changed what.
+
+---
+
+## Preconditions
+- The actor is signed in and their live `global_role` is `application_admin`. The IdP role-claim mapping that grants it is part of this control.
+- The template (the system-level default topic set) exists with at least one active default.
+
+## Main Flow
+1. The administrator reads the template (`GET /api/v1/admin/default-topics`): every default including archived ones, each with its status, position, and who last changed it and when.
+2. The administrator makes a change: **add** a default (name, prompt, vote type, first-session description); **edit** a default's name, prompt or description (the vote type is fixed at creation); **archive** a default (it stops being copied to new teams; it is never deleted); **restore** an archived default (it returns at the end of the list); or **reorder** the active defaults (the whole list).
+3. The Application validates the change against the fixed limits (1 to 15 active defaults; name 60, prompt 400, description 800 characters; plain text; active names unique ignoring case and spacing), applies it in one transaction, writes one audit row holding the full before and after values, and returns the refreshed list together with the statement "Applies to teams created from now on. Existing teams keep their current topics."
+4. Teams created after the change receive the new set. The administrator can read the change history (`GET .../history`) and, to undo a change, edits the value back from the before-value in the history.
+
+## Alternate Flows
+- **A. Last active default:** archiving it is refused (`409 LAST_ACTIVE_DEFAULT`); at least one default always stays active.
+- **B. Duplicate name:** a name equal to another active default's name (ignoring case and surrounding spaces) is refused (`409 DEFAULT_NAME_DUPLICATE`); restoring a default whose name now collides names the conflicting active default so the administrator can rename or archive it first.
+- **C. Capacity reached:** adding or restoring a sixteenth active default is refused (`409 TEMPLATE_AT_CAPACITY`); archive one first.
+- **D. Concurrent edit:** a reorder whose list no longer matches the active defaults is refused with the current list (`409 REORDER_ID_MISMATCH`) and a plain-language "reload and try again"; a stale reorder of the same defaults is accepted and the last write wins (the audit row keeps the overwritten order). A change made while another maintenance change holds the template lock for more than three seconds answers `503 DEFAULT_MAINTENANCE_BUSY`.
+- **E. Non-admin:** a facilitator, engineering manager, senior engineer, or anyone else gets `403 DEFAULT_MAINTENANCE_ADMIN_ONLY`; the refusal is audited (bounded) and nothing changes.
+- **F. Validation failure:** an empty, over-long or non-plain-text field (HTML, entities, links, invisible or control characters), an unknown vote type, or an attempt to change the vote type is refused with `422` and the field name; nothing changes and the error never echoes the rejected text.
+- **G. No change:** an edit or reorder that changes nothing returns success with `unchanged: true` and writes no audit row.
+
+## Postconditions
+- **Success:** The template reflects the change; positions of the active defaults are exactly 1 to N; one audit row records who, when, which default, and the before and after values. Teams created from now on receive the new set; **no existing team, session, session snapshot or open room changes**.
+- **Failure:** The template and the audit trail are unchanged.
+
+---
+
+## Acceptance Criteria
+- [ ] Only an Application Administrator can use the maintenance routes; membership on any team is irrelevant.
+- [ ] Add, edit, archive, restore and reorder each work, with no migration, and every write response states that it applies to teams created from now on.
+- [ ] A team created after an edit receives the edited set; a team created before it keeps its own; a zero-topic team recovered after an edit receives the current template.
+- [ ] No existing team's topics, no session and no session snapshot is read or changed by any maintenance operation.
+- [ ] An edit can never break team creation: at least one and at most fifteen active defaults, positions 1 to N, valid text, unique active names.
+- [ ] Every effective write commits exactly one audit row in the same transaction; a failed audit write rolls the change back; a no-op or rejected request writes none.
+- [ ] A change can be undone by editing the previous value back, using the history.
+- [ ] Prompts are guided to address the team and the work, never individuals (documented in the runbook and the API contract).
+
+## Out of Scope
+- Propagating a change to existing teams or to open sessions; resetting to a factory set; an undo or revert operation (undo is editing the value back); a draft or publish state; notifying facilitators; a semantic filter on prompt content; a two-person approval; the administrator screen (follow-up, #308 and #309).
+
+## Dependencies
+- Use Case: Assign Default Topic Set to New Team (consumes the template at team creation); Use Case: Recover Zero-Topic Team (consumes the template at recovery).
+- The template is the `__default_topics__` system team's topic rows; the team-scoped topic routes keep refusing it (`404 TEAM_NOT_FOUND`).
+
+## Notes
+- **Existing teams keep their copy.** The copy-on-create rule (BRD 6.4) is unchanged: an edit changes what future teams, and teams recovered from zero topics, receive. A team created before an edit and still locked before its first session keeps the set it was created with.
+- **Accepted consequences, documented.** A rename is not propagated, and name-based matching for existing teams (restore, bulk restore, the `defaultTopicsNotActive` list) stops pairing them with the renamed default; restoring a default on a team returns that team's own superseded wording; teams created at different times can show different wording for the "same" topic.
+- **Single administrator control.** A change needs one administrator and no approver; it is detected (a structured log event per write) rather than prevented. Reopen if the number of administrators grows beyond a handful or after an incident.
+- Operational detail (audit queries, retention, redaction, alerting) is in `docs/deployment.md`, "Default topic maintenance".
 
 ---
 

@@ -665,10 +665,49 @@ export type AuditEventName =
   // written. Emitted once per window (first suppressed denial), carrying
   // { actorUserId, endpoint, count } or { actorUserId, endpoint, reason:
   // "limiter_error" }.
+  //
+  // The default-topic maintenance family (#216, auth/default-maintenance-
+  // denial-audit.ts) also emits this event, LOG-ONLY and never as an audit_log
+  // operation, with { actorUserId, family: "/api/v1/admin/default-topics",
+  // reason: "limit", suppressedCount } (logged at suppressed counts 1, 2, 4, 8,
+  // ...) or { actorUserId, family, reason: "limiter_error" } (once per actor
+  // per window).
   | "topic.defaults_assigned"
   | "topic.defaults_assign_denied"
   | "topic.defaults_assign_failed"
-  | "topic.denial_audit_suppressed";
+  | "topic.denial_audit_suppressed"
+  // topic.default_added / _edited / _archived / _restored / _reordered:
+  // admin-default-topic-maintenance (#216), design.md E5. The five audit_log
+  // OPERATIONS written by sessions/default-topic-maintenance.ts, one row per
+  // effective (non-no-op) template write, in the SAME transaction as the
+  // write (a failed insert rolls the write back), team_id = the
+  // __default_topics__ sentinel, metadata { topicId, operation,
+  // changedFields, before, after } (reorder omits topicId). These five names
+  // are the one exported constant MAINTENANCE_AUDIT_OPERATIONS; every query
+  // selects them with `operation = ANY($n)`, never LIKE (the existing
+  // topic.defaults_assigned* names would match a `topic.default_%` pattern).
+  //
+  // SCOPED TEXT EXCEPTION: the repository convention is that audit rows
+  // carry no topic names or prompt text. These five operations (and only
+  // these) hold the full before/after name, prompt and first-session
+  // description of the template default they changed, because template text
+  // is global, non-personal, and the rows are the only history of it. No
+  // other operation's metadata may gain topic text. The same events are also
+  // emitted to the application log after commit, but the LOG carries
+  // identifiers and changedFields only, never before/after or any text.
+  | "topic.default_added"
+  | "topic.default_edited"
+  | "topic.default_archived"
+  | "topic.default_restored"
+  | "topic.default_reordered"
+  // topic.default_maintenance_denied: #216, design.md E2. DURABLE and
+  // fail-open, one row per 403 DEFAULT_MAINTENANCE_ADMIN_ONLY on any of the
+  // seven /api/v1/admin/default-topics routes, bounded per actor through the
+  // shared denial-audit limiter. team_id NULL, metadata { endpoint (method
+  // plus route TEMPLATE, never the raw URL), http_status, reason,
+  // correlation_id }. Deliberately NOT one of the five maintenance
+  // operations above (it is not a template change).
+  | "topic.default_maintenance_denied";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

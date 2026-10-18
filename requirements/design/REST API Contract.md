@@ -1112,6 +1112,105 @@ The body carries no topic list, no topic text and no team id other than what the
 
 ---
 
+### DEFTOPIC-001 to DEFTOPIC-007 — Maintain the Default Topic Set (admin only)
+
+*Added by `admin-default-topic-maintenance` (#216). Traceable to BRD FR-8.1 (**partially met, API only**: there is no administrator screen; the Topic Management template screen is a follow-up, #308 read-only view and history, #309 editing), to FR-8.6 ("canonical" means the default set as currently maintained, decision D5) and to use case 08, "Maintain Default Topic Set". Authoritative behavior: openspec capability `admin-default-topic-maintenance`.*
+
+**Mutation control (CSRF).** Every mutating route (DEFTOPIC-002 to DEFTOPIC-006) must send the request header `X-Requested-With: dipstick`; without it (or with another value) the response is `403 MUTATION_CONTROL_HEADER_REQUIRED` (standard envelope; the received value is never echoed). It is checked after the role check, so a non-administrator still gets `403 DEFAULT_MAINTENANCE_ADMIN_ONLY`, and before the body is parsed. It exists because archive and restore carry no body and `SameSite=Strict` alone is site-scoped, not origin-scoped; the custom header forces a CORS preflight that only the allow-listed origin passes. GET routes need no header. Archive and restore take no body (an empty body with a JSON content type is accepted). If a request is accepted but the refreshed list cannot be read after the commit, the response is still `200`/`201` with `listUnavailable: true` and no `defaults`: a client must treat a missing `defaults` as "reload the list", never as an empty template or a failed write.
+
+**Routes** (exactly seven; none has a `:teamId` and none accepts a team id, the template id or `DELETE`):
+
+| ID | Method and URL | Success |
+|---|---|---|
+| DEFTOPIC-001 | `GET /api/v1/admin/default-topics` (list, archived included) | `200` |
+| DEFTOPIC-002 | `POST /api/v1/admin/default-topics` (add) | `201` |
+| DEFTOPIC-003 | `PATCH /api/v1/admin/default-topics/:topicId` (edit) | `200` |
+| DEFTOPIC-004 | `POST /api/v1/admin/default-topics/:topicId/archive` | `200` |
+| DEFTOPIC-005 | `POST /api/v1/admin/default-topics/:topicId/restore` | `200` |
+| DEFTOPIC-006 | `PUT /api/v1/admin/default-topics/order` (reorder, whole list) | `200` |
+| DEFTOPIC-007 | `GET /api/v1/admin/default-topics/history?limit=` | `200` |
+
+**Description.** Changes the template that every team created from now on is copied from, and that zero-topic recovery (TOPIC-008) hands out as of the moment of recovery. It never reads or writes an existing team's topics, a session or a session snapshot. No migration is needed. Archive is the only removal: a default is never deleted, and its audit history remains.
+
+**Auth:** Protected. **`application_admin` only**, read live from `users.global_role` on every request; membership on any team is not consulted. Any other caller gets `403 DEFAULT_MAINTENANCE_ADMIN_ONLY` (`category: forbidden`; distinct from `NOT_AN_ADMIN` and `NOT_A_FACILITATOR`), on all seven routes, reads included. The role check runs **before the request body is parsed**, so a non-admin gets this `403`, the timing floor and the denial audit row whatever the body (oversize, malformed, wrong media type). The refusal writes one fail-open `topic.default_maintenance_denied` audit row (`team_id` null; metadata `endpoint` (method plus route template, never the raw URL), `http_status`, `reason`, `correlation_id`), bounded to 10 per actor per 60 seconds; beyond the bound the response is the same `403` and only a log event is emitted (see the sampled count below).
+
+**Request.** `application/json` only on the body-carrying routes (add, edit, reorder); any other media type is `415 UNSUPPORTED_MEDIA_TYPE` and changes nothing. Body limit 16 KiB (`413 BODY_TOO_LARGE`); malformed JSON is `400 INVALID_JSON_BODY`. **Archive and restore take no body**: an empty body (with or without a JSON content type) is accepted and the content of any body sent is ignored (a malformed JSON body with a JSON content type, or one over 16 KiB, is still refused `400` / `413`, and no media-type check applies to these two routes). Only `name`, `prompt`, `firstSessionDescription` and `voteType` are read from a body; every other key (`teamId`, `status`, `isDefault`, `displayOrder`, `id`, ...) is ignored. Topic ids in paths are template row ids only; a non-canonical id or an id that names nothing on the template (including another team's topic) is `404 DEFAULT_TOPIC_NOT_FOUND`.
+
+| Operation | Body |
+|---|---|
+| Add | `{ name, prompt, voteType: 'finger' \| 'roman' \| 'modified_roman', firstSessionDescription }`, all required |
+| Edit | any of `{ name, prompt, firstSessionDescription }`; `voteType` is fixed at creation (a different value is `422 DEFAULT_VOTE_TYPE_IMMUTABLE`, an equal value is ignored); an archived default cannot be edited |
+| Reorder | `{ order: [id, ...] }`: exactly the active default ids, 1 to 15 |
+| Archive, restore | none |
+
+**Limits** (constants in code, returned as `limits`): 1 to 15 active defaults; `name` 1 to 60, `prompt` 1 to 400, `firstSessionDescription` 1 to 800 Unicode code points after trim. Text is **plain text**: HTML-like tags, HTML entities, URLs, Markdown links, control and invisible characters are refused (`PROMPT_FORMAT_INVALID`); "rate < 5" and "Dev & Ops" are fine. Active names are unique ignoring case and surrounding spaces; no Unicode normalization.
+
+**Response** (list and every write):
+
+```typescript
+interface DefaultTopicListResponse {
+  defaults: Array<{
+    id: string; name: string; prompt: string;
+    voteType: 'finger' | 'roman' | 'modified_roman';
+    firstSessionDescription: string;
+    status: 'active' | 'archived';
+    displayOrder: number | null;          // null for archived
+    lastChangedAt: string | null;         // latest add/edit/archive/restore audit row; reorders do not count; null if never changed here
+    lastChangedBy: { userId: string; displayName: string } | null;
+  }>;                                      // active by position, then archived
+  limits: { minActive: 1; maxActive: 15; nameMax: 60; promptMax: 400; descriptionMax: 800 };
+  orderLastChangedAt: string | null;       // latest reorder
+}
+interface DefaultTopicWriteResponse extends DefaultTopicListResponse {
+  scope: 'Applies to teams created from now on. Existing teams keep their current topics.';
+  notice?: string;            // rename only (exact text below)
+  changedTopicId?: string;
+  unchanged?: true;           // a no-op: nothing changed, no audit row
+  listUnavailable?: true;     // the change committed but the refreshed list could not be read; no list fields are present
+}
+// DEFTOPIC-007
+interface DefaultTopicHistoryResponse {
+  history: Array<{ id: string; operation: string; at: string;
+    actor: { userId: string; displayName: string }; topicId: string | null;
+    changedFields: string[]; before: unknown; after: unknown }>;   // newest first, ties by id descending
+}
+```
+
+Every write response, including a no-op, carries the `scope` text. A rename adds `notice`, exactly: "Renamed. Existing teams' topics are not renamed, and name-based matching for existing teams (restoring a default topic, and the defaultTopicsNotActive list) will no longer pair them with this default."
+
+**Check order** (stops at the first failure): session (`401`) -> role (`403`) -> for the body-carrying routes (add, edit, reorder), a non-JSON media type (`415`) -> non-canonical `:topicId` (`404`) -> for the five writes only, the shared topic-write rate limit (`429` / fail-closed `503`, the same budget as TOPIC-003 to TOPIC-008; no new limit values; a refused role spends nothing; the two GETs are not limited) -> body and field validation (`422`, before any database work; a reorder array longer than 15 is rejected first) -> one transaction under the template's topic lock (target lookup `404`, state checks `409` / `422`, write, invariant check, audit row, COMMIT). Validation precedes state checks, so an invalid add at capacity is `422`. The timing floor applies on every return.
+
+**Errors** (standard envelope `{ error: { category, code, message, correlationId } }`; a body never echoes a rejected value):
+
+| Status | `code` | When |
+|---|---|---|
+| `401` | | No valid session |
+| `403` | `DEFAULT_MAINTENANCE_ADMIN_ONLY` | Caller is not an `application_admin` |
+| `404` | `DEFAULT_TOPIC_NOT_FOUND` | Non-canonical id, unknown id, or an id that is not a template row |
+| `409` | `TEMPLATE_AT_CAPACITY` | Add or restore would exceed 15 active |
+| `409` | `LAST_ACTIVE_DEFAULT` | Archive would leave none active |
+| `409` | `DEFAULT_NAME_DUPLICATE` | Name equals another active default's (restore also carries `conflictingTopicId`, `conflictingName`) |
+| `409` | `DEFAULT_ARCHIVED` | Edit of an archived default (restore it first) |
+| `409` | `REORDER_ID_MISMATCH` | The list is not exactly the active ids; the body carries `current` (the active list to reload) |
+| `413` / `415` / `400` | `BODY_TOO_LARGE` / `UNSUPPORTED_MEDIA_TYPE` / `INVALID_JSON_BODY` | Administrators only (a non-admin has already had the `403`) |
+| `422` | `DEFAULT_FIELD_REQUIRED`, `DEFAULT_FIELD_TOO_LONG` (+ `max`), `PROMPT_FORMAT_INVALID`, `DEFAULT_VOTE_TYPE_INVALID`, `DEFAULT_VOTE_TYPE_IMMUTABLE`, `INVALID_DEFAULT_ORDER`, `INVALID_HISTORY_LIMIT`, `DEFAULT_ALREADY_ARCHIVED`, `DEFAULT_ALREADY_ACTIVE` | Validation and state refusals; field errors carry `field` |
+| `429` / `503` | the TOPIC-003 codes | The shared topic-write limit; a Redis outage fails closed |
+| `503` | `DEFAULT_MAINTENANCE_BUSY` | Another maintenance change held the template lock past 3 seconds (or a statement past 10 seconds); `Retry-After: 3`; nothing changed |
+| `500` | `DEFAULT_MAINTENANCE_FAILED` | Audit write failure, invariant backstop failure, unique violation or any unexpected error; rolled back; no driver text |
+
+**Notes**
+- **Semantics.** Add appends after the highest active position; archive and restore renumber or append so active positions stay exactly 1..N (restore returns at the end, never at its old position); a gapped template is repaired by ordinary use. A reorder identical to the stored order on a healthy template, and an edit that changes nothing (including `{}`), are no-ops: `200`, `unchanged: true`, no audit row. A stale reorder with the same ids is accepted (last write wins; the audit row keeps the overwritten order).
+- **Audit and history.** Each effective write commits exactly one audit row with the full before and after values of the changed fields (`topic.default_added`, `_edited`, `_archived`, `_restored`, `_reordered`). This is a scoped exception to "no topic text in audit rows", for template text only. There is no undo operation: edit the value back using the before-value from the history. The structured log event for each write carries identifiers and `changedFields` only, never text.
+- **Stored text is inert (MUST).** Template text (name, prompt, description, and its audit and history copies) is rendered **as text** by every consumer: no raw-HTML sink, no Markdown renderer, no auto-linker, no un-escaped interpolation in email or export (design E4a). This, not the plain-text guard (a denylist), is the control against stored XSS. The follow-up screen issues (#308, #309) carries the same requirement.
+- **Sampled suppression count.** When denial audit rows exceed the bound, the log-only `topic.denial_audit_suppressed` event is emitted at suppressed counts 1, 2, 4, 8, ...; the count it carries is a sampled running count, not an exact per-denial tally.
+- **Prompt-writing guidance.** Prompts address the team and the work, never individuals. The first topics set the tone of a session, so write the opening ones with care.
+  - Good: "How confident are we that a change can ship on a Friday?"; "How well do our tests tell us when something is broken?"; "How easy is it to get help when we are stuck?"
+  - Bad: "Is Sam's code review turnaround a problem?"; "Who on the team blocks releases?"; "Rate the people who cause the most incidents."
+- **Accepted consequences.** Restoring a default on an existing team returns that team's own, possibly superseded, wording, not the template's current text (canonical wording on restore, #310). Renaming a default makes the name-based `defaultTopicsNotActive` list and restore matching stop pairing existing teams with it (robustness, #311). Teams created at different times can show different wording for the same topic. A change needs one administrator and no approver; it is detected by the audit trail and the log event, not prevented.
+- **Where defaults come from.** The default set is maintained either through these routes or by a migration that edits the seed; it is no longer migration-only. The team-scoped routes (TOPIC-003 to TOPIC-007) still answer `404 TEAM_NOT_FOUND` for the template.
+
+---
+
 ## Group 4: Session Lifecycle
 
 ---
@@ -3130,6 +3229,7 @@ This table consolidates the server-side authorization rules. All checks are perf
 | TOPIC-004 to TOPIC-006 | No | Yes (non-member teams, post-lock) | No | Yes | Facilitator (non-member) or admin (any team, any membership, per FR-8.2 / #208); customization lock enforced (FR-8.2) |
 | TOPIC-007 | No | Yes (non-member teams, post-lock) | No | **No** (`403 NOT_A_FACILITATOR`) | Facilitator-only (BRD FR-8.7); customization lock enforced (`409`) |
 | TOPIC-008 | No | **No** (`403 NOT_AN_ADMIN`) | No | Yes (any team, any membership; role read live from `users`) | Admin-only (#200). The one exception to the customization lock: allowed only when the team has zero active topics, and it can write only the canonical set. Not for the template team. |
+| DEFTOPIC-001 to DEFTOPIC-007 | No | **No** (`403 DEFAULT_MAINTENANCE_ADMIN_ONLY`) | No | Yes (membership irrelevant; role read live from `users`) | Admin-only (#216). Maintains the default set for teams created from now on; touches no existing team. Role is checked before the body is parsed. |
 | SESSION-001 | No | Yes (non-member teams) | No | Yes | Cross-team check re-enforced |
 | SESSION-002 | If participant | If facilitator | No | No (#243 D11) | Live sessions only |
 | SESSION-003 | Yes (team member, participant role) | No | No | No (#243 D11) | EM role and App Admin blocked, even as team members |

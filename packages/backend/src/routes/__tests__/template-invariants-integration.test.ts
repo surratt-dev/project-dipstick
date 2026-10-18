@@ -2,7 +2,10 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { probeInfra, requireInfraOrThrow, loadModules, SENTINEL_TEAM_ID } from "./helpers/real-db.js";
 import type { Mods } from "./helpers/real-db.js";
 import { acquireTemplateLock } from "./helpers/template-lock.js";
+import { MAINTENANCE_AUDIT_OPERATIONS } from "../../sessions/default-topic-validation.js";
 import {
+  BASELINE_INVARIANT,
+  checkBaselineContent,
   checkTemplateInvariants,
   messageFor,
   type BaselineTopic,
@@ -13,9 +16,16 @@ import {
 
 // ---------------------------------------------------------------------------
 // Template invariants -- harden-team-creation-topic-copy (#215) design.md D8,
-// tasks.md 7.1/7.2. The CI-time substitute for the declined template write
-// trigger. It detects a bad migration or seed; it runs against the CI
-// database, so it does NOT detect a direct edit made in production.
+// tasks.md 7.1/7.2, reshaped by admin-default-topic-maintenance (#216)
+// design.md E6 / tasks.md 2.2. The CI-time substitute for the declined
+// template write trigger. It detects a bad migration or seed; it runs against
+// the CI database, so it does NOT detect a direct edit made in production.
+//
+// (a) to (e) are STRUCTURAL: they hold for any healthy template, including
+// one an administrator edited through the maintenance endpoints (an archived
+// default is valid state). (f) is the migration-time BASELINE content check:
+// it holds only while no audited maintenance write exists for the template,
+// and is reported as SKIPPED (never passed) once one does.
 //
 // BASELINE SOURCE (7.1): packages/backend/migrations/11_default_topics_correction.sql,
 // the up-migration that replaced migration 4's six rows with the twelve. The
@@ -24,8 +34,10 @@ import {
 // hashes below equal SHA-256 of the migration text as stored in the seeded
 // database (checked when this file was written). No fallback was needed: the
 // prompt text is in the migration. Hashes (not prose) keep the file small; a
-// diff shows only that content changed. F5 (#216) MUST update this list when
-// it edits defaults.
+// diff shows only that content changed. This list is the migration-time
+// baseline (the factory seed): it is updated by a MIGRATION that edits the
+// seed, never by an administrator edit through the maintenance endpoints
+// (#216), which leave it untouched and make (f) skip instead.
 // ---------------------------------------------------------------------------
 
 const N = 12;
@@ -48,10 +60,12 @@ const BASELINE: BaselineTopic[] = [
 const infraUp = await probeInfra();
 requireInfraOrThrow(infraUp, "template-invariants-integration.test.ts");
 
-describe.skipIf(!infraUp)("the template team holds the canonical baseline (#215 D8)", () => {
+describe.skipIf(!infraUp)("the template team holds the canonical baseline (#215 D8, #216 E6)", () => {
   let mods: Mods;
   let release: (() => Promise<void>) | undefined;
   let violations: Violation[];
+  let baselineViolations: Violation[];
+  let maintenanceRows = 0;
 
   beforeAll(async () => {
     expect(BASELINE).toHaveLength(N);
@@ -69,7 +83,15 @@ describe.skipIf(!infraUp)("the template team holds the canonical baseline (#215 
             + (SELECT count(*) FROM sessions WHERE team_id = $1) AS n`,
       [SENTINEL_TEAM_ID],
     );
-    violations = checkTemplateInvariants(rows, BASELINE, Number(counts.rows[0]!.n));
+    // The explicit five-name list, never LIKE: topic.defaults_assign_* rows
+    // can carry the sentinel team id and must not disable (f).
+    const audited = await mods.db.query<{ n: string }>(
+      `SELECT count(*) AS n FROM audit_log WHERE team_id = $1 AND operation = ANY($2::text[])`,
+      [SENTINEL_TEAM_ID, [...MAINTENANCE_AUDIT_OPERATIONS]],
+    );
+    maintenanceRows = Number(audited.rows[0]!.n);
+    violations = checkTemplateInvariants(rows, Number(counts.rows[0]!.n));
+    baselineViolations = checkBaselineContent(rows, BASELINE);
   });
 
   afterAll(async () => {
@@ -78,18 +100,31 @@ describe.skipIf(!infraUp)("the template team holds the canonical baseline (#215 
   });
 
   const invariants: InvariantId[] = [
-    "(a) active default count and names equal the baseline",
+    "(a) active default count within 1..15 and active names unique",
     "(b) active default positions are exactly 1..N",
-    "(c) no non-active default",
+    "(c) every default row, active or archived, passes the maintenance field validation",
     "(d) no non-default row on the template",
-    "(f) baseline content (prompt, vote_type, first_session_description)",
-    // (e) goes last so (a)-(d) and (f) report first; migration 23's CHECKs
-    // already enforce it, so this is an intentional duplicate that names the
+    // (e) goes last so (a)-(d) report first; migration 23's CHECKs already
+    // enforce it, so this is an intentional duplicate that names the
     // invariant in its failure message.
     "(e) no memberships or sessions on the template team",
   ];
 
   it.each(invariants)("%s", (invariant) => {
     expect(messageFor(violations, invariant), messageFor(violations, invariant)).toBe("");
+  });
+
+  // (f) is its own test so it can be reported as skipped, with the reason,
+  // when an audited maintenance write exists. describe.skipIf above is for
+  // missing infrastructure and is separate.
+  it(BASELINE_INVARIANT, (ctx) => {
+    if (maintenanceRows > 0) {
+      // vitest 2 has no skip(note): state the reason on the console, then skip.
+      console.warn(
+        `[template-invariants] (f) baseline content SKIPPED, not passed: ${maintenanceRows} audited default-topic maintenance row(s) exist for the template, so it legitimately differs from the migration-time baseline`,
+      );
+      ctx.skip();
+    }
+    expect(messageFor(baselineViolations, BASELINE_INVARIANT), messageFor(baselineViolations, BASELINE_INVARIANT)).toBe("");
   });
 });

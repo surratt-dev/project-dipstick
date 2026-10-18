@@ -321,7 +321,8 @@ describe.skipIf(!infraUp)("room open — real Postgres", () => {
     await mods.db.query(
       `INSERT INTO topics (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
        SELECT $1, name, prompt, vote_type, display_order, is_default, first_session_description
-       FROM topics WHERE team_id = '00000000-0000-0000-0000-000000000001' AND is_default = true`,
+       FROM topics WHERE team_id = '00000000-0000-0000-0000-000000000001' AND is_default = true
+         AND status = 'active'`,
       [teamId],
     );
     const app = await buildApp(mods, fac);
