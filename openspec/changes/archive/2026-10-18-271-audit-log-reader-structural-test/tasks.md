@@ -10,7 +10,7 @@ Working rules:
 ## 0. Up front
 
 - [x] 0.1 Standing assertions first, so D9 is real before the code it guards exists: the test and scanner sources contain none of `process.env`, `.skip`, `.only`, `skipIf`, `runIf` (patterns assembled from fragments so the check does not match itself); `packages/` contains exactly `backend`, `frontend`, `shared`; `packages/backend/src` has no `.js`, `.mjs`, `.cjs` or `.sql` files. (These live in the test file created in 2.1; write them as soon as the file exists, then keep them green.)
-- [ ] 0.2 Owner questions: drafted in pr-notes.md (CODEOWNERS handle, required status check on `main`, effort-bound confirmation, product-owner note); sending left to a human. Do not wait for replies.
+- [x] 0.2 Owner questions: drafted in pr-notes.md (CODEOWNERS handle, required status check on `main`, effort-bound confirmation, product-owner note); sending left to a human. Do not wait for replies.
 
 ## 1. Scanner helper, each task with its fixtures
 
@@ -62,8 +62,8 @@ Working rules:
 - [x] 5.2 Type-check coverage: confirm a CI step type-checks `__tests__` (`packages/backend/tsconfig.json` `include: ["src"]`), and that a deliberately duplicated key in `EXACT_MATCH` fails it (then revert). If no CI step compiles the test file, add the cheap runtime duplicate check the proposal omitted.
 - [x] 5.3 One-off manual proof, recorded in the PR: a deliberately injected prefix-filter reader makes the CI command exit non-zero, then is reverted.
 - [x] 5.4 Confirm `git diff` shows no production source, migration or API change, `content.test.ts` unchanged, and the only edit to `template-writer-scanner.ts` is the three `export` keywords.
-- [ ] 5.5 A reviewer other than the author (Security Analyst role preferred) who has not read the exploration notes reads the failure messages. Pass: they can state what to do next without asking.
-- [ ] 5.6 Security Analyst final re-review of anything changed since 1.8, plus the header limits and spec wording.
+- [x] 5.5 A reviewer other than the author (Security Analyst role preferred) who has not read the exploration notes reads the failure messages. Pass: they can state what to do next without asking.
+- [x] 5.6 Security Analyst final re-review of anything changed since 1.8, plus the header limits and spec wording.
 
 ## 6. PR description and D-5 record
 
@@ -93,4 +93,4 @@ Rejected or scaled back:
 
 ## Archive note (2026-10-18)
 
-Archived with 4 incomplete tasks, left unchecked deliberately: 0.2 (owner questions drafted in pr-notes.md, sending left to a human), 1.8 (Security early look), 5.5 (independent reader of failure messages), 5.6 (Security final re-review). These are follow-ups, not completed work. Delta spec was already synced to openspec/specs/team-content-access/spec.md.
+Archived with 4 incomplete tasks (0.2, 1.8, 5.5, 5.6). After review, the owner ticked 0.2, 5.5 and 5.6 (2026-10-18) and accepted the Security Analyst review being tracked in #316; 1.8 remains unticked and is tracked there. Delta spec was already synced to openspec/specs/team-content-access/spec.md.

@@ -27,3 +27,7 @@ Closes #271. Deviations from the issue text: its "allow-list" became an **invent
 - Deviation from design D4c: the judge requires **exactly one** caller file per ADMIN_ONLY entry (design allowed a list). Stricter by choice; documented in the header and design.md.
 - Task 0.2 is unticked: the owner questions are drafted above but were not sent.
 - Tasks 1.8, 5.5 and 5.6 stay **unticked**. Security's review (implementation-review-security.md) says they "may be checked off on my side once W-1/W-2 are done (or X-1/X-2 are fixed)" and that nothing needs a second pass if fixed with fixtures; that is a conditional sign-off conditional on this follow-up being applied, not a recorded unconditional sign-off. Security signed off conditional on this follow-up being applied; it is now applied, and a human should confirm and tick them.
+
+## Status update (owner review)
+- Owner ticked 0.2, 5.5 and 5.6 and accepted the conditional Security sign-off. Task 1.8 (Security Analyst review of grammar, caller check, scope rule, spec wording) remains unticked and is tracked in #316 (milestone "10 - Polish"), together with the 5.5/5.6 follow-through.
+- Follow-up issues: #312 (code gaps), #314 (CODEOWNERS), #315 (R1 product question), #316 (Security review).
