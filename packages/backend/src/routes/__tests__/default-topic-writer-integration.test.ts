@@ -902,11 +902,20 @@ describe.skipIf(!infraUp)("default-topic maintenance writer (real Postgres, #216
       const olderRes = await app.inject({ method: "POST", url: "/api/v1/teams", payload: { name: `Older ${randomUUID()}` } });
       const olderId = olderRes.json().teamId as string;
       h.fx.track(olderId);
+      // Scoped to the team this test created. Test files share one database and run in
+      // parallel, so a database-wide snapshot would also see other files' teams and topics
+      // appear between the two reads. The writer's SQL touching only the sentinel is proven
+      // separately by the statement-capture test below.
       const snapshotRows = async () => ({
-        topics: (await db().query(`SELECT * FROM topics WHERE team_id <> $1 ORDER BY id`, [SENTINEL_TEAM_ID])).rows,
-        sessionTopics: (await db().query(`SELECT * FROM session_topics ORDER BY id`)).rows,
-        sessions: (await db().query(`SELECT id, status, current_topic_id FROM sessions ORDER BY id`)).rows,
-        memberships: (await db().query(`SELECT * FROM team_memberships ORDER BY team_id, user_id`)).rows,
+        topics: (await db().query(`SELECT * FROM topics WHERE team_id = $1 ORDER BY id`, [olderId])).rows,
+        sessionTopics: (
+          await db().query(
+            `SELECT st.* FROM session_topics st JOIN sessions s ON s.id = st.session_id WHERE s.team_id = $1 ORDER BY st.id`,
+            [olderId],
+          )
+        ).rows,
+        sessions: (await db().query(`SELECT id, status, current_topic_id FROM sessions WHERE team_id = $1 ORDER BY id`, [olderId])).rows,
+        memberships: (await db().query(`SELECT * FROM team_memberships WHERE team_id = $1 ORDER BY user_id`, [olderId])).rows,
       });
       const before = await snapshotRows();
 
