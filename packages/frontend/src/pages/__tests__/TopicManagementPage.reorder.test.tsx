@@ -47,6 +47,7 @@ function makeTopics(ids: string[] = IDS): GetAllTopicsResponse {
     isCustomizationLocked: false,
     canEditAnnotations: true,
     canAddTopics: true,
+    canAssignDefaults: false,
     active: ids.map((id, i) => ({
       topicId: id,
       name: NAMES[IDS.indexOf(id)]!,

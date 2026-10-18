@@ -611,7 +611,51 @@ export type AuditEventName =
   // SQLSTATE or null -- NEVER err.message or err.detail, which can echo row
   // values. Distinct from admin.audit_write_failed (admin arm, fail-closed)
   // and auth.audit_write_failed (auth trail).
-  | "topic.audit_write_failed";
+  | "topic.audit_write_failed"
+  // topic.defaults_assigned / topic.defaults_assign_denied /
+  // topic.defaults_assign_failed / topic.denial_audit_suppressed:
+  // zero-topic-team-recovery (#200), design.md D4/D5/D9. All four belong to
+  // POST /api/v1/teams/:teamId/topics/assign-defaults (routes/topics.ts),
+  // the one application_admin carve-out from the customization lock, which
+  // gives a team with zero ACTIVE topics the canonical default set.
+  // audit_log.operation is unconstrained TEXT and team_id has no foreign key
+  // (migration 8), so no migration backs these names. Retention for all of
+  // them is the audit-log retention policy (docs/deployment.md, "Zero-topic
+  // teams").
+  //
+  // topic.defaults_assigned: DURABLE and fail-closed. One audit_log row in
+  // the SAME transaction as the topic inserts (a failed insert rolls the
+  // assignment back), metadata { topic_count, correlation_id } only (never
+  // topic text, topic ids or the template id), actor_global_role
+  // 'application_admin'. This event is emitted AFTER COMMIT and is a
+  // convenience notification: the audit_log row is the system of record.
+  // Fields: { actorUserId, actorGlobalRole, actorIp, teamId, topicCount,
+  // correlationId }.
+  //
+  // topic.defaults_assign_denied: DURABLE and fail-open (auth/
+  // fail-open-topic-audit.ts), one row per 403 NOT_AN_ADMIN, metadata
+  // { endpoint, http_status: 403, reason: "NOT_AN_ADMIN", correlation_id },
+  // team_id as supplied by the caller (not a verified team). Bounded per
+  // actor (see topic.denial_audit_suppressed): beyond the bound the 403 is
+  // unchanged and no row is written. The event fields mirror the row plus
+  // { actorRoles, rowWritten }.
+  //
+  // topic.defaults_assign_failed: DURABLE and fail-open, written AFTER the
+  // rollback when the template has no active topics (500
+  // DEFAULT_TOPICS_UNAVAILABLE), metadata { endpoint, http_status: 500,
+  // reason, correlation_id }; no template id. The correlation id joins it to
+  // the error-level log line, which does name the template id.
+  //
+  // topic.denial_audit_suppressed: LOG-ONLY, no audit_log row. A non-admin
+  // exceeded the per-actor denial-audit bound (10 rows per minute) or the
+  // bound's limiter store errored; the response stays 403 and no row is
+  // written. Emitted once per window (first suppressed denial), carrying
+  // { actorUserId, endpoint, count } or { actorUserId, endpoint, reason:
+  // "limiter_error" }.
+  | "topic.defaults_assigned"
+  | "topic.defaults_assign_denied"
+  | "topic.defaults_assign_failed"
+  | "topic.denial_audit_suppressed";
 
 export function emitAuditEvent(
   logger: FastifyBaseLogger,

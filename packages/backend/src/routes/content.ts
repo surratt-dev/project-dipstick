@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../db.js";
 import { emitAuditEvent } from "../auth/audit-logger.js";
-import { AUDIT_WRITE_TIMEOUT_MS, AuditWriteTimeoutError, withTimeout } from "../auth/audit-write-timeout.js";
+import { sqlstateOf, writeFailOpenTopicAuditRow } from "../auth/fail-open-topic-audit.js";
 import {
   evaluateTeamAccess,
   readActiveMembershipRole,
@@ -17,7 +17,7 @@ import {
 } from "../content/team-content-serializers.js";
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import { getTopicLockState } from "../auth/topic-lock-state.js";
-import { parseRoleArray } from "../auth/role-map.js";
+import { isApplicationAdmin, parseRoleArray } from "../auth/role-map.js";
 import type { SessionData } from "../auth/session-store.js";
 import type {
   TeamAccessGrant,
@@ -29,6 +29,7 @@ import type {
   GetAllTopicsResponse,
 } from "@dipstick/shared";
 import { DEFAULT_TOPICS_TEAM_ID, canonicalDefaultsWhere } from "../sessions/default-topics.js";
+import { isTemplateTeam } from "../teams/template-team-guard.js";
 import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
 import { isCanonicalUuid } from "./uuid.js";
 
@@ -199,16 +200,6 @@ const TOPIC_002_ENDPOINT = "GET /api/v1/teams/:teamId/topics/all";
 type Topic002AdminOperation = "admin.topic_config_accessed";
 
 /**
- * The pg SQLSTATE of a thrown value, or null. The one place the "SQLSTATE
- * only, never err.message / err.detail" rule lives (#264 D3): both audit
- * failure signals use it, because message and detail can echo row values.
- */
-function sqlstateOf(err: unknown): string | null {
-  const code = (err as { code?: unknown } | null)?.code;
-  return typeof code === "string" ? code : null;
-}
-
-/**
  * #232 D5b: run one admin-arm audit step (the role-set read or an audit
  * insert). On a throw, emit the log-only admin.audit_write_failed signal
  * with the SQLSTATE only (never err.message / err.detail, which can echo row
@@ -242,91 +233,12 @@ async function withAdminAuditFailureSignal<T>(
 // FAIL-OPEN on the response (design D3, Security P1): what is audited is a
 // rejection, not a disclosure, so a failed insert never changes the 403. The
 // administrator arm above stays fail-closed (it audits a disclosure). The
-// try/catch in runDenialAuditStep wraps ONLY the insert, so anything else on
-// the denial path that throws (the helper call, applyTimingFloor,
-// reply.send) is still a 500.
+// insert itself is the shared writeFailOpenTopicAuditRow (auth/
+// fail-open-topic-audit.ts, extracted by #200 so assign-defaults uses the
+// same SQL); its try/catch wraps ONLY the insert, so anything else on the
+// denial path that throws (applyTimingFloor, reply.send) is still a 500.
 // ---------------------------------------------------------------------------
 const TOPIC_002_DENIAL_OPERATION = "topic.config_list_denied" as const;
-
-/**
- * Constant SQL text, numbered placeholders only (no request data is ever
- * interpolated). Every parameter carries an explicit cast: in an
- * INSERT ... SELECT a bare parameter gets no type inference from the target
- * column (unlike VALUES) and would resolve as text, so the insert would fail
- * every time against the UUID / INET / JSONB columns. Fail-open would hide
- * that behind a stream of topic.audit_write_failed events, so the real
- * Postgres integration test is mandatory. The caller's role set is read
- * inside the insert (LEFT JOIN users): a missing users row gives
- * actor_roles = NULL, not a failure, and there is exactly one query and one
- * timeout.
- */
-const TOPIC_002_DENIAL_INSERT_SQL = `INSERT INTO audit_log
-       (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata, actor_roles)
-     SELECT $1::uuid, $2::text, $3::inet, $4::text, $5::uuid, $6::jsonb, u.roles::text[]
-     FROM (SELECT 1) s LEFT JOIN users u ON u.id = $1::uuid
-     RETURNING actor_roles`;
-
-type Topic002DenialReason = "NOT_A_FACILITATOR" | "FACILITATOR_IS_TEAM_MEMBER";
-
-/**
- * Inserts the denial row and returns the stored actor_roles (null when the
- * caller has no users row). `actorGlobalRole` null (no users row) is stored
- * as 'unknown', the existing convention; that mapping lives here, not in the
- * shared helper.
- */
-async function insertTopic002DenialAuditRow(args: {
-  actorUserId: string;
-  actorGlobalRole: string | null;
-  actorIp: string;
-  teamId: string;
-  reason: Topic002DenialReason;
-}): Promise<readonly string[] | null> {
-  const result = await withTimeout(
-    db.query<{ actor_roles: string[] | null }>(TOPIC_002_DENIAL_INSERT_SQL, [
-      args.actorUserId,
-      args.actorGlobalRole ?? "unknown",
-      args.actorIp,
-      TOPIC_002_DENIAL_OPERATION,
-      args.teamId,
-      JSON.stringify({ endpoint: TOPIC_002_ENDPOINT, http_status: 403, reason: args.reason }),
-    ]),
-    AUDIT_WRITE_TIMEOUT_MS,
-  );
-  return result.rows[0]?.actor_roles ?? null;
-}
-
-/**
- * Runs the denial insert fail-open. On a throw or a timeout, emits the
- * log-only topic.audit_write_failed (error level; SQLSTATE only, never
- * err.message) and swallows. Reports whether a row was written and the roles
- * the insert captured.
- */
-async function runDenialAuditStep(
-  request: FastifyRequest,
-  ctx: { actorUserId: string; teamId: string; reason: Topic002DenialReason },
-  insert: () => Promise<readonly string[] | null>,
-): Promise<{ rowWritten: boolean; actorRoles: readonly string[] | null }> {
-  try {
-    return { rowWritten: true, actorRoles: await insert() };
-  } catch (err) {
-    emitAuditEvent(
-      request.log,
-      "topic.audit_write_failed",
-      {
-        actorUserId: ctx.actorUserId,
-        teamId: ctx.teamId,
-        endpoint: TOPIC_002_ENDPOINT,
-        operation: TOPIC_002_DENIAL_OPERATION,
-        stage: "audit_insert",
-        reason: ctx.reason,
-        failureMode: err instanceof AuditWriteTimeoutError ? "timeout" : "error",
-        errorCode: sqlstateOf(err),
-      },
-      "error",
-    );
-    return { rowWritten: false, actorRoles: null };
-  }
-}
 
 /**
  * #232 D5: the caller's stored role set, read once per admin request. The
@@ -867,18 +779,17 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       // then the unchanged 403. The insert never sits between the floor and
       // the send, and applyTimingFloor is measured from handler entry so the
       // audit time is absorbed into the floor.
-      const denial = await runDenialAuditStep(
-        request,
-        { actorUserId: session.userId, teamId, reason: decision.reason },
-        () =>
-          insertTopic002DenialAuditRow({
-            actorUserId: session.userId,
-            actorGlobalRole: decision.actorGlobalRole,
-            actorIp: request.ip,
-            teamId,
-            reason: decision.reason,
-          }),
-      );
+      const denial = await writeFailOpenTopicAuditRow({
+        log: request.log,
+        operation: TOPIC_002_DENIAL_OPERATION,
+        endpoint: TOPIC_002_ENDPOINT,
+        httpStatus: 403,
+        reason: decision.reason,
+        actorUserId: session.userId,
+        actorGlobalRole: decision.actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+      });
       emitAuditEvent(request.log, TOPIC_002_DENIAL_OPERATION, {
         actorUserId: session.userId,
         actorGlobalRole: decision.actorGlobalRole ?? "unknown",
@@ -1056,6 +967,11 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       [teamId],
     );
 
+    // One row per canonical default, preferring an ACTIVE team topic of the
+    // same name (#200 D3a). A plain LEFT JOIN yields a row per matching team
+    // topic, so an archived "X" next to an active "X" listed X as restorable;
+    // restore (TOPIC-005) has no name-collision check, so acting on that
+    // listing would create two active topics of one name.
     const defaultTopicsResult = await db.query<{
       default_topic_id: string;
       default_topic_name: string;
@@ -1065,7 +981,12 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       `SELECT dt.id AS default_topic_id, dt.name AS default_topic_name,
               t.id AS team_topic_id, t.status AS team_topic_status
        FROM topics dt
-       LEFT JOIN topics t ON t.team_id = $1 AND t.name = dt.name
+       LEFT JOIN LATERAL (
+         SELECT id, status FROM topics
+         WHERE team_id = $1 AND name = dt.name
+         ORDER BY (status = 'active') DESC, id
+         LIMIT 1
+       ) t ON true
        WHERE ${canonicalDefaultsWhere("dt", 2)}
        ORDER BY dt.display_order ASC`,
       [teamId, DEFAULT_TOPICS_TEAM_ID],
@@ -1090,6 +1011,17 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
     const canAddTopics =
       decision.actorGlobalRole === "facilitator" || decision.actorGlobalRole === "application_admin";
 
+    // zero-topic-team-recovery (#200) design.md D6. Presentation-only flag for
+    // the screen's "Assign default topics" button; assign-defaults enforces its
+    // own authorization and precondition and nothing reads this back from a
+    // client. isApplicationAdmin is the SAME exported predicate that endpoint
+    // authorizes with, so the two cannot drift. "Zero active" reads the list
+    // already fetched above (archived rows never count), and the template team
+    // never gets the flag, even if its active topics were all archived.
+    // Independent of the lock, like canAddTopics.
+    const canAssignDefaults =
+      isApplicationAdmin(decision.actorGlobalRole) && activeResult.rows.length === 0 && !isTemplateTeam(teamId);
+
     const responseBody: GetAllTopicsResponse = {
       teamId,
       teamName,
@@ -1097,6 +1029,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       lockReason,
       canEditAnnotations,
       canAddTopics,
+      canAssignDefaults,
       active: activeResult.rows.map((row) => ({
         topicId: row.id,
         name: row.name,

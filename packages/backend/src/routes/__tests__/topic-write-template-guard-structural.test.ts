@@ -55,7 +55,17 @@ const KNOWN_ROUTES = [
   "POST /api/v1/teams/:teamId/topics/:topicId/restore",
   "PUT /api/v1/teams/:teamId/topics/order",
   "PUT /api/v1/teams/:teamId/topics/:topicId/annotation",
+  "POST /api/v1/teams/:teamId/topics/assign-defaults",
 ];
+
+// zero-topic-team-recovery (#200): assign-defaults is application_admin only,
+// and its 403 runs BEFORE the team lookup and so before the template guard. A
+// facilitator caller would be answered 403 NOT_AN_ADMIN and never reach the
+// guard, so the routes listed here are exercised as an application_admin. (The
+// annotation route is facilitator-only, so one caller cannot serve all six.)
+// The guard itself is unchanged: it still answers 404 TEAM_NOT_FOUND with one
+// topic.write_denied_template row whose endpoint is the route key.
+const ADMIN_ONLY_ROUTES: readonly string[] = ["POST /api/v1/teams/:teamId/topics/assign-defaults"];
 
 function methodsOf(route: RouteOptions): string[] {
   return (Array.isArray(route.method) ? route.method : [route.method]).map((m) => String(m).toUpperCase());
@@ -101,7 +111,9 @@ describe.skipIf(!infraUp)("structural: every team-scoped topic-write route rejec
   let mods: Mods;
   let fx: Fixture;
   let app: FastifyInstance;
+  let adminApp: FastifyInstance;
   let facilitatorId: string;
+  let adminId: string;
   const routes: RouteOptions[] = [];
 
   // #215 M1: this file snapshots/restores the template, so it holds the lock.
@@ -112,11 +124,14 @@ describe.skipIf(!infraUp)("structural: every team-scoped topic-write route rejec
     mods = await loadModules();
     fx = new Fixture(mods.db);
     facilitatorId = await fx.user("facilitator");
+    adminId = await fx.user("application_admin");
     app = await buildFullApp(mods, facilitatorId, (route) => routes.push(route));
+    adminApp = await buildFullApp(mods, adminId);
   });
 
   afterAll(async () => {
     await app?.close();
+    await adminApp?.close();
     await fx?.cleanup();
     await mods?.redis.quit();
     await releaseTemplateLock?.();
@@ -139,7 +154,9 @@ describe.skipIf(!infraUp)("structural: every team-scoped topic-write route rejec
         const [method, url] = key.split(" ") as [HTTPMethods, string];
         const start = (await db.query<{ now: Date }>(`SELECT clock_timestamp() AS now`)).rows[0]!.now;
 
-        const res = await app.inject({ method, url: templateUrl(url), payload: {} });
+        const adminOnly = ADMIN_ONLY_ROUTES.includes(key);
+        const caller = adminOnly ? adminId : facilitatorId;
+        const res = await (adminOnly ? adminApp : app).inject({ method, url: templateUrl(url), payload: {} });
 
         expect(res.statusCode, key).toBe(404);
         expect(res.json().error?.code, key).toBe("TEAM_NOT_FOUND");
@@ -147,7 +164,7 @@ describe.skipIf(!infraUp)("structural: every team-scoped topic-write route rejec
           `SELECT count(*)::int AS n FROM audit_log
             WHERE operation = 'topic.write_denied_template'
               AND actor_user_id = $1 AND "timestamp" >= $2 AND metadata->>'endpoint' = $3`,
-          [facilitatorId, start, key],
+          [caller, start, key],
         );
         expect(audit.rows[0]!.n, key).toBe(1);
         await assertTemplateUnchanged(db, snap);

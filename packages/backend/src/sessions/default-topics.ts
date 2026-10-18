@@ -41,6 +41,13 @@ export function canonicalDefaultsWhere(alias: "dt" | "topics", paramIndex: numbe
  * annotation_updated_at are deliberately excluded so a new team never
  * inherits a definition from the template (topic-annotation Decision 9).
  *
+ * Returns the ids of the rows it inserted (#200), so a caller that needs the
+ * count (assign-defaults' topicCount and audit topic_count) reads exactly
+ * what was written, with no second query. POST /api/v1/teams ignores the
+ * return value and still relies on snapshotSessionTopics to reject an empty
+ * copy. An empty template inserts nothing and returns []; deciding what that
+ * means is the caller's job.
+ *
  * sourceTeamId is a test seam only (bound as $2, never interpolated); the
  * route never passes it.
  */
@@ -48,14 +55,30 @@ export async function copyCanonicalDefaults(
   client: PoolClient,
   newTeamId: string,
   sourceTeamId: string = DEFAULT_TOPICS_TEAM_ID,
-): Promise<void> {
-  await client.query(
+): Promise<string[]> {
+  const result = await client.query<{ id: string }>(
     `INSERT INTO topics
        (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
      SELECT $1, name, prompt, vote_type,
             row_number() OVER (ORDER BY display_order, id), is_default, first_session_description
      FROM topics
-     WHERE ${canonicalDefaultsWhere("topics", 2)}`,
+     WHERE ${canonicalDefaultsWhere("topics", 2)}
+     RETURNING id`,
     [newTeamId, sourceTeamId],
   );
+  return result.rows.map((row) => row.id);
+}
+
+/**
+ * Thrown by assign-defaults when the template has no active default topics
+ * (the copy inserted zero rows). Deliberately a sibling of
+ * NoActiveTopicsError, which formats a session id into its message: this one
+ * takes no argument, and its message holds no session, team or template id,
+ * so it is safe to log and cannot leak into a response.
+ */
+export class DefaultTopicsUnavailableError extends Error {
+  constructor() {
+    super("The default topic set has no active topics to copy.");
+    this.name = "DefaultTopicsUnavailableError";
+  }
 }

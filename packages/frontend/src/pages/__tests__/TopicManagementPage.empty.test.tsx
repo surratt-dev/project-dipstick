@@ -34,7 +34,7 @@ vi.mock("../../auth/AuthContext.js", () => ({
 
 const NO_TOPICS = "This team has no active topics.";
 const LOCKED_COPY =
-  "This team has no active topics, so its sessions can't run. Topics can't be assigned from this screen. Ask the people who run this application for your organization to restore this team's default topics.";
+  "This team has no active topics, so its sessions can't run. Ask an application administrator to assign the default topics, then refresh this page.";
 
 const threeArchived = [
   archivedTopic("arch-1", "Deployment"),
@@ -59,7 +59,7 @@ beforeEach(() => {
 });
 
 describe("the empty-state variants", () => {
-  it("row 1: a locked team names no role, channel, or control and offers no actions", async () => {
+  it("row 1: a locked team (no assign flag) asks for an application administrator and offers no actions", async () => {
     installFetch({ gets: [mockFetchResponse(empty({ isCustomizationLocked: true }))] });
     await renderPage();
 
@@ -210,6 +210,10 @@ describe("ActiveTopicsEmptyState addAllowed gate (engineer review B1)", () => {
           archivedCount={variant === "unlocked_with_archived" ? 2 : 0}
           onShowArchived={() => undefined}
           onAddTopic={() => undefined}
+          canAssign={false}
+          assigning={false}
+          assignBlockedReason={null}
+          onAssign={() => undefined}
         />,
       );
       expect(screen.queryByRole("button", { name: "Add custom topic" })).not.toBeInTheDocument();
@@ -224,6 +228,10 @@ describe("ActiveTopicsEmptyState addAllowed gate (engineer review B1)", () => {
         archivedCount={2}
         onShowArchived={() => undefined}
         onAddTopic={() => undefined}
+        canAssign={false}
+        assigning={false}
+        assignBlockedReason={null}
+        onAssign={() => undefined}
       />,
     );
     expect(screen.queryByRole("button", { name: "Add custom topic" })).not.toBeInTheDocument();

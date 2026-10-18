@@ -27,6 +27,7 @@ import {
 import type { AddFieldErrors, AddFormValues, DuplicateMatch } from "./addCustomTopic.js";
 import { ADD_FORM_IDS, AddCustomTopicForm } from "../components/AddCustomTopicForm.js";
 import type { AddFormPhase } from "../components/AddCustomTopicForm.js";
+import { assignDefaultTopics } from "./assignDefaults.js";
 import { ActiveTopicsEmptyState, EMPTY_STATE_ADD_BUTTON_ID } from "../components/ActiveTopicsEmptyState.js";
 
 // ---------------------------------------------------------------------------
@@ -180,6 +181,18 @@ const addedRefetchFailedMessage = (name: string) =>
   `Added '${name}', but the list couldn't be refreshed. Reload the page to see it.`;
 const archivedRefetchFailedMessage = (name: string) =>
   `Archived '${name}', but the list couldn't be refreshed. Reload the page to see it.`;
+// zero-topic-team-recovery (#200) design.md D7. The count in the success line
+// comes from the response's topicCount, never a literal (the template's size
+// is not the screen's business); singular for one.
+const assignedMessage = (count: number) =>
+  `${count} default ${count === 1 ? "topic" : "topics"} assigned.`;
+const assignedRefetchFailedMessage = (count: number | null) =>
+  `${count === null ? "The default topics were" : assignedMessage(count).replace(/\.$/, ",")} but the list couldn't be refreshed. Reload the page to see them.`;
+const ASSIGN_FAILED_MESSAGE = "The default topics couldn't be assigned. Try again.";
+// The settled string from the topic-management-screen delta spec; it names
+// the runbook section because the app cannot link to it.
+const ASSIGN_TEMPLATE_UNAVAILABLE_MESSAGE =
+  'The default topic template is empty or unavailable, so nothing was assigned. An operator needs to fix the default topic template (see "Zero-topic teams" in the deployment runbook, docs/deployment.md), then try again.';
 const restoredRefetchFailedMessage = (name: string) =>
   `Restored '${name}', but the list couldn't be refreshed. Reload the page to see it.`;
 
@@ -633,6 +646,12 @@ export function TopicManagementPage() {
   // Design.md Decisions 6 and 11: the screen message region.
   const [screenMessage, setScreenMessage] = useState<ScreenMessage>(null);
   const clearScreenMessage = useCallback(() => setScreenMessage(null), []);
+
+  // zero-topic-team-recovery (#200): an assign-defaults request is in flight.
+  // The ref is the double-click guard (state updates after the click handler
+  // returns); the state drives the button's disabled/busy rendering.
+  const [assigning, setAssigning] = useState(false);
+  const assignInFlight = useRef(false);
 
   // Design.md Decision 4: the add form.
   const [addForm, setAddForm] = useState<AddFormState>(null);
@@ -1326,6 +1345,53 @@ export function TopicManagementPage() {
           ? DEFINITION_DIALOG_OPEN_REASON
           : null;
 
+  // #200: Assign is gated by the same busy states as Add (and by an
+  // in-flight assignment, which the button shows itself).
+  const assignBlockedReason = addSubmitBlockedReason;
+
+  // Design.md D7 / spec "Assign default topics action": one click sends the
+  // request, no dialog (additive; the server refuses it on a team that has
+  // topics). The outcome message and focus live HERE, not in the empty state,
+  // which unmounts on the refetch.
+  const assignDefaults = async () => {
+    if (!teamId || assignInFlight.current || assignBlockedReason !== null) return;
+    assignInFlight.current = true;
+    setAssigning(true);
+    clearScreenMessage();
+    try {
+      const result = await assignDefaultTopics(teamId);
+      if (result.kind === "assigned" || result.kind === "already_has_topics") {
+        const outcome = await fetchAllTopics();
+        if (outcome.status === "ok") {
+          setData(outcome.data);
+          // A 409 shows no message: the list replacing the empty state is it.
+          if (result.kind === "assigned") {
+            setScreenMessage({ kind: "status", text: assignedMessage(result.topicCount ?? outcome.data.active.length) });
+          }
+        } else if (outcome.status === "failed") {
+          setScreenMessage({
+            kind: "alert",
+            text: result.kind === "assigned" ? assignedRefetchFailedMessage(result.topicCount) : RELOAD_ERROR,
+          });
+        } else if (result.kind === "assigned" && result.topicCount !== null) {
+          // Superseded: a newer refetch owns the list; the count is still true.
+          setScreenMessage({ kind: "status", text: assignedMessage(result.topicCount) });
+        }
+        // The activated button no longer exists after a 201 / 409.
+        queueFocus([ACTIVE_HEADING_ID]);
+      } else {
+        // The empty state stays and the button is enabled for a retry.
+        setScreenMessage({
+          kind: "alert",
+          text: result.kind === "template_unavailable" ? ASSIGN_TEMPLATE_UNAVAILABLE_MESSAGE : ASSIGN_FAILED_MESSAGE,
+        });
+      }
+    } finally {
+      assignInFlight.current = false;
+      setAssigning(false);
+    }
+  };
+
   const openerFocusIds = (opener: AddFormOpener) =>
     opener === "emptyState"
       ? [EMPTY_STATE_ADD_BUTTON_ID, ADD_TRIGGER_ID, ACTIVE_HEADING_ID]
@@ -1655,11 +1721,15 @@ export function TopicManagementPage() {
           // topic shares a default's name, and its topicId can point at the
           // template team): see #197.
           <ActiveTopicsEmptyState
-            variant={activeEmptyStateVariant(data.isCustomizationLocked, data.archived.length)}
+            variant={activeEmptyStateVariant(data.isCustomizationLocked, data.archived.length, data.canAssignDefaults)}
             addAllowed={addAllowed}
             archivedCount={data.archived.length}
             onShowArchived={() => expandArchivedAndFocus(ARCHIVED_TOGGLE_ID)}
             onAddTopic={() => openAddForm("emptyState")}
+            canAssign={data.isCustomizationLocked && data.canAssignDefaults === true}
+            assigning={assigning}
+            assignBlockedReason={assignBlockedReason}
+            onAssign={() => void assignDefaults()}
             form={addFormElement ?? undefined}
           />
         ) : (

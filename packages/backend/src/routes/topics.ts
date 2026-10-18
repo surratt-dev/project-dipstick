@@ -18,7 +18,13 @@ import { isCanonicalUuid } from "./uuid.js";
 import type { TopicWriteDenialContext } from "./topic-write-context.js";
 import { enforceTopicWriteRateLimit } from "./topic-write-rate-limit.js";
 import { lockTeamTopics } from "../sessions/session-topic-snapshot.js";
-import { DEFAULT_TOPICS_TEAM_ID } from "../sessions/default-topics.js";
+import {
+  DEFAULT_TOPICS_TEAM_ID,
+  DefaultTopicsUnavailableError,
+  copyCanonicalDefaults,
+} from "../sessions/default-topics.js";
+import { isApplicationAdmin } from "../auth/role-map.js";
+import { ASSIGN_DEFAULTS_ENDPOINT, recordDenial, recordFailure } from "../auth/assign-defaults-audit.js";
 import type {
   ArchiveTopicResponse,
   ArchiveTopicConfirmationRequired,
@@ -28,6 +34,7 @@ import type {
   UpdateTopicAnnotationResponse,
   AddCustomTopicRequest,
   AddCustomTopicResponse,
+  AssignDefaultsResponse,
   VoteType,
 } from "@dipstick/shared";
 import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
@@ -870,6 +877,60 @@ function toAnnotationResponse(topicId: string, row: AnnotationRow): UpdateTopicA
 const TOPIC_ORDER_STALE_MESSAGE =
   "The team's topic list has changed since it was loaded. Reload the topics and try again.";
 
+// ---------------------------------------------------------------------------
+// POST .../topics/assign-defaults -- zero-topic-team-recovery (#200)
+// authorization and fixed messages.
+//
+// Admin only, and NOT checkStandingFacilitatorOrAdminAuthorization: a
+// facilitator must never be admitted here. The role is read live from the
+// users row at request time (the same table read /advance does), never from
+// the session or a token claim, so a demoted or deprovisioned admin is
+// refused on the very next call; a caller with no user row reads as a
+// non-admin. Membership of the target team is irrelevant (FR-8.2, #208), so
+// no membership is read at all. The 403 is written before any team lookup, so
+// it is identical for an existing, a missing and the template team and says
+// nothing about the team's lock state or topic count.
+// ---------------------------------------------------------------------------
+const ASSIGN_DEFAULTS_NOT_ADMIN_MESSAGE = "Only an application administrator can assign the default topics.";
+const ASSIGN_DEFAULTS_HAS_TOPICS_MESSAGE = "This team already has active topics.";
+// The settled string from the default-topic-provisioning delta spec. It names
+// the runbook section because the caller is an authenticated administrator who
+// can act on it (unlike team creation's generic message).
+const DEFAULT_TOPICS_UNAVAILABLE_MESSAGE =
+  'The default topic template is empty or unavailable, so nothing was assigned. An operator needs to fix the default topic template (see "Zero-topic teams" in the deployment runbook, docs/deployment.md), then try again.';
+const ASSIGN_DEFAULTS_FAILED_MESSAGE = "Something went wrong assigning the default topics. Try again.";
+
+async function checkAssignDefaultsAuthorization(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  userId: string,
+  teamId: string,
+  startTime: number,
+): Promise<AuthorizationResult> {
+  const result = await db.query<{ global_role: string }>(`SELECT global_role FROM users WHERE id = $1`, [userId]);
+  const globalRole = result.rows[0]?.global_role ?? null;
+
+  if (!isApplicationAdmin(globalRole)) {
+    // Envelope first, so the denial row's correlation_id is the response's.
+    const envelope = buildErrorEnvelope("forbidden", ASSIGN_DEFAULTS_NOT_ADMIN_MESSAGE, "NOT_AN_ADMIN");
+    // Fail-open and bounded per actor (auth/assign-defaults-audit.ts); written
+    // before the topic-write limiter, so a 403-bound caller spends no budget.
+    await recordDenial({
+      log: request.log,
+      actorUserId: userId,
+      actorGlobalRole: globalRole,
+      actorIp: request.ip,
+      teamId,
+      correlationId: envelope.error.correlationId,
+    });
+    await applyTimingFloor(startTime);
+    await reply.code(403).send(envelope);
+    return { rejected: true };
+  }
+
+  return { rejected: false, actorGlobalRole: "application_admin" };
+}
+
 export async function topicRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   // POST /api/v1/teams/:teamId/topics  (TOPIC-003, Add Custom Topic)
@@ -1025,6 +1086,200 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       isDefault: false,
       createdAt: createdAt.toISOString(),
     };
+    return reply.code(201).send(response);
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/teams/:teamId/topics/assign-defaults  (zero-topic-team-
+  // recovery #200, FR-8.6 for the zero-active-topics state only)
+  //
+  // The ONE exception to the customization lock: an application admin gives a
+  // team with zero ACTIVE topics the canonical default set. It can write only
+  // the canonical set (never a caller-chosen one), so it is not a
+  // customization route. It takes no request body, reads no query parameter
+  // and accepts no source team id: the template is always the sentinel.
+  //
+  // Check order (design.md D2), stopping at the first failure:
+  //   1. Non-canonical teamId -- 404; the id is lowercased right after.
+  //   2. Authorization, application_admin only, role read live -- 403
+  //      NOT_AN_ADMIN (audited, fail-open, bounded per actor).
+  //   3. Shared topic-write rate limit -- 429 / fail-closed 503, exactly as
+  //      the siblings; no new limit values.
+  //   4. checkWritableTeam -- 404 TEAM_NOT_FOUND, or the template team's 404
+  //      plus topic.write_denied_template.
+  //   5. NO checkCustomizationLockGate. A source test keeps it that way, and
+  //      keeps the four other lock-gated writes calling it.
+  //   6. One transaction at the default READ COMMITTED isolation: the team's
+  //      topic advisory lock (the one room open also takes), then the
+  //      zero-active count as a FRESH statement after the lock -- 409
+  //      TEAM_HAS_ACTIVE_TOPICS.
+  //   7. copyCanonicalDefaults (the routine team creation uses), then the
+  //      success audit row in the same transaction, then COMMIT.
+  //
+  // applyTimingFloor runs on every return (201, 403, 404, 409, 500), and
+  // ROLLBACK plus client.release() happen on every path out of the
+  // transaction, including the 409. The transaction-scoped lock is released
+  // by COMMIT or ROLLBACK, so no path can leak it onto a pooled connection.
+  // -------------------------------------------------------------------------
+  app.post<{
+    Params: { teamId: string };
+  }>("/api/v1/teams/:teamId/topics/assign-defaults", async (request, reply) => {
+    // Set once, first, so every exit carries it, as on the reorder and
+    // annotation routes.
+    reply.header("Cache-Control", "no-store");
+
+    const startTime = Date.now();
+    const session = request.session as unknown as SessionData;
+    const { teamId: rawTeamId } = request.params;
+
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
+      return reply;
+    }
+    // #184 Decision 9: one spelling for every later use.
+    const teamId = rawTeamId.toLowerCase();
+
+    const authResult = await checkAssignDefaultsAuthorization(request, reply, session.userId, teamId, startTime);
+    if (authResult.rejected) {
+      return reply;
+    }
+
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint: ASSIGN_DEFAULTS_ENDPOINT,
+      attemptedOperation: "topic.defaults_assigned",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
+    if (existsResult.rejected) {
+      return reply;
+    }
+
+    // Deliberately no checkCustomizationLockGate here (see the header).
+
+    type Outcome =
+      | { kind: "assigned"; topicCount: number }
+      | { kind: "has_active_topics" }
+      | { kind: "template_empty" }
+      | { kind: "failed"; err: unknown };
+    let outcome: Outcome;
+
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      await lockTeamTopics(client, teamId);
+
+      // A new statement AFTER the lock, at READ COMMITTED, so it sees any
+      // assignment that committed while this request waited on the lock.
+      const activeResult = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM topics WHERE team_id = $1 AND status = 'active'`,
+        [teamId],
+      );
+      if ((activeResult.rows[0] as { n: number }).n > 0) {
+        await client.query("ROLLBACK");
+        outcome = { kind: "has_active_topics" };
+      } else {
+        const topicIds = await copyCanonicalDefaults(client, teamId);
+        if (topicIds.length === 0) {
+          throw new DefaultTopicsUnavailableError();
+        }
+
+        // Counts and the request id only: never topic text, topic ids or the
+        // template id. In the same transaction as the inserts, fail-closed: a
+        // failed insert rolls the assignment back (catch below).
+        await client.query(
+          `INSERT INTO audit_log
+             (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            session.userId,
+            authResult.actorGlobalRole,
+            request.ip,
+            "topic.defaults_assigned",
+            teamId,
+            JSON.stringify({ topic_count: topicIds.length, correlation_id: request.id }),
+          ],
+        );
+
+        await client.query("COMMIT");
+        outcome = { kind: "assigned", topicCount: topicIds.length };
+      }
+    } catch (err) {
+      // Never rethrown: the app has no global error handler that is safe to
+      // rely on here, and Fastify's default one echoes err.message.
+      await client.query("ROLLBACK").catch(() => undefined);
+      outcome = err instanceof DefaultTopicsUnavailableError ? { kind: "template_empty" } : { kind: "failed", err };
+    } finally {
+      client.release();
+    }
+
+    if (outcome.kind === "has_active_topics") {
+      await applyTimingFloor(startTime);
+      return reply
+        .code(409)
+        .send(buildErrorEnvelope("precondition_failed", ASSIGN_DEFAULTS_HAS_TOPICS_MESSAGE, "TEAM_HAS_ACTIVE_TOPICS"));
+    }
+
+    if (outcome.kind === "template_empty") {
+      const body = buildErrorEnvelope(
+        "internal_error",
+        DEFAULT_TOPICS_UNAVAILABLE_MESSAGE,
+        "DEFAULT_TOPICS_UNAVAILABLE",
+      );
+      // The template id goes to the server log only, with the correlation id
+      // that also joins the audit row below (the #175 team-creation shape).
+      request.log.error(
+        { templateTeamId: DEFAULT_TOPICS_TEAM_ID, teamId, correlationId: body.error.correlationId },
+        "assign-defaults: the default topic template has no active topics",
+      );
+      // After the ROLLBACK, on the pool, so the row survives it; fail-open.
+      await recordFailure({
+        log: request.log,
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        reason: "DEFAULT_TOPICS_UNAVAILABLE",
+        correlationId: body.error.correlationId,
+      });
+      await applyTimingFloor(startTime);
+      return reply.code(500).send(body);
+    }
+
+    if (outcome.kind === "failed") {
+      // Constraint drift, connection loss, a failed audit insert: a fixed
+      // generic 500 with its own code, so the "template is empty" copy is
+      // never shown for an unrelated fault. The database error is logged with
+      // the correlation id and never formatted into the body.
+      const body = buildErrorEnvelope("internal_error", ASSIGN_DEFAULTS_FAILED_MESSAGE, "ASSIGN_DEFAULTS_FAILED");
+      request.log.error({ err: outcome.err, teamId, correlationId: body.error.correlationId }, "assign-defaults failed");
+      await applyTimingFloor(startTime);
+      return reply.code(500).send(body);
+    }
+
+    // Committed. The audit_log row is the system of record; this event is a
+    // convenience notification, so a failure to emit it can never turn the
+    // committed success into a 5xx.
+    try {
+      emitAuditEvent(request.log, "topic.defaults_assigned", {
+        actorUserId: session.userId,
+        actorGlobalRole: authResult.actorGlobalRole,
+        actorIp: request.ip,
+        teamId,
+        topicCount: outcome.topicCount,
+        correlationId: request.id,
+      });
+    } catch (err) {
+      request.log.error({ err, teamId, correlationId: request.id }, "topic.defaults_assigned event emit failed");
+    }
+
+    await applyTimingFloor(startTime);
+    const response: AssignDefaultsResponse = { topicCount: outcome.topicCount };
     return reply.code(201).send(response);
   });
 

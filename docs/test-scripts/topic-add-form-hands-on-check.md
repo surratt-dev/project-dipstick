@@ -181,7 +181,7 @@ These states are rare (see #200 and #184), but the copy must be honest about whi
 
 | # | Open | Expect |
 |---|---|---|
-| 4.1 | **Empty Locked** | The first-session lock notice ("Topics cannot be customized until this team completes its first session…"). Below **Active Topics (0)**: **This team has no active topics, so its sessions can't run. Topics can't be assigned from this screen. Ask the people who run this application for your organization to restore this team's default topics.** **No buttons**, and no Add button by the heading. |
+| 4.1 | **Empty Locked** | The first-session lock notice ("Topics cannot be customized until this team completes its first session…"). Below **Active Topics (0)**: **This team has no active topics, so its sessions can't run. Ask an application administrator to assign the default topics, then refresh this page.** **No buttons** (as a facilitator; an application administrator instead sees "Assign default topics", see #200), and no Add button by the heading. |
 | 4.2 | **Empty With Archived** | **This team has no active topics.** with two buttons: **Show archived topics (2)** and **Add custom topic**. **Show archived topics (2)** expands the Archived section and focuses its toggle. |
 | 4.3 | **Empty With Archived**: click **Add custom topic** in the empty state. | The form opens beneath the message. Cancelling an untouched form closes it without asking. |
 | 4.4 | **Empty Unlocked** | **This team has no active topics.** with one button: **Add custom topic**. Add one topic. The success message reads **Added '<name>'.** (no move-buttons hint, since it's the only topic). The empty state is replaced by the list. |

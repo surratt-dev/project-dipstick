@@ -18,7 +18,7 @@ import { FakeWebSocket } from "../../realtime/__tests__/fake-websocket.js";
 // ---------------------------------------------------------------------------
 
 const NO_TOPICS_COPY =
-  "This team has no active topics. Add or restore a topic on Topic Management before opening the room.";
+  "This team has no active topics, so the room can't open yet. Add or restore a topic on Topic Management; if the team's topics are locked, ask an application administrator to assign the default topics.";
 
 function confirmCopy(topics: string) {
   return (

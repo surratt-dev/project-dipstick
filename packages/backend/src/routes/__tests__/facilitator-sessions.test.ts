@@ -1291,8 +1291,14 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
   beforeEach(() => vi.clearAllMocks());
 
   const DRAFT_ROW = { id: "5e550000-0000-4000-8000-000000000001", team_id: "11111111-1111-4111-8111-111111111111", facilitator_id: "facilitator-1", status: "draft" };
-  const NO_TOPICS_MESSAGE =
+  // zero-topic-team-recovery (#200): the 409 message is chosen by the team's
+  // customization-lock state (session-creation delta, "Opening the room is
+  // refused when the team has no active topics"). There is no caller-role
+  // branch: an administrator never reaches /advance.
+  const NO_TOPICS_UNLOCKED_MESSAGE =
     "This team has no active topics. Add or restore a topic on Topic Management before opening the room.";
+  const NO_TOPICS_LOCKED_MESSAGE =
+    "This team has no active topics, so the room can't open yet. Ask an application administrator to assign the default topics, then try again. Your session is saved.";
 
   function mockPreTransaction(row: Record<string, unknown> = DRAFT_ROW, globalRole: string | null = "facilitator") {
     mockDbQuery
@@ -1532,16 +1538,27 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
     expect(res.json().error.message).toBe("Session cannot be advanced from status 'unknown'.");
   });
 
-  it("zero active topics rolls back and returns 409 NO_ACTIVE_TOPICS with no audit row and no event", async () => {
-    mockPreTransaction();
-    const client = makeMockClient([
+  /** The BEGIN, lock, UPDATE, empty-snapshot and ROLLBACK a zero-topic open runs. */
+  function zeroTopicClient() {
+    return makeMockClient([
       { rows: [] }, // BEGIN
       { rows: [] }, // lock
       { rows: [], rowCount: 1 }, // UPDATE
       { rows: [], rowCount: 0 }, // snapshot RETURNING: no rows
       { rows: [] }, // ROLLBACK
     ]);
+  }
+
+  /** hasCompletedFirstSession's COUNT, queued after the pre-transaction reads. */
+  function mockLockCount(completedSessions: number) {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ count: String(completedSessions) }] });
+  }
+
+  it("zero active topics on a LOCKED team rolls back and returns 409 NO_ACTIVE_TOPICS with the ask-an-administrator message, no audit row, no event", async () => {
+    mockPreTransaction();
+    const client = zeroTopicClient();
     mockDbConnect.mockResolvedValueOnce(client);
+    mockLockCount(0); // no completed session: locked
 
     const res = await advance();
 
@@ -1549,7 +1566,7 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
     expect(res.json().error).toEqual({
       category: "precondition_failed",
       code: "NO_ACTIVE_TOPICS",
-      message: NO_TOPICS_MESSAGE,
+      message: NO_TOPICS_LOCKED_MESSAGE,
       correlationId: expect.any(String),
     });
     const calls = sqlOf(client);
@@ -1558,6 +1575,80 @@ describe("POST /api/v1/teams/:teamId/sessions/:sessionId/advance", () => {
     expect(calls).not.toContain("COMMIT");
     expect(mockEmitAuditEvent).not.toHaveBeenCalled();
     expect(mockPublishSessionStateChange).not.toHaveBeenCalled();
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("zero active topics on an UNLOCKED team keeps the original message (same code, same rollback)", async () => {
+    mockPreTransaction();
+    const client = zeroTopicClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+    mockLockCount(1); // a completed session: unlocked
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatchObject({ code: "NO_ACTIVE_TOPICS", message: NO_TOPICS_UNLOCKED_MESSAGE });
+    expect(sqlOf(client)[4]).toBe("ROLLBACK");
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it("the lock state is read by the pool AFTER the rollback, never inside the transaction (it would take a second connection while the advisory lock is held)", async () => {
+    mockPreTransaction();
+    const client = zeroTopicClient();
+    mockDbConnect.mockResolvedValueOnce(client);
+    mockLockCount(0);
+
+    await advance();
+
+    const rollbackOrder = client.query.mock.invocationCallOrder[4]!;
+    expect(sqlOf(client)[4]).toBe("ROLLBACK");
+    const lockReadIndex = mockDbQuery.mock.calls.findIndex((c) => String(c[0]).includes("FROM sessions WHERE team_id = $1 AND status = 'complete'"));
+    expect(lockReadIndex).toBeGreaterThanOrEqual(0);
+    // Through db.query (the pool), not the transaction client ...
+    expect(sqlOf(client).some((c) => c.includes("status = 'complete'"))).toBe(false);
+    // ... and strictly after ROLLBACK. This fails if the read moves back inside the transaction.
+    expect(mockDbQuery.mock.invocationCallOrder[lockReadIndex]!).toBeGreaterThan(rollbackOrder);
+    // It is read for the session's own team, once.
+    expect(mockDbQuery.mock.calls[lockReadIndex]![1]).toEqual(["11111111-1111-4111-8111-111111111111"]);
+    expect(mockDbQuery.mock.calls.filter((c) => String(c[0]).includes("status = 'complete'"))).toHaveLength(1);
+  });
+
+  it("the lock state is not read on any other outcome (success, 422, 403)", async () => {
+    mockPreTransaction();
+    mockDbConnect.mockResolvedValueOnce(successClient());
+    expect((await advance()).statusCode).toBe(200);
+
+    vi.clearAllMocks();
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ ...DRAFT_ROW, status: "lobby" }] }).mockResolvedValueOnce({ rows: [{ global_role: "facilitator" }] });
+    expect((await advance()).statusCode).toBe(422);
+
+    vi.clearAllMocks();
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ ...DRAFT_ROW, facilitator_id: "someone-else" }] });
+    expect((await advance()).statusCode).toBe(403);
+
+    expect(mockDbQuery.mock.calls.some((c) => String(c[0]).includes("status = 'complete'"))).toBe(false);
+  });
+
+  it("an advisory lock-state read that fails does not change the 409: the original message is used", async () => {
+    mockPreTransaction();
+    mockDbConnect.mockResolvedValueOnce(zeroTopicClient());
+    mockDbQuery.mockRejectedValueOnce(new Error("connection reset"));
+
+    const res = await advance();
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toMatchObject({ code: "NO_ACTIVE_TOPICS", message: NO_TOPICS_UNLOCKED_MESSAGE });
+  });
+
+  it("the 409 message carries no team id, template id or other identifier", async () => {
+    mockPreTransaction();
+    mockDbConnect.mockResolvedValueOnce(zeroTopicClient());
+    mockLockCount(0);
+
+    const res = await advance();
+
+    expect(res.body).not.toContain("11111111-1111-4111-8111-111111111111");
+    expect(res.body).not.toContain(DEFAULT_TOPICS_TEAM_ID);
   });
 
   it("a database error from the snapshot rolls back and never echoes its text in the response", async () => {

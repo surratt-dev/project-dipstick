@@ -74,8 +74,22 @@ describe("topic-write limiter import graph is an allow-list (#184 5.7)", () => {
     expect(importersOf("routes/topic-write-rate-limit.ts")).toEqual(["routes/topics.ts"]);
   });
 
-  it("auth/sliding-window-limiter.ts is imported only by the topic-write helper and routes/teams.ts", () => {
-    expect(importersOf("auth/sliding-window-limiter.ts")).toEqual(["routes/teams.ts", "routes/topic-write-rate-limit.ts"]);
+  // zero-topic-team-recovery (#200): the per-actor denial-audit bound is a
+  // third, deliberate importer of the shared mechanism. It is reached only
+  // from auth/assign-defaults-audit.ts (by dynamic import), which only
+  // routes/topics.ts imports, so no session, voting or WebSocket code can
+  // reach it either.
+  it("auth/sliding-window-limiter.ts is imported only by the topic-write helper, the denial-audit limiter and routes/teams.ts", () => {
+    expect(importersOf("auth/sliding-window-limiter.ts")).toEqual([
+      "auth/denial-audit-limiter.ts",
+      "routes/teams.ts",
+      "routes/topic-write-rate-limit.ts",
+    ]);
+  });
+
+  it("auth/denial-audit-limiter.ts is imported only by auth/assign-defaults-audit.ts, which only routes/topics.ts imports (#200)", () => {
+    expect(importersOf("auth/denial-audit-limiter.ts")).toEqual(["auth/assign-defaults-audit.ts"]);
+    expect(importersOf("auth/assign-defaults-audit.ts")).toEqual(["routes/topics.ts"]);
   });
 
   it("the scan sees real imports (the allow-list is not vacuous)", () => {

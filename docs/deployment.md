@@ -332,6 +332,50 @@ Note that `actor_roles` reflects `users.roles` at request time; a user who has n
 
 **Future consideration (deferred, GitHub issue #3):** a startup check that verifies audit events actually reach their configured sink was requested in issue #3 but is not built in this change, because no transport is configured anywhere in this codebase today — building a reachability check against a failure mode that doesn't yet exist would be premature engineering. This is not a nice-to-have to revisit "if" the `emitAuditEvent` rework above happens to get to it: given the events above, a filtering transport shipped without this check risks silently losing the authentication and session-lifecycle audit trail with zero indication anything was lost. Build this check alongside the `emitAuditEvent` rework, before that transport goes to production.
 
+## Zero-topic teams
+
+*(`zero-topic-team-recovery`, #200.)* A team with no ACTIVE topic cannot open a room: room open answers `409 NO_ACTIVE_TOPICS`, and while the team is locked (no completed session) nobody can add or restore a topic either. New teams cannot end up this way (team creation rolls back on an empty template), so this is legacy data or a data fault, and the expected count is 0.
+
+**Recovery is in-app, by an application administrator**, on the team's Topic Management screen ("Assign default topics"; endpoint `POST /api/v1/teams/:teamId/topics/assign-defaults`). It copies the template's current active topics onto the team and changes nothing else. It is not a hand-run database fix; the manual path below is a last resort.
+
+**Find zero-topic teams** (run it read-only; a result other than 0 rows needs a product owner decision about a one-off repair):
+
+```sql
+SELECT t.id FROM teams t
+WHERE t.id <> '00000000-0000-0000-0000-000000000001'
+  AND NOT EXISTS (SELECT 1 FROM topics WHERE team_id = t.id AND status = 'active');
+```
+
+Also check for legacy lobby sessions that would pass room open with no snapshot (`/start` has no guard): `SELECT s.id FROM sessions s WHERE s.status = 'lobby' AND NOT EXISTS (SELECT 1 FROM session_topics st WHERE st.session_id = s.id);` should return 0 rows.
+
+**Audit lookups** (`audit_log.operation`, with the acting user in `actor_user_id` and the team in `team_id`; retention is the existing `audit_log` policy, there is no table-specific purge):
+
+```sql
+SELECT "timestamp", operation, actor_user_id, actor_global_role, team_id, metadata
+FROM audit_log
+WHERE operation IN ('topic.defaults_assigned', 'topic.defaults_assign_denied', 'topic.defaults_assign_failed')
+ORDER BY "timestamp" DESC LIMIT 50;
+```
+
+- `topic.defaults_assigned`: a successful recovery; `metadata = { topic_count, correlation_id }`. Durable, written in the same transaction as the topics.
+- `topic.defaults_assign_denied`: a non-admin was refused (`403 NOT_AN_ADMIN`); `team_id` is whatever the caller supplied (it may name no team). Fail-open, and bounded to **10 rows per actor per minute**: beyond that the caller still gets the 403 but no row is written and a log-only `topic.denial_audit_suppressed` event is emitted (once per window).
+- `topic.defaults_assign_failed`: the template was empty (below). Join to the error log line by `metadata.correlation_id` = the log entry's `correlationId`.
+
+**When the template is empty.** The administrator sees "The default topic template is empty or unavailable, so nothing was assigned..." (`500 DEFAULT_TOPICS_UNAVAILABLE`), nothing is written, and an error-level log line names the template team id and the correlation id (search the logs for `assign-defaults: the default topic template has no active topics`). The in-app button cannot help: restore the template's active default topics (the `__default_topics__` team's rows with `is_default = true`, `status = 'active'`) in the database, then have the administrator try again.
+
+**Manual database path (last resort).** Any bulk repair script must apply the same precondition (zero ACTIVE topics, re-checked under the team's topic advisory lock `pg_advisory_xact_lock(hashtext(<team id>::text))`), copy the same canonical set, and write one `audit_log` row per team under the operation name `topic.defaults_assigned` with an actor value that identifies the operator.
+
+**Redis outage.** Assignment goes through the topic-write rate limiter, which fails closed: while Redis is down an administrator gets `503 TOPIC_WRITE_RATE_LIMIT_UNAVAILABLE` and recovery is unavailable until it returns. The denial-audit bound is a separate Redis limiter that fails to "write no row", so **a non-admin's refused attempt during a Redis outage leaves no `topic.defaults_assign_denied` row** (a log-only `topic.denial_audit_suppressed` event with `reason: "limiter_error"` is emitted instead); the response is still 403.
+
+**Pre-production checklist for this endpoint (security).**
+- `trustProxy` is configured for the real proxy topology (it is `1` in `app.ts`): `audit_log.actor_ip` on these rows, which attribute a lock bypass, is only as trustworthy as `request.ip`.
+- Topic text is escaped at render in every consumer. Template content now reaches teams that did not review it; today only Topic Management renders topic text (React escaping, pinned by a render test). Re-check each new consumer, including the session snapshot view when it is built.
+- The session cookie is `sameSite: strict` and CORS is a single-origin allowlist (`APP_ORIGIN`, which must not be a wildcard); this POST has no body and relies on both, like every other cookie-authenticated write.
+
+**Deploy order and rollback.** Deploy the backend (and shared types) before the frontend: the screen reads `canAssignDefaults === true`, so a frontend that is ahead of its backend shows the ask-an-administrator copy with no button. Rollback removes the route and the `canAssignDefaults` flag; nothing is persisted that needs reverting except audit rows, which are history. No schema change is involved.
+
+**Diagnostic counts to record.** Run the two queries above against each environment before release and after, and record the counts in `openspec/changes/zero-topic-team-recovery/tasks.md` (1.3, 1.4, 8.1). The counts recorded so far are from a local development database only.
+
 ## Kubernetes
 
 The README lists Kubernetes as the production deployment target. The image tags above work directly in Kubernetes manifests or Helm values. Key considerations:

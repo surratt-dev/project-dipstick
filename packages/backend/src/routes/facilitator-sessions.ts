@@ -15,6 +15,7 @@ import { evaluateStandingFacilitatorAccess } from "../auth/standing-facilitator-
 import { applyTimingFloor } from "../content/timing-oracle.js";
 import { createJoinLink, JOIN_LINK_ACTIVE_SQL } from "../auth/join-link-creation.js";
 import { DEFAULT_TOPICS_TEAM_ID, copyCanonicalDefaults } from "../sessions/default-topics.js";
+import { hasCompletedFirstSession } from "../auth/topic-lock-helper.js";
 import { readTemplateTopicFacts, detectTemplateAnomalies } from "../sessions/template-anomalies.js";
 import { isCanonicalUuid } from "./uuid.js";
 import {
@@ -75,6 +76,14 @@ class SnapshotFailedSignal extends Error {
 // logged with the body's correlationId and never formatted into a response.
 const SNAPSHOT_FAILED_MESSAGE = "Something went wrong while locking in this session's topics. Try again.";
 const ROOM_OPEN_FAILED_MESSAGE = "Something went wrong opening the room. Try again.";
+// zero-topic-team-recovery (#200): the NO_ACTIVE_TOPICS 409 keeps one code and
+// has two messages, picked by the team's lock state (session-creation delta).
+// Naming "an application administrator" is the sanctioned copy loosening for
+// the locked zero-topic state only; neither message carries an identifier.
+const NO_ACTIVE_TOPICS_LOCKED_MESSAGE =
+  "This team has no active topics, so the room can't open yet. Ask an application administrator to assign the default topics, then try again. Your session is saved.";
+const NO_ACTIVE_TOPICS_UNLOCKED_MESSAGE =
+  "This team has no active topics. Add or restore a topic on Topic Management before opening the room.";
 const TEAM_CREATION_FAILED_MESSAGE = "Something went wrong creating this team. Try again.";
 
 // ---------------------------------------------------------------------------
@@ -1029,12 +1038,29 @@ export async function facilitatorSessionRoutes(app: FastifyInstance): Promise<vo
           // and the customization lock prevent it), reachable only through
           // data drift. No audit row: it would roll back with the transaction.
           await client.query("ROLLBACK");
+          // zero-topic-team-recovery (#200) design.md D8: the message is
+          // chosen by the team's customization-lock state. The read goes
+          // through the pool (hasCompletedFirstSession uses db.query, not
+          // this client), so it must happen HERE, after the ROLLBACK and in
+          // this branch only: mid-transaction it would take a second
+          // connection while the advisory lock is held. It is advisory
+          // (session completion does not take the topic lock), so a stale
+          // answer costs one extra retry; the 409 itself is unaffected.
+          // There is no caller-role branch: this handler admits only a live
+          // facilitator, so an application admin never gets here.
+          let teamIsLocked = false;
+          try {
+            teamIsLocked = !(await hasCompletedFirstSession(sessionRow.team_id));
+          } catch {
+            // Advisory only: fall back to the original message rather than
+            // turn a clean 409 into a 500.
+          }
           return reply
             .code(409)
             .send(
               buildErrorEnvelope(
                 "precondition_failed",
-                "This team has no active topics. Add or restore a topic on Topic Management before opening the room.",
+                teamIsLocked ? NO_ACTIVE_TOPICS_LOCKED_MESSAGE : NO_ACTIVE_TOPICS_UNLOCKED_MESSAGE,
                 "NO_ACTIVE_TOPICS",
               ),
             );

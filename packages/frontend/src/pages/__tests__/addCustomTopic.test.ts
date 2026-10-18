@@ -130,15 +130,31 @@ describe("fieldErrorForServerField", () => {
   });
 });
 
-describe("activeEmptyStateVariant (topic-003-admin-authorization design.md D4)", () => {
-  it.each([
-    [true, 0, "locked"],
-    [true, 3, "locked"],
-    [false, 3, "unlocked_with_archived"],
-    [false, 1, "unlocked_with_archived"],
-    [false, 0, "unlocked_none_archived"],
-  ] as const)("locked=%s archived=%s -> %s", (locked, archived, variant) => {
-    expect(activeEmptyStateVariant(locked, archived)).toBe(variant);
+describe("activeEmptyStateVariant (topic-003-admin-authorization design.md D4; #200 6.2)", () => {
+  // Every combination of lock, flag (true, false, absent) and archive count.
+  const flags = [true, false, undefined] as const;
+  const rows: Array<[boolean, number, boolean | undefined, string]> = [];
+  for (const locked of [true, false]) {
+    for (const archived of [0, 3]) {
+      for (const flag of flags) {
+        const expected = locked
+          ? flag === true
+            ? "locked_assign"
+            : "locked"
+          : archived > 0
+            ? "unlocked_with_archived"
+            : "unlocked_none_archived";
+        rows.push([locked, archived, flag, expected]);
+      }
+    }
+  }
+
+  it.each(rows)("locked=%s archived=%s canAssignDefaults=%s -> %s", (locked, archived, flag, variant) => {
+    expect(activeEmptyStateVariant(locked, archived, flag)).toBe(variant);
+  });
+
+  it("the flag is optional: the two-argument call is the non-assign variant", () => {
+    expect(activeEmptyStateVariant(true, 0)).toBe("locked");
   });
 });
 

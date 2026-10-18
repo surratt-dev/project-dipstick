@@ -76,6 +76,7 @@ function makeTopics(overrides: Partial<GetAllTopicsResponse> = {}): GetAllTopics
     isCustomizationLocked: false,
     canEditAnnotations: true,
     canAddTopics: true,
+    canAssignDefaults: false,
     active: [
       activeTopic("topic-1", "Pipeline", {
         displayOrder: 1,
