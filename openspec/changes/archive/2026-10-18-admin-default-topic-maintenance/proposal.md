@@ -96,10 +96,10 @@ Reorder is kept (executive review: low cost, not insisted on). It is whole-list,
 **Flagged open item.** The agent team does not create GitHub issues. All four numbers below are `#TBD` in this proposal and must be filed by a human, at or before PR time, and written back here (task 8.1). The BA will not sign acceptance while any is `#TBD`, and the executive sponsor wants the screen issue scheduled. Ranked in priority order:
 
 
-1. Facilitator-visible "defaults last changed" note and per-team record of the template version used (ranked first: it is what lets a leader interpret mixed wording across teams correctly): #TBD
-2. Topic Management template screen (preview before save, accessible reorder alternative, mobile layout, confirmation once per edit session, topic count against the cap). This is what moves FR-8.1 from "partially met, API only" to met, so it must be scheduled: #TBD
-3. Canonical wording on restore (restore reads the template): #TBD
-4. `defaultTopicsNotActive` name-join robustness: #TBD
+1. Facilitator-visible "defaults last changed" note and template updated date (ranked first: it is what lets a leader interpret mixed wording across teams correctly; filed as date-only, no per-team version record): #307
+2. Topic Management template screen (preview before save, accessible reorder alternative, mobile layout, confirmation once per edit session, topic count against the cap). Filed as two issues: read-only view and history #308, editing #309. #309 is what moves FR-8.1 from "partially met, API only" to met, so it must be scheduled
+3. Canonical wording on restore (restore reads the template; depends on #311): #310
+4. `defaultTopicsNotActive` name-join robustness (match by template id; prerequisite of #310): #311
 
 ## Impact
 

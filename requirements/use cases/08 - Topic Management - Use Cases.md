@@ -175,7 +175,7 @@
 
 # Use Case: Maintain Default Topic Set
 
-*(Added by `admin-default-topic-maintenance`, #216. Traceable to FR-8.1 [HARD] and FR-8.6 [HARD] ("canonical" here means the template as currently maintained, not a fixed factory list), and to BRD 6.4 (copy-on-create). Status: **API only**; the Topic Management template screen is a follow-up (#TBD), so FR-8.1 is "partially met, API only", not administrator self-service.)*
+*(Added by `admin-default-topic-maintenance`, #216. Traceable to FR-8.1 [HARD] and FR-8.6 [HARD] ("canonical" here means the template as currently maintained, not a fixed factory list), and to BRD 6.4 (copy-on-create). Status: **API only**; the Topic Management template screen is a follow-up (#308 read-only view and history, #309 editing), so FR-8.1 is "partially met, API only", not administrator self-service.)*
 
 ## Summary
 **Actor:** Application Administrator (`users.global_role = application_admin`; no team membership is involved)
@@ -222,7 +222,7 @@
 - [ ] Prompts are guided to address the team and the work, never individuals (documented in the runbook and the API contract).
 
 ## Out of Scope
-- Propagating a change to existing teams or to open sessions; resetting to a factory set; an undo or revert operation (undo is editing the value back); a draft or publish state; notifying facilitators; a semantic filter on prompt content; a two-person approval; the administrator screen (follow-up, #TBD).
+- Propagating a change to existing teams or to open sessions; resetting to a factory set; an undo or revert operation (undo is editing the value back); a draft or publish state; notifying facilitators; a semantic filter on prompt content; a two-person approval; the administrator screen (follow-up, #308 and #309).
 
 ## Dependencies
 - Use Case: Assign Default Topic Set to New Team (consumes the template at team creation); Use Case: Recover Zero-Topic Team (consumes the template at recovery).
