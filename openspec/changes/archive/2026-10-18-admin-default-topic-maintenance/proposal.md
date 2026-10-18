@@ -66,6 +66,10 @@ The build proceeds on these defaults. Each is reversible by a code change with P
 8. **Edit of an archived default is refused (`409 DEFAULT_ARCHIVED`)**, per-row `lastChangedAt` excludes reorders, and the 403 code is `DEFAULT_MAINTENANCE_ADMIN_ONLY` (all ratified by the BA).
 9. **Single-admin control is accepted for the first release.** One `application_admin` can rewrite the template with no second approver and no preventive control beyond validation; the compensating control is detection (the structured log event and the audit trail). `application_admin` comes from the IdP role claim mapped at sign-in, so the IdP group process is part of this control. Reopen if the administrator count grows beyond a handful, or after any incident that involves a template change. Audit-table tamper resistance relies on database access control and is not claimed beyond that.
 
+## Product Owner acknowledgement (2026-10-18)
+
+D1, D2, D3, D5, D7 (15 active, name 60, prompt 400, description 800), design E6 and the single-admin control (item 9) were accepted as built by the Product Owner, with no changes. Reopen item 9 if the administrator count grows beyond a handful or after any incident involving a template change.
+
 ## Status reporting (FR-8.1)
 
 FR-8.1 [HARD] is reported as **"partially met, API only"**. It is not described, in the PR, the BRD, release notes or conversation, as administrator self-service. The first real users are developer-level until the template screen ships. The screen follow-up must be a numbered, scheduled issue, not a parking lot.
