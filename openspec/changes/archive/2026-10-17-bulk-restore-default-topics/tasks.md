@@ -78,13 +78,13 @@ Test ids in section 4 were consolidated to one case list per concern; the mappin
 ## 7. Merge gate
 
 - [x] 7.1 *(Lint/test/build green. The addCustomTopic.ts check reads "absent except activeEmptyStateVariant"; see design.md "Recorded deviation (7.1)".)* Full backend, shared and frontend suites green; lint and typecheck green. Diff checks: `addCustomTopic.ts` absent from the diff (design D1 decision, old 2.3); `TOPIC_WRITE_LIMITS` unchanged.
-- [ ] 7.2 PR description carries, verbatim, the five ratification items from 1.2 with the default taken for each, the 1.2 data (or the note that it was unavailable), the 4.6 CSRF note, the 4.14 measurement or TODO-GROUP6 block, and the AC5 locked-team deviation as its own line. Items are ratified or redirected by the PO after merge-review; nothing is blocked on that.
+- [x] 7.2 PR description carries, verbatim, the five ratification items from 1.2 with the default taken for each, the 1.2 data (or the note that it was unavailable), the 4.6 CSRF note, the 4.14 measurement or TODO-GROUP6 block, and the AC5 locked-team deviation as its own line. Items are ratified or redirected by the PO after merge-review; nothing is blocked on that.
 
 ## 8. Post-merge (not required for the PR to merge)
 
-- [ ] 8.1 Sync delta specs to main specs and archive the change (`bulk-restore-default-topics` new; `audit-logging-operations`, `topic-write-rate-limiting`, `topic-management-screen`, `restore-topic` additions).
+- [x] 8.1 Sync delta specs to main specs and archive the change (`bulk-restore-default-topics` new; `audit-logging-operations`, `topic-write-rate-limiting`, `topic-management-screen`, `restore-topic` additions).
 - [ ] 8.2 Facilitator usability test, scripted: "archive 5 defaults, restore all, the facilitator states the number restored and that they went to the end of the list within 10 seconds, without scrolling the list" (Priya offered the test; she runs it, BA records the outcome in use case 08 notes). Also note whether facilitators ask where the topics will land before confirming (signal for keeping the order preview).
-- [ ] 8.3 Hand the follow-up drafts in section 9 to the PO to file as GitHub issues (this change does not create them).
+- [x] 8.3 Hand the follow-up drafts in section 9 to the PO to file as GitHub issues (this change does not create them). Filed by the PO's instruction on 2026-10-17: #299 (9.1), #300 (9.2), #301 (9.3), #302 (9.4), #303 (9.5), #304 (9.6), #305 (timing-floor measurement, 4.12/4.14).
 - [ ] 8.4 Success measure, evidenced by named tests (BA finding 5): N archived defaults restored with one confirmation and one request is shown by 4.5 (statement count), 4.1 (one limiter unit at N=12) and 5.4 (one request on confirm).
 
 ## 9. Follow-up issue drafts (inherited gaps; plain list, not tasks; to be filed by the PO, not by this change)
@@ -103,3 +103,12 @@ Adopted: Architect recommended order; B2 (use case criteria to 1.3); B3 (2.3, 5.
 Changed, not adopted as written: Architect B1 and BA 7 asked for a PO ratification/data gate before build. The run is unattended and cannot block on a human, so the gate became 1.2 (proposal defaults, items verbatim for the PR, ratify-or-redirect after merge-review). The rework risk the Architect named is accepted and recorded in 1.2. No affected-share threshold is set (BA 7); the numbers are reported only.
 
 Rejected: full interleaving of every test task between implementation tasks (S5 maximal form). Only a partial interleave (4.1 and 4.5 right after 3.2) is kept, because the remaining tests need the whole route plus 3.3 anyway and a single "backend green" checkpoint gives the same protection with less churn.
+
+## PO acceptance (2026-10-17)
+
+The product owner (Brian Surratt) reviewed the decisions walkthrough for #218 / PR #298 and accepted them:
+
+- Ratification items 1-5 are **ratified as built** (ids-only audit metadata; skip-and-report duplicate rule; "customs first, defaults last" ordering with reset deferred; first-by-prior-order wins among same-named archived defaults; AC4 read as satisfied by ids and positions).
+- The **AC5 deviation** is accepted: a locked team with nothing archived returns 409; 200-with-nothing-to-do applies to unlocked teams.
+- Also accepted: the 7.1 `addCustomTopic.ts` deviation (only `activeEmptyStateVariant` changed), the single-PR decision, and the late base-position fix (matches single restore on all-negative legacy lists).
+- Still open and **not** accepted away: tasks 4.12/4.14 (timing-floor measurement; production gate, tracked in #305, owner to be named) and the usability test 8.2.
