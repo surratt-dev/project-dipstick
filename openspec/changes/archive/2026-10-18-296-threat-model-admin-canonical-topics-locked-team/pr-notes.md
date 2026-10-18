@@ -104,7 +104,7 @@ Checked on the landing day against the working tree (non-test source unless stat
 
 ## Sign-off log
 
-Not started (tasks section 4 is left to the orchestrator).
+It's all good
 
 ## Follow-ups filed (user-approved)
 - Follow-up 1 (#216 S-B/N-A/N-D threat-model items): #318
