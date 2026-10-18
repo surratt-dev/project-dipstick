@@ -9,6 +9,7 @@ import { contentRoutes } from "./content.js";
 import { facilitatorSessionRoutes } from "./facilitator-sessions.js";
 import { actionItemRoutes } from "./action-items.js";
 import { topicRoutes } from "./topics.js";
+import { adminDefaultTopicRoutes } from "./admin-default-topics.js";
 import { registerTemplateConstraintErrorHandler } from "../teams/template-constraint-violation.js";
 
 // ---------------------------------------------------------------------------
@@ -38,4 +39,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(facilitatorSessionRoutes);
   await app.register(actionItemRoutes);
   await app.register(topicRoutes);
+  // admin-default-topic-maintenance (#216): the seven /api/v1/admin/default-topics
+  // routes. Outside the #188 team-scoped topic routes by construction.
+  await app.register(adminDefaultTopicRoutes);
 }

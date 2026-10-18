@@ -494,12 +494,6 @@ describe.skipIf(!infraUp)("team creation copies the canonical defaults (#215)", 
 
     const cases: Array<{ code: string; setup: () => Promise<void> }> = [
       {
-        code: "non_active_default",
-        setup: async () => {
-          await addTemplateRow({ name: "Anom Archived Default", order: 90, status: "archived" });
-        },
-      },
-      {
         code: "non_default_row",
         setup: async () => {
           await addTemplateRow({ name: "Anom Archived Custom", order: 91, status: "archived", isDefault: false });
@@ -557,23 +551,36 @@ describe.skipIf(!infraUp)("team creation copies the canonical defaults (#215)", 
     // be dropped across a route call (design.md Risks). The detector's rule
     // is pinned by the table-driven unit tests in template-anomalies.test.ts.
 
+    // #216 E6: non_active_default is retired. An archived default is valid
+    // state (the way an administrator retires a default), raises no anomaly,
+    // and is not copied.
+    it("an archived default raises no anomaly and is not copied", async () => {
+      await begin();
+      await addTemplateRow({ name: "Anom Archived Default", order: 90, status: "archived" });
+      lines.length = 0;
+      const { res, teamId } = await createTeam();
+      expect(res.statusCode).toBe(201);
+      expect(anomalyLines()).toHaveLength(0);
+      expect((await teamTopics(teamId!)).map((t) => t.name)).not.toContain("Anom Archived Default");
+    });
+
     it("a persistent fault writes one entry per creation (two creations, two entries)", async () => {
       await begin();
-      await addTemplateRow({ name: "Persistent Fault", order: 92, status: "archived" });
+      await addTemplateRow({ name: "Persistent Fault", order: 92, status: "archived", isDefault: false });
       await createTeam();
       await createTeam();
       expect(anomalyLines()).toHaveLength(2);
     });
 
-    it("the combined case: archived default plus a position gap names both, topicIds holds only the archived default's id", async () => {
+    it("the combined case: an archived non-default row plus a position gap names both, topicIds holds only that row's id", async () => {
       await begin();
-      const archivedId = await addTemplateRow({ name: "Combined Archived", order: 93, status: "archived" });
+      const archivedId = await addTemplateRow({ name: "Combined Archived", order: 93, status: "archived", isDefault: false });
       const act = activeDefaults();
       await setOrders(act.map((r, i) => [r.id, i === 0 ? 1 : i + 2] as [string, number]));
       const { res } = await createTeam();
       expect(res.statusCode).toBe(201);
       const e = anomalyLines()[0]!;
-      expect((e.anomalies as string[]).sort()).toEqual(["non_active_default", "non_contiguous_order"]);
+      expect((e.anomalies as string[]).sort()).toEqual(["non_contiguous_order", "non_default_row"]);
       expect(e.topicIds).toEqual([archivedId]);
     });
   });

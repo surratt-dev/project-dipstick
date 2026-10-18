@@ -43,10 +43,17 @@ describe("detectTemplateAnomalies", () => {
       topicIds: [id(2), id(3)],
     },
     {
-      label: "archived default",
+      // #216 E6: an archived default is valid state, not an anomaly.
+      label: "an archived default raises no anomaly",
       facts: [row(1, 1), row(2, 2), row(3, 3, { status: "archived" })],
-      anomalies: ["non_active_default"],
-      topicIds: [id(3)],
+      anomalies: [],
+      topicIds: [],
+    },
+    {
+      label: "no active defaults raises no non-contiguous anomaly",
+      facts: [row(1, 1, { status: "archived" }), row(2, 2, { status: "archived" })],
+      anomalies: [],
+      topicIds: [],
     },
     {
       label: "archived non-default (fires non_default_row)",
@@ -61,9 +68,9 @@ describe("detectTemplateAnomalies", () => {
       topicIds: [id(2)],
     },
     {
-      label: "combined: archived default plus a position gap",
-      facts: [row(1, 1), row(2, 3), row(3, 2, { status: "archived" })],
-      anomalies: ["non_active_default", "non_contiguous_order"],
+      label: "combined: a position gap plus an archived non-default row",
+      facts: [row(1, 1), row(2, 3), row(3, 2, { status: "archived", is_default: false })],
+      anomalies: ["non_default_row", "non_contiguous_order"],
       topicIds: [id(3)],
     },
     {

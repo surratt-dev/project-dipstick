@@ -8,7 +8,7 @@ Defines the mechanism that copies the canonical default topic set — the `topic
 
 ### Requirement: Default topic set is copied into a newly created team's own topics rows
 
-When a new team is created, the application SHALL copy the canonical default topic set into new `topics` rows owned by the new team. The canonical default topic set is the `topics` rows belonging to the sentinel `__default_topics__` system team (`team_id = '00000000-0000-0000-0000-000000000001'`) where `is_default = true` AND `status = 'active'`. A template row whose `status` is not `active` SHALL never be copied (BRD 6.4, FR-8.1, FR-8.6). Each copied row SHALL carry the new team's own `team_id`, its own generated `id`, `status = 'active'`, and the source row's `name`, `prompt`, `vote_type`, `is_default`, and `first_session_description`, unmodified; the annotation columns SHALL remain unset. The copied rows' `display_order` SHALL be numbered 1 to n with no gaps or duplicates, in canonical order (template `display_order` ascending, ties broken by source `id` ascending). The new team has no other topic rows before the copy. This copy SHALL occur in the same database transaction as the team's creation. The copy SHALL be a real, independent row per topic, so that a later edit to either the canonical defaults or the new team's own topic configuration never affects the other. An archived default on the template is a data fault, not a way to retire a default for new teams.
+When a new team is created, the application SHALL copy the canonical default topic set into new `topics` rows owned by the new team. The canonical default topic set is the `topics` rows belonging to the sentinel `__default_topics__` system team (`team_id = '00000000-0000-0000-0000-000000000001'`) where `is_default = true` AND `status = 'active'`. A template row whose `status` is not `active` SHALL never be copied (BRD 6.4, FR-8.1, FR-8.6). Each copied row SHALL carry the new team's own `team_id`, its own generated `id`, `status = 'active'`, and the source row's `name`, `prompt`, `vote_type`, `is_default`, and `first_session_description`, unmodified; the annotation columns SHALL remain unset. The copied rows' `display_order` SHALL be numbered 1 to n with no gaps or duplicates, in canonical order (template `display_order` ascending, ties broken by source `id` ascending). The new team has no other topic rows before the copy. This copy SHALL occur in the same database transaction as the team's creation. The copy SHALL be a real, independent row per topic, so that a later edit to either the canonical defaults or the new team's own topic configuration never affects the other. An archived default on the template is valid state and is the way to retire a default for new teams; it is never copied (`default-topic-maintenance`, #216).
 
 #### Scenario: New team receives its own copy of every active default topic
 - **WHEN** a new team is created
@@ -144,7 +144,7 @@ The test SHALL assert `404` with `error.code: "TEAM_NOT_FOUND"` and exactly one 
 
 This test is how the "SHALL NOT be relaxed" clause below is enforced.
 
-**FR-8.1 boundary.** The team-scoped topic-write endpoints are not the Application Administrator maintenance path that FR-8.1 refers to. Until a dedicated maintenance path exists, the default set is maintained through database migrations only. If that path is built, it SHALL be a separate endpoint with its own authorization and audit. This guard SHALL NOT be relaxed to serve it.
+**FR-8.1 boundary.** The team-scoped topic-write endpoints are not the Application Administrator maintenance path that FR-8.1 refers to. The dedicated maintenance path is the separate `/api/v1/admin/default-topics` endpoint family with its own authorization and audit (capability `admin-default-topic-maintenance`, #216); the default set can therefore be maintained without a migration, API only. This guard is not relaxed to serve it.
 
 #### Scenario: Each topic-write endpoint answers the template exactly as it answers a missing team (tested in both lock states)
 - **GIVEN** one of TOPIC-003 to TOPIC-007, and an authorized caller for that endpoint (a standing facilitator with no membership for all five, or an `application_admin` for TOPIC-003 to TOPIC-006)
@@ -447,18 +447,23 @@ The set of topic names copied at team creation and the set of default topic name
 
 ### Requirement: A damaged template is signalled to operators and does not fail creation
 
-Team creation SHALL examine every template row, of any status, for four anomalies: `duplicate_active_order` (two or more active default rows share a `display_order`); `non_active_default` (a row with `is_default = true` has a `status` other than `active`); `non_contiguous_order` (the distinct `display_order` values of the active default rows, sorted, are not exactly 1 to m, where m is the number of distinct values, so a nonzero start (including a start at 0) or any hole counts, and duplicates alone do not; when m = 0, that is, there are no active defaults, the condition holds vacuously and `non_contiguous_order` is NOT raised, because that state is reported by the creation failure below, not by this signal); and `non_default_row` (any row with `is_default = false`, whatever its status). When one or more apply, creation SHALL still succeed and exactly one `warn`-level log entry with message `template_anomaly` SHALL be written per creation request, carrying `templateTeamId`, `anomalies` (every type that applies), `topicIds` and `correlationId` (the request's `request.id`). The entry SHALL contain ids and anomaly codes only, never a topic name, prompt or other row text, and the check SHALL be performed after the creation transaction has committed so that a failure of the check cannot fail or abort creation. `topicIds` SHALL be the de-duplicated union of: all rows sharing a duplicated position, each non-active default row, and each non-default row, in canonical order then id, capped at 50; `non_contiguous_order` contributes no ids, so the list MAY be empty. Entries SHALL NOT be de-duplicated across requests: repeated or concurrent creations each write one entry. A healthy template SHALL write no such entry. If the check itself fails, creation SHALL still succeed and a `warn`-level entry with message `template_anomaly_check_failed` SHALL be written, carrying `templateTeamId` and `errCode` (the database error code when the failure is a database error, otherwise absent) and no row text, message or SQL text. No facilitator-visible banner, copy or response field SHALL be added.
+Team creation SHALL examine every template row, of any status, for three anomalies: `duplicate_active_order` (two or more active default rows share a `display_order`); `non_contiguous_order` (the distinct `display_order` values of the active default rows, sorted, are not exactly 1 to m, where m is the number of distinct values, so a nonzero start (including a start at 0) or any hole counts, and duplicates alone do not; when m = 0, that is, there are no active defaults, the condition holds vacuously and `non_contiguous_order` is NOT raised, because that state is reported by the creation failure below, not by this signal); and `non_default_row` (any row with `is_default = false`, whatever its status). When one or more apply, creation SHALL still succeed and exactly one `warn`-level log entry with message `template_anomaly` SHALL be written per creation request, carrying `templateTeamId`, `anomalies` (every type that applies), `topicIds` and `correlationId` (the request's `request.id`). The entry SHALL contain ids and anomaly codes only, never a topic name, prompt or other row text, and the check SHALL be performed after the creation transaction has committed so that a failure of the check cannot fail or abort creation. `topicIds` SHALL be the de-duplicated union of: all rows sharing a duplicated position, and each non-default row, in canonical order then id, capped at 50; `non_contiguous_order` contributes no ids, so the list MAY be empty. Entries SHALL NOT be de-duplicated across requests: repeated or concurrent creations each write one entry. A healthy template SHALL write no such entry. If the check itself fails, creation SHALL still succeed and a `warn`-level entry with message `template_anomaly_check_failed` SHALL be written, carrying `templateTeamId` and `errCode` (the database error code when the failure is a database error, otherwise absent) and no row text, message or SQL text. No facilitator-visible banner, copy or response field SHALL be added.
 
 #### Scenario: Anomalous template creates the team and logs once
-- **GIVEN** a template with an archived default and a position gap
+- **GIVEN** a template with an archived non-default row and a position gap
 - **WHEN** a new team is created
 - **THEN** creation succeeds
-- **AND** exactly one `warn` entry `template_anomaly` lists `non_active_default` and `non_contiguous_order`, and `topicIds` holds the archived default's id
+- **AND** exactly one `warn` entry `template_anomaly` lists `non_default_row` and `non_contiguous_order`, and `topicIds` holds the non-default row's id
+
+#### Scenario: An archived default is not an anomaly
+- **GIVEN** a template whose only irregularity is an archived default (retired through the maintenance endpoints)
+- **WHEN** a new team is created
+- **THEN** no `template_anomaly` entry is written and the archived default is not copied
 
 #### Scenario: Each anomaly type is detected
-- **GIVEN** a template showing, in turn, a non-active default, active defaults starting at position 2, and an archived non-default row
+- **GIVEN** a template showing, in turn, active defaults starting at position 2, and an archived non-default row
 - **WHEN** a new team is created in each state
-- **THEN** exactly one entry is written each time, naming `non_active_default`, `non_contiguous_order`, and `non_default_row` respectively, with a closed key set, ids and codes only, and `correlationId` equal to the request id
+- **THEN** exactly one entry is written each time, naming `non_contiguous_order` and `non_default_row` respectively, with a closed key set, ids and codes only, and `correlationId` equal to the request id
 - **AND** the creation response is unchanged
 
 #### Scenario: Duplicate active position is detected by the pure detector only
@@ -499,15 +504,29 @@ When the template has no active default rows, `POST /api/v1/teams` SHALL respond
 
 ### Requirement: The template's canonical-set invariants are asserted on every merge
 
-An automated integration test SHALL fail, naming the violated invariant, if: the active default count differs from the baseline N (N = 12) or the active default names differ from the baseline list; the active default positions are not exactly 1 to N; any default row has a `status` other than `active`; any non-default row exists on the template; or any membership or session exists on the template; or, for any baseline topic, its `prompt`, `vote_type` or `first_session_description` differs from the baseline. The checks are a pure function over fetched rows, so the failure messages are themselves tested. The baseline list lives in the invariants test file (named in `tasks.md`), not in application code, and SHALL be updated by whatever change edits the defaults (F5, #216). Because Vitest runs files in parallel and several files swap or archive template rows, the invariants test and every test that mutates the template SHALL run under a cross-process Postgres advisory lock on a fixed key (`acquireTemplateLock` / `withTemplateLock` in the test helpers); tests that only create teams take no lock and derive expectations from an in-test snapshot, never from the baseline list.
+An automated integration test SHALL fail, naming the violated invariant, if: the number of active defaults is outside 1 to 15, or two active default names are equal after trim and lowercase; the active default positions are not exactly 1 to N; any default row, active or archived, has an empty (after trim) `name`, `prompt` or `first_session_description`, an invalid `vote_type`, or a value over the maintenance field limits (archived defaults are valid state and are never copied; an archived default alone SHALL NOT fail the suite); any non-default row exists on the template; or any membership or session exists on the template. Separately, while no audited maintenance write exists for the template (no `audit_log` row with the sentinel `team_id` and an `operation` in the explicit five-name list of maintenance operations; `LIKE` is not used), the test SHALL also fail if the active defaults differ from the migration-time baseline list (exactly twelve names, positions, and, for each, `prompt`, `vote_type` and `first_session_description`); once such a row exists the baseline-content check SHALL be reported as skipped with its reason, never as passed. The checks are a pure function over fetched rows, so the failure messages are themselves tested. The baseline list lives in the invariants test file, is the factory seed, and SHALL be updated only by a migration that edits the seed; an administrator edit made through the maintenance endpoints never updates it. Because Vitest runs files in parallel and several files swap or archive template rows, the invariants test and every test that mutates the template (including every maintenance test) SHALL run under a cross-process Postgres advisory lock on a fixed key (`acquireTemplateLock` / `withTemplateLock`), SHALL restore the template through the shared snapshot helper, and SHALL delete the maintenance audit rows it created (selected by the explicit five-name list); tests that only create teams take no lock and derive expectations from an in-test snapshot, never from the baseline list.
 
-#### Scenario: A seed edit that archives a default fails CI
-- **WHEN** a migration leaves a default row on the template archived
-- **THEN** the invariants test fails and names the "no non-active default" invariant
+#### Scenario: An archived default is valid
+- **WHEN** a default is archived through the maintenance endpoints
+- **THEN** the invariants test does not fail and the archived default is not copied to new teams
+
+#### Scenario: A zero-active template fails
+- **WHEN** a migration or fault leaves no active default
+- **THEN** the invariants test fails and names the active-count invariant
 
 #### Scenario: A seed edit that changes a default's prompt fails CI
+- **GIVEN** no maintenance audit row exists
 - **WHEN** a migration changes the `prompt` of a baseline default on the template
 - **THEN** the invariants test fails and names the "baseline content" invariant
+
+#### Scenario: Baseline content is skipped, not passed, after an audited edit
+- **GIVEN** an audited maintenance row exists
+- **WHEN** the invariants test runs
+- **THEN** the baseline-content check is reported as skipped with its reason, and the structural invariants still run
+
+#### Scenario: A maintenance test cleans up
+- **WHEN** a maintenance test finishes
+- **THEN** the template equals its pre-test snapshot and no `topic.default_*` audit row from the test remains
 
 ### Requirement: The assign-defaults endpoint is covered by the template guard and shares the canonical copy
 

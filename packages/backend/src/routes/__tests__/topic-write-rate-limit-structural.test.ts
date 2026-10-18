@@ -70,8 +70,16 @@ describe("topic-write limiter import graph is an allow-list (#184 5.7)", () => {
     return production.filter((f) => importsModule(f, target)).map((f) => f.rel).sort();
   }
 
-  it("routes/topic-write-rate-limit.ts is imported only by routes/topics.ts", () => {
-    expect(importersOf("routes/topic-write-rate-limit.ts")).toEqual(["routes/topics.ts"]);
+  // admin-default-topic-maintenance (#216): routes/admin-default-topics.ts is
+  // the second, deliberate importer. Its five write routes call
+  // enforceTopicWriteRateLimit and share the per-actor budget (design E10);
+  // it is a Fastify admin route plugin, so no session, voting or WebSocket
+  // code can reach the limiter through it.
+  it("routes/topic-write-rate-limit.ts is imported only by routes/topics.ts and routes/admin-default-topics.ts", () => {
+    expect(importersOf("routes/topic-write-rate-limit.ts")).toEqual([
+      "routes/admin-default-topics.ts",
+      "routes/topics.ts",
+    ]);
   });
 
   // zero-topic-team-recovery (#200): the per-actor denial-audit bound is a
@@ -87,9 +95,17 @@ describe("topic-write limiter import graph is an allow-list (#184 5.7)", () => {
     ]);
   });
 
-  it("auth/denial-audit-limiter.ts is imported only by auth/assign-defaults-audit.ts, which only routes/topics.ts imports (#200)", () => {
-    expect(importersOf("auth/denial-audit-limiter.ts")).toEqual(["auth/assign-defaults-audit.ts"]);
+  // admin-default-topic-maintenance (#216): auth/default-maintenance-denial-audit.ts
+  // is the parameterized sibling seam for the admin default-topics routes
+  // (the denial-audit bound for DEFAULT_MAINTENANCE_ADMIN_ONLY). It is imported
+  // only by routes/admin-default-topics.ts.
+  it("auth/denial-audit-limiter.ts is imported only by the two denial-audit seams, each imported by one route module (#200, #216)", () => {
+    expect(importersOf("auth/denial-audit-limiter.ts")).toEqual([
+      "auth/assign-defaults-audit.ts",
+      "auth/default-maintenance-denial-audit.ts",
+    ]);
     expect(importersOf("auth/assign-defaults-audit.ts")).toEqual(["routes/topics.ts"]);
+    expect(importersOf("auth/default-maintenance-denial-audit.ts")).toEqual(["routes/admin-default-topics.ts"]);
   });
 
   it("the scan sees real imports (the allow-list is not vacuous)", () => {

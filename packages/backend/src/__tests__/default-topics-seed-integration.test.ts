@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import pg from "pg";
+import { acquireTemplateLock } from "../routes/__tests__/helpers/template-lock.js";
+import { MAINTENANCE_AUDIT_OPERATIONS } from "../sessions/default-topic-validation.js";
 
 // ---------------------------------------------------------------------------
 // Pins the twelve default-topic rows seeded for the sentinel
@@ -120,9 +122,22 @@ const EXPECTED_TOPICS = [
 ];
 
 describe.skipIf(!infraAvailable)("default topics seed (default-topics-seed-integration)", () => {
-  it("seeds exactly the twelve canonical default topics for the sentinel team, in order", async () => {
+  // admin-default-topic-maintenance (#216) design.md E6: this pins the MIGRATION-TIME seed, so
+  // it (like invariant (f)) asserts an absolute baseline on the template. It therefore takes the
+  // cross-process template lock (maintenance tests mutate the template under the same lock) and
+  // is skipped, not passed, once an audited maintenance write exists for the template.
+  it("seeds exactly the twelve canonical default topics for the sentinel team, in order", async (ctx) => {
+    const release = await acquireTemplateLock();
     const pool = new pg.Pool({ connectionString: DATABASE_URL });
     try {
+      const audited = await pool.query<{ n: string }>(
+        `SELECT count(*) AS n FROM audit_log WHERE team_id = $1 AND operation = ANY($2::text[])`,
+        [SENTINEL_TEAM_ID, [...MAINTENANCE_AUDIT_OPERATIONS]],
+      );
+      if (Number(audited.rows[0]!.n) > 0) {
+        console.warn("[default-topics-seed-integration] SKIPPED: an audited default-topic maintenance write exists, so the template legitimately differs from the migration-time seed");
+        ctx.skip();
+      }
       const result = await pool.query<{
         name: string;
         prompt: string;
@@ -147,6 +162,7 @@ describe.skipIf(!infraAvailable)("default topics seed (default-topics-seed-integ
       });
     } finally {
       await pool.end();
+      await release();
     }
   });
 });
