@@ -35,9 +35,10 @@ import type {
   AddCustomTopicRequest,
   AddCustomTopicResponse,
   AssignDefaultsResponse,
+  RestoreDefaultsResponse,
   VoteType,
 } from "@dipstick/shared";
-import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
+import { MAX_ANNOTATION_LENGTH, normalizeAnnotation, planDefaultRestore } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // Topic write routes — topic-customization-lock-and-add-custom-topic (#49/#50)
@@ -609,6 +610,45 @@ async function checkRestoreTopicAuthorization(
 
   return { rejected: false, actorGlobalRole: decision.actorGlobalRole };
 }
+
+// ---------------------------------------------------------------------------
+// bulk-restore-default-topics: role check for POST .../topics/restore-defaults.
+// Same shared decision helper as checkRestoreTopicAuthorization (admin
+// admitted whatever the membership; facilitator only if not a member), with
+// its own 403 messages and the timing floor on both reason branches.
+// ---------------------------------------------------------------------------
+async function checkBulkRestoreAuthorization(
+  reply: FastifyReply,
+  userId: string,
+  teamId: string,
+  startTime: number,
+): Promise<AuthorizationResult> {
+  const decision = await checkStandingFacilitatorOrAdminAuthorization(userId, teamId);
+
+  if (!decision.authorized) {
+    const message =
+      decision.reason === "FACILITATOR_IS_TEAM_MEMBER"
+        ? "A facilitator cannot restore default topics for a team they are a member of."
+        : "Only a facilitator or an application admin can restore default topics.";
+
+    await applyTimingFloor(startTime);
+    await reply.code(403).send(buildErrorEnvelope("forbidden", message, decision.reason));
+    return { rejected: true };
+  }
+
+  return { rejected: false, actorGlobalRole: decision.actorGlobalRole };
+}
+
+/** Thrown inside the bulk transaction when the UPDATE row count differs from the plan. */
+export class BulkRestoreRowCountMismatchError extends Error {
+  constructor(expected: number, actual: number) {
+    super(`bulk restore updated ${actual} rows, expected ${expected}`);
+    this.name = "BulkRestoreRowCountMismatchError";
+  }
+}
+
+/** Cap on `skipped` entries stored in the audit metadata; skipped_count carries the true total. */
+const BULK_RESTORE_AUDIT_SKIPPED_CAP = 100;
 
 // ---------------------------------------------------------------------------
 // Task 2.3/2.4 — TOPIC-005 topic existence/ownership and status checks
@@ -1672,6 +1712,198 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     } finally {
       client.release();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/teams/:teamId/topics/restore-defaults
+  // (bulk-restore-default-topics, #218)
+  //
+  // Cascade, in the live single-restore order (design V6):
+  //   0. authMiddleware (onRequest) -- 401.
+  //   1. Non-canonical teamId -- 404 TEAM_NOT_FOUND, no query.
+  //   2. Role authorization -- 403 NOT_A_FACILITATOR /
+  //      FACILITATOR_IS_TEAM_MEMBER (admin admitted whatever the membership).
+  //   3. Topic-write rate limit -- 429 / fail-closed 503. One unit per request
+  //      whatever N is.
+  //   4. Writable team -- 404 TEAM_NOT_FOUND (nonexistent or template team).
+  //   5. Customization lock -- 409 TOPIC_CUSTOMIZATION_LOCKED.
+  //   6. Transaction under the per-team advisory lock: read archived defaults
+  //      and active topics, run planDefaultRestore, then (non-empty) one
+  //      UPDATE ... FROM unnest + one audit row, COMMIT; (empty) ROLLBACK, no
+  //      audit row, 200 with empty `restored`.
+  //
+  // The request body is never read. No topic row is read before
+  // lockTeamTopics. applyTimingFloor runs on EVERY exit including the thrown
+  // path (D22), unlike single restore.
+  // -------------------------------------------------------------------------
+  app.post<{
+    Params: { teamId: string };
+  }>("/api/v1/teams/:teamId/topics/restore-defaults", async (request, reply) => {
+    // Set once, first, so every exit carries it, including the 500 the global
+    // error handler writes on this same reply.
+    reply.header("Cache-Control", "no-store");
+
+    const startTime = Date.now();
+    const session = request.session as unknown as SessionData;
+    const { teamId: rawTeamId } = request.params;
+    const endpoint = "POST /api/v1/teams/:teamId/topics/restore-defaults";
+
+    if ((await rejectNonCanonicalTeamId(reply, rawTeamId, startTime)).rejected) {
+      return reply;
+    }
+    const teamId = rawTeamId.toLowerCase();
+
+    const authResult = await checkBulkRestoreAuthorization(reply, session.userId, teamId, startTime);
+    if (authResult.rejected) {
+      return reply;
+    }
+
+    const writeCtx: TopicWriteDenialContext = {
+      actorUserId: session.userId,
+      actorGlobalRole: authResult.actorGlobalRole,
+      teamId,
+      endpoint,
+      attemptedOperation: "topic.defaults_restored",
+    };
+    if ((await enforceTopicWriteRateLimit(request, reply, writeCtx, startTime)) === "rejected") {
+      return reply;
+    }
+
+    const existsResult = await checkWritableTeam(request, reply, writeCtx, startTime);
+    if (existsResult.rejected) {
+      return reply;
+    }
+
+    const lockResult = await checkCustomizationLockGate(request, reply, writeCtx, startTime);
+    if (lockResult.rejected) {
+      return reply;
+    }
+
+    const client = await db.connect();
+    let committed: RestoreDefaultsResponse | null = null;
+    let auditMetadata: Record<string, unknown> | null = null;
+    try {
+      await client.query("BEGIN");
+      await lockTeamTopics(client, teamId);
+
+      const archivedResult = await client.query<{ id: string; name: string; display_order: number }>(
+        `SELECT id, name, display_order
+           FROM topics
+          WHERE team_id = $1 AND status = 'archived' AND is_default = true`,
+        [teamId],
+      );
+      const activeResult = await client.query<{ name: string; display_order: number }>(
+        `SELECT name, display_order FROM topics WHERE team_id = $1 AND status = 'active'`,
+        [teamId],
+      );
+
+      const plan = planDefaultRestore(
+        archivedResult.rows.map((r) => ({ id: r.id, name: r.name, displayOrder: r.display_order })),
+        activeResult.rows.map((r) => r.name),
+      );
+      // Mirrors single restore's COALESCE(MAX(display_order), 0): 0 only when
+      // there are no active rows, so an all-negative legacy list is not clamped.
+      const base =
+        activeResult.rows.length === 0
+          ? 0
+          : activeResult.rows.reduce((max, r) => Math.max(max, r.display_order), -Infinity);
+      const nameById = new Map(archivedResult.rows.map((r) => [r.id, r.name]));
+      const skipped = plan.skipped.map((s) => ({ topicId: s.id, name: s.name, reason: s.reason }));
+
+      if (plan.restore.length === 0) {
+        // Nothing was written: release the lock now, write no audit row.
+        await client.query("ROLLBACK");
+        committed = { restored: [], skipped };
+      } else {
+        const ids = plan.restore.map((r) => r.id);
+        const positions = plan.restore.map((_, i) => base + 1 + i);
+
+        const updateResult = await client.query<{ id: string }>(
+          `UPDATE topics
+              SET status = 'active',
+                  display_order = v.pos,
+                  restored_at = now(),
+                  restored_by = $3
+             FROM unnest($1::uuid[], $2::int[]) AS v(id, pos)
+            WHERE topics.id = v.id AND topics.team_id = $4 AND topics.status = 'archived'
+          RETURNING topics.id`,
+          [ids, positions, session.userId, teamId],
+        );
+        if (updateResult.rows.length !== ids.length) {
+          throw new BulkRestoreRowCountMismatchError(ids.length, updateResult.rows.length);
+        }
+
+        auditMetadata = {
+          restored: plan.restore.map((r, i) => ({ topic_id: r.id, display_order: positions[i] })),
+          skipped: plan.skipped
+            .slice(0, BULK_RESTORE_AUDIT_SKIPPED_CAP)
+            .map((s) => ({ topic_id: s.id, reason: s.reason })),
+          restored_count: plan.restore.length,
+          skipped_count: plan.skipped.length,
+        };
+        await client.query(
+          `INSERT INTO audit_log
+             (actor_user_id, actor_global_role, actor_ip, operation, team_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            session.userId,
+            authResult.actorGlobalRole,
+            request.ip,
+            "topic.defaults_restored",
+            teamId,
+            JSON.stringify(auditMetadata),
+          ],
+        );
+        await client.query("COMMIT");
+
+        committed = {
+          restored: plan.restore.map((r, i) => ({
+            topicId: r.id,
+            name: nameById.get(r.id) ?? r.name,
+            displayOrder: positions[i] as number,
+          })),
+          skipped,
+        };
+      }
+    } catch (err) {
+      // D22: roll back, serve the floor, then rethrow to the global handler.
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        request.log.error(
+          { err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
+          "topic.defaults_restored rollback failed",
+        );
+      }
+      await applyTimingFloor(startTime);
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    if (auditMetadata !== null && committed !== null) {
+      // Its own narrow try/catch: a log-emit failure after COMMIT must not
+      // change the 200 and must not swallow the floor or the send.
+      try {
+        emitAuditEvent(request.log, "topic.defaults_restored", {
+          actorUserId: session.userId,
+          actorGlobalRole: authResult.actorGlobalRole,
+          actorIp: request.ip,
+          teamId,
+          restoredCount: committed.restored.length,
+          skippedCount: committed.skipped.length,
+          topicIds: committed.restored.map((r) => r.topicId),
+        });
+      } catch (emitErr) {
+        request.log.error(
+          { teamId, err: emitErr instanceof Error ? emitErr.message : String(emitErr) },
+          "topic.defaults_restored audit event emit failed",
+        );
+      }
+    }
+
+    await applyTimingFloor(startTime);
+    return reply.code(200).send(committed);
   });
 
   // -------------------------------------------------------------------------

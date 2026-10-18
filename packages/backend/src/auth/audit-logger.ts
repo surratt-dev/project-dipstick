@@ -527,6 +527,19 @@ export type AuditEventName =
   // in the same transaction as the rows it authorizes). metadata: {
   // topic_id }.
   | "topic.restored"
+  // topic.defaults_restored: bulk-restore-default-topics, design.md D16/D21.
+  // Fired by POST /api/v1/teams/:teamId/topics/restore-defaults after COMMIT,
+  // paired with ONE audit_log row written in the same transaction as the
+  // status flip (a restore never commits without it). metadata carries ids
+  // and positions only -- never topic names or any text:
+  // { restored: [{topic_id, display_order}], skipped: [{topic_id, reason}]
+  // (capped at 100), restored_count, skipped_count }. Provenance: single
+  // restore writes one topic.restored row per topic, bulk writes one
+  // topic.defaults_restored, so incident queries for "who restored topic X"
+  // MUST union topic.restored and topic.defaults_restored (the per-row
+  // topics.restored_by/restored_at columns are authoritative in both paths).
+  // Retention is the existing audit_log policy (docs/deployment.md).
+  | "topic.defaults_restored"
   // topic.reordered: reorder-topics, design.md Decision 6. Fired by
   // PUT /api/v1/teams/:teamId/topics/order (TOPIC-006) on every save that
   // changes the order (no-op saves are silent), in the same database

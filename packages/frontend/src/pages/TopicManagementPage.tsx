@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { useParams, Link } from "react-router-dom";
-import { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "@dipstick/shared";
+import { MAX_ANNOTATION_LENGTH, normalizeAnnotation, planDefaultRestore } from "@dipstick/shared";
 import type {
   AddCustomTopicResponse,
   GetAllTopicsResponse,
   ArchiveTopicResponse,
   ArchiveTopicConfirmationRequired,
   RestoreTopicResponse,
+  RestoreDefaultsResponse,
   ReorderTopicsResponse,
   UpdateTopicAnnotationResponse,
 } from "@dipstick/shared";
@@ -29,6 +30,20 @@ import { ADD_FORM_IDS, AddCustomTopicForm } from "../components/AddCustomTopicFo
 import type { AddFormPhase } from "../components/AddCustomTopicForm.js";
 import { assignDefaultTopics } from "./assignDefaults.js";
 import { ActiveTopicsEmptyState, EMPTY_STATE_ADD_BUTTON_ID } from "../components/ActiveTopicsEmptyState.js";
+import { restoreDefaultTopics } from "./restoreDefaults.js";
+import { BULK_RESTORE_TRIGGER_ID, RestoreDefaultsDialog } from "../components/RestoreDefaultsDialog.js";
+import {
+  BULK_RESTORE_DISABLED_REASON,
+  BULK_RESTORE_FAILED,
+  BULK_RESTORE_FORBIDDEN,
+  BULK_RESTORE_LOCKED,
+  BULK_RESTORE_NOTHING,
+  BULK_RESTORE_NOT_FOUND,
+  BULK_RESTORE_TITLE,
+  bulkResultLine,
+  canShowRestoreControls,
+  skippedLine,
+} from "./bulkRestoreCopy.js";
 
 // ---------------------------------------------------------------------------
 // TopicManagementPage — remove-topic, design.md Decision 10, tasks.md
@@ -103,6 +118,11 @@ type RestoreTopicState =
   | { status: "confirming"; topic: ArchivedTopic }
   | { status: "submitting"; topic: ArchivedTopic }
   | { status: "error"; topicId: string; message: string };
+
+// bulk-restore-default-topics (#218): the dialog's lifecycle, and the result of
+// the last request (shown in a polite live region, cleared by the next action).
+type BulkRestoreState = "idle" | "confirming" | "submitting";
+type BulkRestoreResult = { body: RestoreDefaultsResponse; previewed: number } | null;
 
 type MoveAction = "top" | "up" | "down" | "bottom";
 
@@ -652,6 +672,12 @@ export function TopicManagementPage() {
   // returns); the state drives the button's disabled/busy rendering.
   const [assigning, setAssigning] = useState(false);
   const assignInFlight = useRef(false);
+
+  // bulk-restore-default-topics (#218): same ref-plus-state double-activation
+  // guard as assign-defaults.
+  const [bulkState, setBulkState] = useState<BulkRestoreState>("idle");
+  const [bulkResult, setBulkResult] = useState<BulkRestoreResult>(null);
+  const bulkInFlight = useRef(false);
 
   // Design.md Decision 4: the add form.
   const [addForm, setAddForm] = useState<AddFormState>(null);
@@ -1286,7 +1312,7 @@ export function TopicManagementPage() {
   // Task 6.7(b): no draft may be started or saved while a Remove/Restore
   // dialog is open or submitting -- the post-archive/restore refetch would
   // otherwise leave a draft that references a topic no longer active.
-  const isTopicDialogOpen = dialogState !== null || restoreDialogState !== null;
+  const isTopicDialogOpen = dialogState !== null || restoreDialogState !== null || bulkState !== "idle";
   // Task 6.7(c) and 6.8: every move is disabled while a save is in flight
   // (the 200 handler would overwrite it) and after a stale save (it would
   // be thrown away by Reload/Discard).
@@ -1389,6 +1415,80 @@ export function TopicManagementPage() {
     } finally {
       assignInFlight.current = false;
       setAssigning(false);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // bulk-restore-default-topics (#218) -- "Restore default topics"
+  //
+  // The preview is the shared planDefaultRestore run on the loaded lists (the
+  // same function the server runs), so it cannot drift from server behavior.
+  // The control is hidden unless the caller can act (the single-Restore
+  // predicate), the team is unlocked and something is restorable.
+  // -------------------------------------------------------------------------
+  const bulkPlan = planDefaultRestore(
+    data.archived
+      .filter((topic) => topic.isDefault)
+      .map((topic) => ({ id: topic.topicId, name: topic.name, displayOrder: topic.displayOrder ?? 0 })),
+    data.active.map((topic) => topic.name),
+  );
+  const canBulkRestore =
+    canShowRestoreControls(isCanonicalDefaults) && !data.isCustomizationLocked && bulkPlan.restore.length > 0;
+  // Only unsaved work disables it: a dirty definition or an unsaved reorder.
+  const bulkDisabledReason = isDirty || annotationDirty ? BULK_RESTORE_DISABLED_REASON : null;
+
+  const openBulkRestore = () => {
+    if (bulkDisabledReason !== null || bulkInFlight.current) return;
+    clearScreenMessage();
+    setBulkResult(null);
+    closeCleanAnnotationEditor();
+    setBulkState("confirming");
+  };
+
+  const cancelBulkRestore = () => {
+    if (bulkInFlight.current) return;
+    setBulkState("idle");
+    queueFocus([BULK_RESTORE_TRIGGER_ID, ACTIVE_HEADING_ID]);
+  };
+
+  const submitBulkRestore = async () => {
+    if (!teamId || bulkInFlight.current) return;
+    bulkInFlight.current = true;
+    setBulkState("submitting");
+    const previewed = bulkPlan.restore.length;
+    try {
+      const result = await restoreDefaultTopics(teamId);
+      // Every outcome closes the dialog: it must not strand the user on a
+      // stale preview. Focus then returns to the control, or the heading when
+      // the control is gone.
+      setBulkState("idle");
+      if (result.kind === "restored") {
+        await finishAfterTopicWrite(
+          "The default topics were restored, but the list couldn't be refreshed. Reload the page to see them.",
+        );
+        setBulkResult({ body: result.body, previewed });
+      } else if (result.kind === "forbidden" || result.kind === "not_found" || result.kind === "locked") {
+        // The caller's standing or the team's state changed: show the notice
+        // and refetch so the screen and the control reflect current state.
+        const outcome = await fetchAllTopics();
+        if (outcome.status === "ok") setData(outcome.data);
+        setScreenMessage({
+          kind: "alert",
+          text:
+            result.kind === "locked"
+              ? BULK_RESTORE_LOCKED
+              : result.kind === "not_found"
+                ? BULK_RESTORE_NOT_FOUND
+                : (result.message ?? BULK_RESTORE_FORBIDDEN),
+        });
+      } else {
+        // 429/503 pauses and any failure: the transaction is atomic, so the
+        // list is unchanged and the user may retry.
+        setScreenMessage({ kind: "alert", text: result.kind === "paused" ? result.message : BULK_RESTORE_FAILED });
+      }
+      queueFocus([BULK_RESTORE_TRIGGER_ID, ACTIVE_HEADING_ID]);
+    } finally {
+      bulkInFlight.current = false;
     }
   };
 
@@ -1671,7 +1771,33 @@ export function TopicManagementPage() {
               Add custom topic
             </button>
           )}
+          {canBulkRestore && !activeEmpty && (
+            <button
+              type="button"
+              id={BULK_RESTORE_TRIGGER_ID}
+              onClick={openBulkRestore}
+              disabled={bulkDisabledReason !== null}
+              aria-describedby={bulkDisabledReason !== null ? "bulk-restore-disabled-reason" : undefined}
+              data-testid={BULK_RESTORE_TRIGGER_ID}
+            >
+              {BULK_RESTORE_TITLE}
+            </button>
+          )}
+          {canBulkRestore && !activeEmpty && bulkDisabledReason !== null && (
+            <span id="bulk-restore-disabled-reason" data-testid="bulk-restore-disabled-reason" style={{ color: "#616161" }}>
+              {bulkDisabledReason}
+            </span>
+          )}
         </div>
+        {bulkState !== "idle" && canBulkRestore && (
+          <RestoreDefaultsDialog
+            restorable={bulkPlan.restore}
+            skipped={bulkPlan.skipped}
+            submitting={bulkState === "submitting"}
+            onConfirm={() => void submitBulkRestore()}
+            onCancel={cancelBulkRestore}
+          />
+        )}
         {/* Design.md Decisions 6 and 11: the one screen message region,
             directly under the Active Topics heading. */}
         {screenMessage && (
@@ -1687,6 +1813,36 @@ export function TopicManagementPage() {
             {screenMessage.text}
           </div>
         )}
+        {/* bulk-restore-default-topics: the result, in a polite live region
+            that is mounted before any result so the first one is announced. */}
+        <div aria-live="polite" data-testid="bulk-restore-result">
+          {bulkResult &&
+            (bulkResult.body.restored.length === 0 ? (
+              <p data-testid="bulk-restore-result-line">{BULK_RESTORE_NOTHING}</p>
+            ) : (
+              <>
+                <p data-testid="bulk-restore-result-line">
+                  {bulkResultLine(bulkResult.body.restored.length, bulkResult.previewed)}
+                </p>
+                <ul data-testid="bulk-restore-result-restored" style={{ paddingLeft: "1.25rem" }}>
+                  {bulkResult.body.restored.map((topic) => (
+                    <li key={topic.topicId} style={{ overflowWrap: "anywhere" }}>
+                      {topic.name} (position {topic.displayOrder})
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ))}
+          {bulkResult && bulkResult.body.skipped.length > 0 && (
+            <ul data-testid="bulk-restore-result-skipped" style={{ paddingLeft: "1.25rem" }}>
+              {bulkResult.body.skipped.map((topic) => (
+                <li key={topic.topicId} style={{ overflowWrap: "anywhere" }}>
+                  {skippedLine(topic.name, topic.reason)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         {/* Design.md Decision 3 (engineer review M2): while an add is in
             flight this is the only visible disabled reason. */}
         {addSubmitting && (
@@ -1721,12 +1877,19 @@ export function TopicManagementPage() {
           // topic shares a default's name, and its topicId can point at the
           // template team): see #197.
           <ActiveTopicsEmptyState
-            variant={activeEmptyStateVariant(data.isCustomizationLocked, data.archived.length, data.canAssignDefaults)}
+            variant={activeEmptyStateVariant(
+              data.isCustomizationLocked,
+              data.archived.length,
+              data.canAssignDefaults,
+              canBulkRestore,
+            )}
             addAllowed={addAllowed}
             archivedCount={data.archived.length}
             onShowArchived={() => expandArchivedAndFocus(ARCHIVED_TOGGLE_ID)}
             onAddTopic={() => openAddForm("emptyState")}
-            canAssign={data.isCustomizationLocked && data.canAssignDefaults === true}
+            canAssign={(data.isCustomizationLocked || canBulkRestore) && data.canAssignDefaults === true}
+            onBulkRestore={openBulkRestore}
+            bulkRestoreDisabledReason={bulkDisabledReason}
             assigning={assigning}
             assignBlockedReason={assignBlockedReason}
             onAssign={() => void assignDefaults()}
@@ -2066,7 +2229,7 @@ export function TopicManagementPage() {
                   )}
 
                   {/* #214: the canonical defaults offer no write control. */}
-                  {!isCanonicalDefaults && (
+                  {canShowRestoreControls(isCanonicalDefaults) && (
                     <div style={{ marginTop: "0.5rem" }}>
                       <button
                         onClick={() => startRestore(topic)}

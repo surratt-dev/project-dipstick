@@ -37,6 +37,7 @@ export function archivedTopic(id: string, name: string, overrides: Partial<Archi
     prompt: `Prompt for ${name}`,
     voteType: "finger",
     isDefault: true,
+    displayOrder: 0,
     archivedAt: "2026-08-01T12:00:00.000Z",
     archivedBy: { userId: "user-9", displayName: "Priya Nair" },
     restoredAt: null,
@@ -146,6 +147,8 @@ export interface FetchRoutes {
   annotations?: Reply[];
   // POST …/topics/assign-defaults (TOPIC-008, #200)
   assigns?: Reply[];
+  // POST …/topics/restore-defaults (bulk restore, #218)
+  bulkRestores?: Reply[];
 }
 
 function answer(reply: Reply | undefined): Promise<Response> {
@@ -164,6 +167,7 @@ export function installFetch(routes: FetchRoutes = {}) {
     reorders: [...(routes.reorders ?? [])],
     annotations: [...(routes.annotations ?? [])],
     assigns: [...(routes.assigns ?? [])],
+    bulkRestores: [...(routes.bulkRestores ?? [])],
   };
   let getIndex = 0;
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
@@ -171,6 +175,7 @@ export function installFetch(routes: FetchRoutes = {}) {
     if (method === "GET" && url.endsWith("/topics/all")) {
       return answer(gets[Math.min(getIndex++, gets.length - 1)]);
     }
+    if (method === "POST" && url.endsWith("/restore-defaults")) return answer(queues.bulkRestores.shift());
     if (method === "POST" && url.endsWith("/assign-defaults")) return answer(queues.assigns.shift());
     if (method === "POST" && url.endsWith("/restore")) return answer(queues.restores.shift());
     if (method === "POST" && /\/teams\/[^/]+\/topics$/.test(url)) return answer(queues.adds.shift());
@@ -191,6 +196,10 @@ export function addPosts(fetchMock: FetchMock) {
 
 export function assignPosts(fetchMock: FetchMock) {
   return fetchMock.mock.calls.filter(([url, init]) => init?.method === "POST" && String(url).endsWith("/assign-defaults"));
+}
+
+export function bulkRestorePosts(fetchMock: FetchMock) {
+  return fetchMock.mock.calls.filter(([url, init]) => init?.method === "POST" && String(url).endsWith("/restore-defaults"));
 }
 
 export function topicsAllGets(fetchMock: FetchMock) {

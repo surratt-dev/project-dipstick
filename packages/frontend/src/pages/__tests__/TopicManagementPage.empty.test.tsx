@@ -248,7 +248,8 @@ describe("empty-state actions", () => {
     const toggle = screen.getByTestId("toggle-archived-topics");
     expect(toggle).toHaveFocus();
     expect(screen.getByTestId("archived-topic-row-arch-1")).toBeInTheDocument();
-    expect(within(emptyState()).queryByRole("button", { name: /Restore/ })).not.toBeInTheDocument();
+    // #218: the only restore action in the empty state is the bulk one.
+    expect(within(emptyState()).queryByRole("button", { name: /^Restore$/ })).not.toBeInTheDocument();
   });
 
   it("restoring from the empty state replaces it without the full-screen path", async () => {

@@ -147,6 +147,10 @@ export type ActiveEmptyStateVariant =
   | "locked"
   | "locked_assign"
   | "unlocked_with_archived"
+  // bulk-restore-default-topics (#218): an unlocked empty team that has at
+  // least one archived default the shared planner would restore. Restore is
+  // the primary action.
+  | "unlocked_restorable"
   | "unlocked_none_archived";
 
 /**
@@ -164,8 +168,10 @@ export function activeEmptyStateVariant(
   isCustomizationLocked: boolean,
   archivedCount: number,
   canAssignDefaults?: boolean,
+  canBulkRestore?: boolean,
 ): ActiveEmptyStateVariant {
   if (isCustomizationLocked) return canAssignDefaults === true ? "locked_assign" : "locked";
+  if (canBulkRestore === true) return "unlocked_restorable";
   return archivedCount > 0 ? "unlocked_with_archived" : "unlocked_none_archived";
 }
 

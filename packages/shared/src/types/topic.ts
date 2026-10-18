@@ -170,6 +170,9 @@ export interface GetAllTopicsResponse {
     prompt: string;
     voteType: VoteType;
     isDefault: boolean;
+    // bulk-restore-default-topics D19: the row's stored display_order (a
+    // best-effort, possibly stale or tied sort key, never a slot to return to).
+    displayOrder: number;
     archivedAt: string;
     // Facilitator-visible provenance (design.md Decision 6) — null only for
     // a pre-existing row archived before the archived_by column existed;
@@ -285,4 +288,70 @@ export const MAX_ANNOTATION_LENGTH = 500;
 // means "clear".
 export function normalizeAnnotation(value: string): string {
   return value.replace(/\r\n/g, "\n").trim();
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/teams/:teamId/topics/restore-defaults (bulk-restore-default-
+// topics, design.md D15/D19). Bulk restore of every restorable archived
+// default.
+// ---------------------------------------------------------------------------
+
+// Normalized-name rule for the bulk restore duplicate check. A UX and
+// duplicate hint, NOT an identity check: never use it for uniqueness or any
+// access decision. Deliberately `trim().toLowerCase()` with no locale
+// argument and no NFC/NFD normalization (recorded decision).
+export function normalizeTopicNameForMatch(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+export const BULK_RESTORE_SKIP_NAME_ACTIVE = "NAME_ACTIVE";
+
+export interface ArchivedDefaultForPlan {
+  id: string;
+  name: string;
+  displayOrder: number;
+}
+
+export interface DefaultRestorePlan {
+  /** In restore order: the i-th entry receives position base + 1 + i. */
+  restore: Array<{ id: string; name: string }>;
+  /** In restore order. */
+  skipped: Array<{ id: string; name: string; reason: "NAME_ACTIVE" }>;
+}
+
+// planDefaultRestore is the ONLY same-name rule the UI or server may use for
+// bulk restore availability. `defaultTopicsNotActive` (GET /topics/all) and
+// `findDuplicate` (addCustomTopic.ts) MUST NOT be reused for it. Pure and
+// deterministic: sort by prior displayOrder ascending then id ascending,
+// then walk sequentially; each restored name joins the seen set so a later
+// same-named row is skipped.
+export function planDefaultRestore(
+  archivedDefaults: readonly ArchivedDefaultForPlan[],
+  activeNames: readonly string[],
+): DefaultRestorePlan {
+  const sorted = [...archivedDefaults].sort((a, b) => {
+    if (a.displayOrder !== b.displayOrder) return a.displayOrder - b.displayOrder;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  const seen = new Set(activeNames.map(normalizeTopicNameForMatch));
+  const plan: DefaultRestorePlan = { restore: [], skipped: [] };
+  for (const row of sorted) {
+    const key = normalizeTopicNameForMatch(row.name);
+    if (seen.has(key)) {
+      plan.skipped.push({ id: row.id, name: row.name, reason: BULK_RESTORE_SKIP_NAME_ACTIVE });
+    } else {
+      seen.add(key);
+      plan.restore.push({ id: row.id, name: row.name });
+    }
+  }
+  return plan;
+}
+
+// `reason` is open: "NAME_ACTIVE" is the only value today; clients must
+// render an unknown reason generically.
+export type BulkRestoreSkipReason = "NAME_ACTIVE" | (string & {});
+
+export interface RestoreDefaultsResponse {
+  restored: Array<{ topicId: string; name: string; displayOrder: number }>;
+  skipped: Array<{ topicId: string; name: string; reason: BulkRestoreSkipReason }>;
 }

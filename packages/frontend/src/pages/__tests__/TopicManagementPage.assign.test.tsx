@@ -119,7 +119,17 @@ describe("which variant and button are shown", () => {
 
   it("an UNLOCKED zero-topic team shows no Assign button even for an admin; Add and Show archived stay (AC 9)", async () => {
     installFetch({
-      gets: [mockFetchResponse(lockedEmpty({ isCustomizationLocked: false, lockReason: null }))],
+      // A non-default archived topic: nothing is restorable in bulk (#218), so
+      // the pre-#218 empty state applies.
+      gets: [
+        mockFetchResponse(
+          lockedEmpty({
+            isCustomizationLocked: false,
+            lockReason: null,
+            archived: [archivedTopic("arch-1", "Deployment", { isDefault: false })],
+          }),
+        ),
+      ],
     });
     await renderPage();
 
