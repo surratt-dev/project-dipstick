@@ -105,3 +105,9 @@ Checked on the landing day against the working tree (non-test source unless stat
 ## Sign-off log
 
 Not started (tasks section 4 is left to the orchestrator).
+
+## Follow-ups filed (user-approved)
+- Follow-up 1 (#216 S-B/N-A/N-D threat-model items): #318
+- Follow-up 2 (facilitator experience for a zero-topic team): #319
+- Follow-up 3 (audit_log immutability): #320
+- Follow-up 4 (assign-defaults X-Requested-With header, stale "four" comments): #321
