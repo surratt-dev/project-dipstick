@@ -350,6 +350,8 @@ WHERE t.id <> '00000000-0000-0000-0000-000000000001'
 
 Also check for legacy lobby sessions that would pass room open with no snapshot (`/start` has no guard): `SELECT s.id FROM sessions s WHERE s.status = 'lobby' AND NOT EXISTS (SELECT 1 FROM session_topics st WHERE st.session_id = s.id);` should return 0 rows.
 
+**Who may read `audit_log` from the application (#271):** the structural test `packages/backend/src/routes/__tests__/audit-log-reader-structural.test.ts` lists every application query that reads `audit_log` and checks that each one serving a non-admin caller filters `operation` by equality on one non-admin operation; add a reader through its inventory, not around it. Database and log-sink operators are outside its scope.
+
 **Audit lookups** (`audit_log.operation`, with the acting user in `actor_user_id` and the team in `team_id`; retention is the existing `audit_log` policy, there is no table-specific purge):
 
 ```sql

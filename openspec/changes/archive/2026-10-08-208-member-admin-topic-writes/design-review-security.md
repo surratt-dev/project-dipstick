@@ -110,3 +110,7 @@ All of these are already in tasks 3–4. I am listing them so they are not cut d
 | #264 | n/a | Keep open; update its precedent citation. | n/a |
 
 — Tomás Ferreira
+
+---
+
+Note (#271): D-5 partially mitigated by #271: mechanical for the operation-filter shape and for inventorying readers; classification of whom a reader serves, invisible readers (migration views/functions, other packages, indirectly built SQL), scope-value correctness and column exposure remain review/convention. Follow-up: #312.

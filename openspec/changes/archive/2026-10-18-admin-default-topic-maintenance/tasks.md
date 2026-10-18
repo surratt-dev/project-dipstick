@@ -80,8 +80,8 @@ Each operation is written with the scenario tests of the `admin-default-topic-ma
 
 ## 10. Rollout
 
-- [ ] 10.1 **Operational checklist item, not a merge gate** (executive review): before the first production edit, one dry run on a non-production database by Devon with a facilitator (Priya has offered): add, rename, archive, restore, reorder, read the history, edit a value back; create a team after each step and confirm what it receives. Record the outcome in the checklist (recorded, not just a task). Merging does not wait for it; the first production edit does.
-- [ ] 10.2 After the first real edit, check one production audit row and one newly created team against the edit.
+- [x] 10.1 **Operational checklist item, not a merge gate** (executive review): before the first production edit, one dry run on a non-production database by Devon with a facilitator (Priya has offered): add, rename, archive, restore, reorder, read the history, edit a value back; create a team after each step and confirm what it receives. Record the outcome in the checklist (recorded, not just a task). Merging does not wait for it; the first production edit does.
+- [x] 10.2 After the first real edit, check one production audit row and one newly created team against the edit.
 
 ## Implementation notes (engineer pass, Marcus Oyelaran)
 

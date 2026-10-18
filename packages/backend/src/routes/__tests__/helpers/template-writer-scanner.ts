@@ -50,7 +50,7 @@ const DYNAMIC_PATTERNS: RegExp[] = [
   /(?<!\bFOR\s+)\bUPDATE\s*$|\b(?:INSERT\s+INTO|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|MERGE\s+INTO)\s*$/,
 ];
 
-function literalText(node: ts.Node): string | null {
+export function literalText(node: ts.Node): string | null {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
   if (ts.isTemplateExpression(node)) {
     return node.head.text + node.templateSpans.map((s) => "${}" + s.literal.text).join("");
@@ -60,7 +60,7 @@ function literalText(node: ts.Node): string | null {
 
 const ROUTE_VERBS = new Set(["get", "post", "put", "patch", "delete"]);
 
-function functionLabel(node: ts.Node): string | null {
+export function functionLabel(node: ts.Node): string | null {
   if (ts.isFunctionDeclaration(node) && node.name) return node.name.text;
   if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) return node.name.text;
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
@@ -76,7 +76,7 @@ function functionLabel(node: ts.Node): string | null {
   return null;
 }
 
-function enclosingFunction(node: ts.Node): string {
+export function enclosingFunction(node: ts.Node): string {
   for (let cur: ts.Node | undefined = node.parent; cur; cur = cur.parent) {
     const label = functionLabel(cur);
     if (label) return label;
