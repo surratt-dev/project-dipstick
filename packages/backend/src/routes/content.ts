@@ -942,6 +942,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       prompt: string;
       vote_type: string;
       is_default: boolean;
+      display_order: number;
       archived_at: Date;
       archived_by: string | null;
       archived_by_display_name: string | null;
@@ -953,7 +954,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       annotation_updated_by: string | null;
       annotation_updated_by_display_name: string | null;
     }>(
-      `SELECT t.id, t.name, t.prompt, t.vote_type, t.is_default, t.archived_at,
+      `SELECT t.id, t.name, t.prompt, t.vote_type, t.is_default, t.display_order, t.archived_at,
               t.archived_by, archived_by_user.display_name AS archived_by_display_name,
               t.restored_at, t.restored_by, restored_by_user.display_name AS restored_by_display_name,
               t.team_annotation, t.annotation_updated_at, t.annotation_updated_by,
@@ -1048,6 +1049,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
         prompt: row.prompt,
         voteType: row.vote_type as GetAllTopicsResponse["archived"][number]["voteType"],
         isDefault: row.is_default,
+        displayOrder: row.display_order,
         archivedAt: row.archived_at.toISOString(),
         archivedBy:
           row.archived_by && row.archived_by_display_name

@@ -50,8 +50,18 @@ export type {
   AddCustomTopicRequest,
   AddCustomTopicResponse,
   AssignDefaultsResponse,
+  ArchivedDefaultForPlan,
+  DefaultRestorePlan,
+  BulkRestoreSkipReason,
+  RestoreDefaultsResponse,
 } from "./types/topic.js";
-export { MAX_ANNOTATION_LENGTH, normalizeAnnotation } from "./types/topic.js";
+export {
+  MAX_ANNOTATION_LENGTH,
+  normalizeAnnotation,
+  normalizeTopicNameForMatch,
+  planDefaultRestore,
+  BULK_RESTORE_SKIP_NAME_ACTIVE,
+} from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";
 export type {
   VoteDistributionBucket,

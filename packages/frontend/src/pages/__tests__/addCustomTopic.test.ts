@@ -153,6 +153,15 @@ describe("activeEmptyStateVariant (topic-003-admin-authorization design.md D4; #
     expect(activeEmptyStateVariant(locked, archived, flag)).toBe(variant);
   });
 
+  it("#218: an unlocked team with something bulk-restorable is unlocked_restorable; a locked team never is", () => {
+    expect(activeEmptyStateVariant(false, 3, false, true)).toBe("unlocked_restorable");
+    expect(activeEmptyStateVariant(false, 3, true, true)).toBe("unlocked_restorable");
+    expect(activeEmptyStateVariant(true, 3, true, true)).toBe("locked_assign");
+    expect(activeEmptyStateVariant(true, 3, false, true)).toBe("locked");
+    expect(activeEmptyStateVariant(false, 3, false, false)).toBe("unlocked_with_archived");
+    expect(activeEmptyStateVariant(false, 0, false, false)).toBe("unlocked_none_archived");
+  });
+
   it("the flag is optional: the two-argument call is the non-assign variant", () => {
     expect(activeEmptyStateVariant(true, 0)).toBe("locked");
   });

@@ -101,6 +101,7 @@ describe("#184 3.2: the template guard rejects an UPPERCASE spelling of a hex-le
     ["TOPIC-004 archive", "DELETE", `/api/v1/teams/${upper}/topics/${TOPIC}?confirm=true`, undefined],
     ["TOPIC-005 restore", "POST", `/api/v1/teams/${upper}/topics/${TOPIC}/restore`, {}],
     ["TOPIC-006 reorder", "PUT", `/api/v1/teams/${upper}/topics/order`, { orderedTopicIds: [TOPIC] }],
+    ["bulk restore-defaults (#218)", "POST", `/api/v1/teams/${upper}/topics/restore-defaults`, {}],
     ["TOPIC-007 annotation", "PUT", `/api/v1/teams/${upper}/topics/${TOPIC}/annotation`, { annotation: "x" }],
   ] as const;
 

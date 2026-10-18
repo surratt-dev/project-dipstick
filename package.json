@@ -7,7 +7,7 @@
   "scripts": {
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/backend && npm run build --workspace=packages/frontend",
     "dev": "concurrently --names \"backend,frontend\" --prefix-colors \"cyan,magenta\" \"npm run dev --workspace=packages/backend\" \"npm run dev --workspace=packages/frontend\"",
-    "test": "npm run test -w packages/shared && npm run test -w packages/backend && npm run test -w packages/frontend",
+    "test": "npm run build -w packages/shared && npm run test -w packages/shared && npm run test -w packages/backend && npm run test -w packages/frontend",
     "test:coverage": "npm run test:coverage -w packages/shared && npm run test:coverage -w packages/backend && npm run test:coverage -w packages/frontend",
     "lint": "eslint ."
   },

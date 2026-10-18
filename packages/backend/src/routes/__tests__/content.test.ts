@@ -1286,6 +1286,7 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
           prompt: "A prompt",
           vote_type: "finger",
           is_default: false,
+          display_order: 6,
           archived_at: new Date("2026-09-29T12:00:00.000Z"),
           archived_by: "user-42",
           archived_by_display_name: "Priya Nair",
@@ -1300,9 +1301,10 @@ describe("GET /api/v1/teams/:teamId/topics/all (design.md Decision 9)", () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
-      archived: Array<{ topicId: string; archivedAt: string; archivedBy: { userId: string; displayName: string } | null }>;
+      archived: Array<{ topicId: string; archivedAt: string; displayOrder: number; archivedBy: { userId: string; displayName: string } | null }>;
     };
     expect(body.archived).toHaveLength(1);
+    expect(body.archived[0]!.displayOrder).toBe(6); // bulk-restore D19
     expect(body.archived[0]!.archivedAt).toBe("2026-09-29T12:00:00.000Z");
     expect(body.archived[0]!.archivedBy).toEqual({ userId: "user-42", displayName: "Priya Nair" });
   });

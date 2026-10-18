@@ -501,6 +501,65 @@ An Application Administrator follows the same flow with the same validation and 
 
 ---
 
+# Use Case: Restore Default Topics (bulk) — extension of Re-Add a Previously Removed Topic
+
+## Summary
+**Actor:** Facilitator who is not a member of the team, or Application Administrator (same rule as single restore, FR-8.2, #208)
+
+**Trigger:** Before a session, the Facilitator sees that several of the team's default topics were archived and wants them back without restoring each one separately.
+
+**Goal:** As a Facilitator, I want to restore all of the team's archived default topics in one step, so that the team's shared baseline is back quickly and I can then reorder if I want to. (Traceability: GitHub #218; BRD FR-8.6 [HARD], which stays partially met.)
+
+## Preconditions
+- The Facilitator is authenticated and may act on the team (not a member of it, or an administrator).
+- The team has completed at least one session (customization is unlocked).
+- At least one archived default topic exists whose name does not match an active topic.
+
+## Main Flow
+1. The Facilitator opens the topic management screen. A "Restore default topics" control is shown only when something is restorable.
+2. The Facilitator activates it. A confirmation lists the topics that will be added, in the order shown, and states that they go to the end of the list and that custom topics, the current order and annotations are not changed. Any default skipped because a topic with the same name is already in the list is listed as "Not restored".
+3. The Facilitator confirms. One request is sent.
+4. The Application reactivates the original rows (history preserved), appends them after the current last topic in their prior relative order, records who restored them and when, and writes one audit entry.
+5. The Application shows how many topics came back and where they are, and any skipped topics, then refreshes the lists.
+
+## Alternate Flows
+- **Nothing restorable:** The control is not shown. If the server finds nothing to restore (for example another facilitator restored them first), it answers success with "Nothing to restore." and changes nothing.
+- **A name became active after the dialog opened:** The topic is skipped and reported; the result says "Restored A of P topics. The list changed after you opened this dialog."
+- **Facilitator cancels:** No change.
+- **Unsaved edit on the screen:** The control is disabled with "Save or discard your edit first."
+- **Team is locked, role no longer allowed, team not found, rate limit, or system error:** The dialog closes, a message is shown, and nothing is changed.
+- **Restoring only some topics:** Not offered here; restore them one at a time from the archived list.
+
+## Postconditions
+- **Success:** Every restorable archived default is active again at the end of the list, with its history. Sessions whose room is already open are unchanged.
+- **Failure:** No topic changes (one transaction).
+
+## Acceptance Criteria
+- [ ] The control appears only for a caller who can act, on an unlocked team, when at least one archived default would be restored.
+- [ ] One confirmation and one request restore any number of archived defaults.
+- [ ] The confirmation names the topics to be added in restore order, the end-of-list placement, and what is not changed.
+- [ ] An archived default whose name matches an active topic (trim, case-insensitive) is skipped, reported, and left archived.
+- [ ] Restored topics keep their ids and history and are placed after the current last topic in their prior relative order.
+- [ ] The result states the actual number restored and the skipped topics, and reports a difference from the preview.
+- [ ] A team with no active topics and a restorable default is offered "Restore default topics" first and "Assign default topics" (administrators) second.
+- [ ] The restore is recorded once in the audit log without topic names, and per topic in the restored-by and restored-at columns.
+- [ ] Nothing about the restore appears to participants or in any session view, and open sessions are unchanged.
+- [ ] Neither the dialog nor the result mentions reset, canonical wording, trends or lost history.
+
+## FR-8.6 traceability
+| Clause | Before | After |
+|---|---|---|
+| "restorable" for archived default rows | One at a time | In one step |
+| "restorable" for a team with zero active topics | Met by assign-defaults (#200, administrator only) | Unchanged; bulk restore is the preferred first step when restorable archived defaults exist |
+| "visible" for teams whose default rows were edited, deleted, or never existed | Open | Still open |
+| Partial or selective restore | Single restore only | Still single restore |
+| Canonical wording on restore | Not met (the original row returns with team edits) | Still not met; an edited default returns under its edited name and the copy does not promise otherwise |
+
+## Notes
+- Customs first, defaults last: restored defaults are appended, so a tailored team's baseline ends up at the bottom. Reset-to-canonical-order is a separate, later issue.
+
+---
+
 # Use Case: View Active Topic Configuration
 
 ## Summary

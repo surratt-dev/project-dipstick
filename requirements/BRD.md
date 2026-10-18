@@ -337,6 +337,7 @@ Trend outlier detection (flagging the team's aggregate score against a rolling h
 **FR-8.5** [PREF] The application should warn and require explicit confirmation before allowing removal of a topic that has open action items associated with it.
 
 **FR-8.6** [HARD] The canonical default topic set must remain visible and restorable for any team at any time, regardless of how much the team has customized their topic list.
+> *Traceability note (#218, no change to requirement text):* FR-8.6 stays **partially met**. Archived default rows are now restorable in one step ("Restore default topics"); a team with zero active topics is still covered by assign-defaults (#200); visibility for teams whose default rows were edited, deleted or never existed is still open; selective restore remains single restore; canonical wording on restore is still not met (the original row returns with team edits). See use case 08, "Restore Default Topics (bulk)".
 
 **FR-8.7** [HARD] After a team's first session, the Facilitator shall be able to set, edit, or clear a team-specific definition for each active topic. Application Administrators shall not edit team definitions.
 

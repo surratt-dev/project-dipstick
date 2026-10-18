@@ -44,6 +44,7 @@ const GATED: ReadonlyArray<[string, string]> = [
   ["DELETE", `${BASE}/:topicId`],
   ["POST", `${BASE}/:topicId/restore`],
   ["PUT", `${BASE}/order`],
+  ["POST", `${BASE}/restore-defaults`],
 ];
 
 describe("the customization lock has exactly one carve-out (#200 D9)", () => {
@@ -57,6 +58,7 @@ describe("the customization lock has exactly one carve-out (#200 D9)", () => {
         `POST ${BASE}/assign-defaults`,
         `DELETE ${BASE}/:topicId`,
         `POST ${BASE}/:topicId/restore`,
+        `POST ${BASE}/restore-defaults`,
         `PUT ${BASE}/order`,
         `PUT ${BASE}/:topicId/annotation`,
       ].sort(),

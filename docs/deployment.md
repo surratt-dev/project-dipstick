@@ -336,6 +336,8 @@ Note that `actor_roles` reflects `users.roles` at request time; a user who has n
 
 *(`zero-topic-team-recovery`, #200.)* A team with no ACTIVE topic cannot open a room: room open answers `409 NO_ACTIVE_TOPICS`, and while the team is locked (no completed session) nobody can add or restore a topic either. New teams cannot end up this way (team creation rolls back on an empty template), so this is legacy data or a data fault, and the expected count is 0.
 
+**Preferred first step when restorable archived defaults exist (#218):** "Restore default topics" on the team's Topic Management screen (`POST /api/v1/teams/:teamId/topics/restore-defaults`; a facilitator who is not a member of the team, or an administrator). It reactivates the original archived default rows with their history. Use assign-defaults below when nothing is restorable.
+
 **Recovery is in-app, by an application administrator**, on the team's Topic Management screen ("Assign default topics"; endpoint `POST /api/v1/teams/:teamId/topics/assign-defaults`). It copies the template's current active topics onto the team and changes nothing else. It is not a hand-run database fix; the manual path below is a last resort.
 
 **Find zero-topic teams** (run it read-only; a result other than 0 rows needs a product owner decision about a one-off repair):
@@ -353,12 +355,13 @@ Also check for legacy lobby sessions that would pass room open with no snapshot 
 ```sql
 SELECT "timestamp", operation, actor_user_id, actor_global_role, team_id, metadata
 FROM audit_log
-WHERE operation IN ('topic.defaults_assigned', 'topic.defaults_assign_denied', 'topic.defaults_assign_failed')
+WHERE operation IN ('topic.defaults_assigned', 'topic.defaults_assign_denied', 'topic.defaults_assign_failed', 'topic.defaults_restored', 'topic.restored')
 ORDER BY "timestamp" DESC LIMIT 50;
 ```
 
 - `topic.defaults_assigned`: a successful recovery; `metadata = { topic_count, correlation_id }`. Durable, written in the same transaction as the topics.
 - `topic.defaults_assign_denied`: a non-admin was refused (`403 NOT_AN_ADMIN`); `team_id` is whatever the caller supplied (it may name no team). Fail-open, and bounded to **10 rows per actor per minute**: beyond that the caller still gets the 403 but no row is written and a log-only `topic.denial_audit_suppressed` event is emitted (once per window).
+- `topic.defaults_restored` (#218): a bulk restore of archived defaults; one row per non-empty request, written in the same transaction as the status change; `metadata = { restored: [{topic_id, display_order}], skipped: [{topic_id, reason}] (capped at 100), restored_count, skipped_count }`, ids and positions only, never topic names. **Provenance queries must union `topic.restored` (single restore, one row per topic) and `topic.defaults_restored` (bulk, one row per request)**; `topics.restored_by` and `restored_at` are authoritative per topic in both paths but are overwritten by each later restore, so the audit log is the only history of earlier restores. Retention is the existing `audit_log` policy.
 - `topic.defaults_assign_failed`: the template was empty (below). Join to the error log line by `metadata.correlation_id` = the log entry's `correlationId`.
 
 **When the template is empty.** The administrator sees "The default topic template is empty or unavailable, so nothing was assigned..." (`500 DEFAULT_TOPICS_UNAVAILABLE`), nothing is written, and an error-level log line names the template team id and the correlation id (search the logs for `assign-defaults: the default topic template has no active topics`). The in-app button cannot help: restore the template's active default topics (the `__default_topics__` team's rows with `is_default = true`, `status = 'active'`) in the database, then have the administrator try again.

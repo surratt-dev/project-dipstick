@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import type { ActiveEmptyStateVariant } from "../pages/addCustomTopic.js";
+import { BULK_RESTORE_ASSIGN_COPY, BULK_RESTORE_TITLE } from "../pages/bulkRestoreCopy.js";
+import { BULK_RESTORE_TRIGGER_ID } from "./RestoreDefaultsDialog.js";
 
 // ---------------------------------------------------------------------------
 // ActiveTopicsEmptyState — topic-add-form-and-empty-state, design.md
@@ -12,6 +14,10 @@ import type { ActiveEmptyStateVariant } from "../pages/addCustomTopic.js";
 //   locked_assign           -> "Assign default topics" (the admin variant),
 //                              no sentence telling the viewer to ask an admin
 //   unlocked_with_archived  -> Show archived topics (n)
+//   unlocked_restorable     -> "Restore default topics" is primary (first in
+//                              DOM, listed first), "Assign default topics"
+//                              secondary for an admin, with copy about fresh
+//                              copies (bulk-restore-default-topics #218)
 //   unlocked_none_archived  -> no archived action
 //
 // The add action is gated by the required `addAllowed` prop, not by the
@@ -60,6 +66,10 @@ interface ActiveTopicsEmptyStateProps {
   // The open add form, which takes the place of the actions below the
   // message (spec: the message stays shown above it).
   form?: ReactNode;
+  // #218: the bulk "Restore default topics" action (unlocked_restorable only).
+  onBulkRestore?: () => void;
+  // Why bulk restore is disabled right now, or null when it is enabled.
+  bulkRestoreDisabledReason?: string | null;
 }
 
 export function ActiveTopicsEmptyState({
@@ -73,6 +83,8 @@ export function ActiveTopicsEmptyState({
   assignBlockedReason,
   onAssign,
   form,
+  onBulkRestore,
+  bulkRestoreDisabledReason = null,
 }: ActiveTopicsEmptyStateProps) {
   const message =
     variant === "locked"
@@ -81,17 +93,39 @@ export function ActiveTopicsEmptyState({
         ? LOCKED_ASSIGN_COPY
         : "This team has no active topics.";
   const lockedVariant = variant === "locked" || variant === "locked_assign";
-  const assignAction = canAssign && variant === "locked_assign";
+  const bulkRestoreAction = variant === "unlocked_restorable" && onBulkRestore !== undefined;
+  const assignAction = canAssign && (variant === "locked_assign" || variant === "unlocked_restorable");
   const assignDisabled = assigning || assignBlockedReason !== null;
-  const showArchivedAction = variant === "unlocked_with_archived";
+  const showArchivedAction = variant === "unlocked_with_archived" || variant === "unlocked_restorable";
   const addAction = addAllowed && !lockedVariant;
 
   return (
     <div data-testid="active-topics-empty">
       <p data-testid="active-topics-empty-message">{message}</p>
       {form ??
-        ((showArchivedAction || addAction || assignAction) && (
+        ((showArchivedAction || addAction || assignAction || bulkRestoreAction) && (
           <div data-testid="active-topics-empty-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+            {bulkRestoreAction && (
+              <>
+                <button
+                  type="button"
+                  id={BULK_RESTORE_TRIGGER_ID}
+                  className="primary"
+                  onClick={onBulkRestore}
+                  disabled={bulkRestoreDisabledReason !== null}
+                  aria-describedby={bulkRestoreDisabledReason !== null ? "empty-state-bulk-restore-reason" : undefined}
+                  data-testid="empty-state-bulk-restore"
+                  style={{ fontWeight: 600 }}
+                >
+                  {BULK_RESTORE_TITLE}
+                </button>
+                {bulkRestoreDisabledReason !== null && (
+                  <span id="empty-state-bulk-restore-reason" data-testid="empty-state-bulk-restore-reason" style={{ color: "#616161" }}>
+                    {bulkRestoreDisabledReason}
+                  </span>
+                )}
+              </>
+            )}
             {showArchivedAction && (
               <button type="button" onClick={onShowArchived} data-testid="empty-state-show-archived">
                 Show archived topics ({archivedCount})
@@ -110,6 +144,11 @@ export function ActiveTopicsEmptyState({
                 >
                   {assigning ? "Assigning default topics…" : "Assign default topics"}
                 </button>
+                {variant === "unlocked_restorable" && (
+                  <span data-testid="empty-state-assign-copy" style={{ color: "#616161" }}>
+                    {BULK_RESTORE_ASSIGN_COPY}
+                  </span>
+                )}
                 {assignBlockedReason !== null && !assigning && (
                   <span id="empty-state-assign-reason" data-testid="empty-state-assign-reason" style={{ color: "#616161" }}>
                     {assignBlockedReason}
