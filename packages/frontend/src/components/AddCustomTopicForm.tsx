@@ -1,6 +1,7 @@
 import type { VoteType } from "@dipstick/shared";
 import {
   DESCRIPTION_MAX_LENGTH,
+  addNameBlockedMessage,
   NAME_MAX_LENGTH,
   PROMPT_MAX_LENGTH,
   VOTE_TYPE_LABELS,
@@ -48,6 +49,9 @@ export interface AddCustomTopicFormProps {
   fieldErrors: AddFieldErrors;
   formError: string | null;
   duplicate: DuplicateMatch | null;
+  // #299: the stored name of the ACTIVE topic that blocks this name, or null.
+  // Blocking: Submit is disabled and no control can send the request.
+  nameBlock: string | null;
   // Why Submit (and "Add anyway") is unavailable, or null. Never set while
   // submitting: the page shows its own in-flight reason then.
   submitDisabledReason: string | null;
@@ -92,6 +96,7 @@ export function AddCustomTopicForm({
   fieldErrors,
   formError,
   duplicate,
+  nameBlock,
   submitDisabledReason,
   onChange,
   onSubmit,
@@ -138,11 +143,12 @@ export function AddCustomTopicForm({
         data-testid={ADD_FORM_IDS.name}
         type="text"
         aria-required="true"
-        aria-invalid={fieldErrors.name ? "true" : undefined}
+        aria-invalid={fieldErrors.name || nameBlock !== null ? "true" : undefined}
         aria-describedby={describedBy(
           "add-topic-name-help",
           nameCounter && "add-topic-name-counter",
           fieldErrors.name && "add-topic-name-error",
+          nameBlock !== null && "add-topic-name-block",
         )}
         maxLength={NAME_MAX_LENGTH}
         value={values.name}
@@ -157,6 +163,12 @@ export function AddCustomTopicForm({
       {fieldErrors.name && (
         <div id="add-topic-name-error" data-testid="add-topic-name-error" style={ERROR_STYLE}>
           {fieldErrors.name}
+        </div>
+      )}
+
+      {nameBlock !== null && (
+        <div id="add-topic-name-block" role="alert" data-testid="add-topic-name-block" style={ERROR_STYLE}>
+          {addNameBlockedMessage(nameBlock)}
         </div>
       )}
 
@@ -305,9 +317,9 @@ export function AddCustomTopicForm({
             </>
           ) : (
             <>
-              <p style={{ marginTop: 0 }}>
-                This team already has an active topic called &apos;{duplicate.name}&apos;. Two topics with the same
-                name or question can confuse people during the vote.
+              <p style={{ marginTop: 0 }} data-testid="add-duplicate-prompt-only">
+                Another active topic, &apos;{duplicate.name}&apos;, asks the same question. You can still add this
+                one, but two topics with the same question can confuse people during the vote.
               </p>
               <button
                 type="button"
@@ -316,7 +328,7 @@ export function AddCustomTopicForm({
                 title={submitDisabledReason ?? undefined}
                 data-testid="add-duplicate-add-anyway"
               >
-                Add anyway
+                Add it anyway
               </button>
             </>
           )}

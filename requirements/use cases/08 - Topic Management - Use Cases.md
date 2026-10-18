@@ -272,15 +272,17 @@ An Application Administrator follows the same flow with the same validation and 
 - **Facilitator submits without a prompt:** The Application displays a validation error and does not save. The form remains open with the entered values preserved.
 - **Facilitator submits without selecting a vote type:** The Application displays a validation error and does not save.
 - **The Facilitator adds a topic with a prompt identical to an existing topic:** The Application does not enforce uniqueness of prompts. The duplicate is saved as a distinct topic. (A warning may be appropriate — see Notes.)
+- **Duplicate name (#299):** The submitted name, after trimming and lowercasing, equals the name of an ACTIVE topic of the team. The Application does not save, shows "An active topic with this name already exists" naming that topic at the Name field, and keeps the entered values; Submit stays unavailable until Name is edited. There is no override, for a Facilitator or an Application Administrator. A name matching only an archived topic is not blocked (the screen offers to show the archived topic or add anyway); a matching prompt alone is not blocked. If the screen's list was stale, the server rejects with the same message and the list is refreshed.
 - **Save fails due to a system error:** The Application displays an error. No topic is created. The Facilitator can retry.
 
 ## Postconditions
 - **Success:** A new custom topic exists in the team's topic configuration, appended at the end of the current order, with the specified name, prompt, vote type, and description. It will appear in the next session run for this team, that is, in the next session whose room is opened after it was added. (Delivered by #175, which snapshots the active topics at room open. Note per `topic-add-form-and-empty-state`: the Topic Management screen does not promise in-session display.)
-- **Failure:** No topic is created. The team's topic configuration is unchanged.
+- **Failure:** No topic is created. The team's topic configuration is unchanged. This includes the duplicate-name rejection above.
 
 ---
 
 ## Acceptance Criteria
+- [ ] A name equal (trimmed, case-insensitive) to an active topic's name is rejected on the screen and by the server, with no override (#299).
 - [ ] The add topic form requires a non-empty name, a non-empty prompt, and a vote type selection before allowing submission.
 - [ ] All three vote types (Finger, Roman, Modified Roman) are available for selection.
 - [ ] A successfully added topic appears in the team's topic list immediately after saving.
@@ -299,7 +301,8 @@ An Application Administrator follows the same flow with the same validation and 
 - Vote type definitions must be available in the application.
 
 ## Notes
-- Whether the application should warn when a prompt closely resembles an existing topic is an open question. A simple duplicate-prompt warning could prevent accidental near-duplicates. (Resolved for the Topic Management screen by `topic-add-form-and-empty-state`: an exact match — trimmed, case-insensitive — of the name or prompt against the team's active and archived topics shows a non-blocking warning before the request; no fuzzy matching. The server still does not enforce uniqueness.)
+- Whether the application should warn when a prompt closely resembles an existing topic is an open question. A simple duplicate-prompt warning could prevent accidental near-duplicates. (Resolved for the Topic Management screen by `topic-add-form-and-empty-state`: an exact match — trimmed, case-insensitive — of the name or prompt against the team's active and archived topics shows a non-blocking warning before the request; no fuzzy matching. The server does not enforce prompt uniqueness. Since #299 the server and the screen block a name that duplicates an ACTIVE topic; archived-name and prompt matches stay non-blocking.)
+- **Known limitations (#299, PROPOSED, pending Product Owner confirmation):** look-alike names are not caught: names differing only in internal whitespace, Unicode normalization form (NFC vs NFD) or accents ("Equipe" vs "Équipe") are treated as different. Existing duplicate active names are not modified or rejected; archiving one is still allowed, and restoring it later is blocked while the other is active.
 - The description field is distinct from the team annotation (see Use Case: Annotate Topic with Shared Team Definition). The description is set at creation; the annotation is a living team-owned definition that can be updated over time.
 - Engineering Managers are excluded from topic writes; FR-8.2 names only the facilitator and the Application Administrator.
 
@@ -534,10 +537,11 @@ An Application Administrator follows the same flow with the same validation and 
 - **No removed topics exist:** The removed topics list is empty. The option to re-add is not shown, or the empty state is communicated clearly.
 - **Facilitator cancels the confirmation:** No change is made. The topic remains removed.
 - **Re-add fails due to a system error:** The Application displays an error. The topic remains removed. The Facilitator can retry.
+- **Duplicate name (#299):** An active topic of the team already has the same name (trimmed, case-insensitive). The Application does not reinstate the topic, shows at the row "Not restored. An active topic with this name already exists: ... Nothing was changed. Archive the active topic first if you want to restore this one.", and the topic stays archived. There is no override, for a Facilitator or an Application Administrator. **Swap path:** the Facilitator archives the active topic, then reinstates the archived one. Bulk "Restore default topics" keeps skip-and-report for the same collision. This reverses the earlier behaviour (#218) in which single restore ignored the duplicate rule.
 
 ## Postconditions
 - **Success:** The topic is active again in the team's configuration. It will appear in the next session. Its historical vote data (from before it was removed) is accessible in trend views. (A marker for the gap in sessions where it was absent is scoped to a separate follow-up change — see Notes; it is not part of this use case's shipped behavior.)
-- **Failure:** The topic remains removed. No configuration change is made.
+- **Failure:** The topic remains removed. No configuration change is made. This includes the duplicate-name rejection above.
 
 ---
 
@@ -549,6 +553,7 @@ An Application Administrator follows the same flow with the same validation and 
 - [ ] Historical vote data for the topic from before its removal is preserved and accessible in trend views.
 - [ ] The archived-topics view shows who restored a topic and when, mirroring the existing archive-provenance display (`re-add-removed-topic` design.md Decision 4).
 - [ ] The re-added topic can be reordered within the active list after reinstatement.
+- [ ] Reinstating a topic whose name equals an active topic's name is rejected with the row message and no change, until the active topic is archived (#299).
 
 ## Out of Scope
 - Retroactively adding the topic to sessions that occurred while it was removed.

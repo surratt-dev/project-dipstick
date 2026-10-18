@@ -304,6 +304,83 @@ export function normalizeTopicNameForMatch(name: string): string {
   return name.trim().toLowerCase();
 }
 
+// ---------------------------------------------------------------------------
+// enforce-active-name-duplicate-rule (#299) D1/D4. One finder shared by the
+// Add and single-restore handlers and the Add form's client hint. Bulk
+// restore deliberately does NOT call it (planDefaultRestore keeps its own
+// seen-set); the parity pairs below guard the two against drifting.
+// ---------------------------------------------------------------------------
+export interface ActiveTopicForNameCheck {
+  id: string;
+  name: string;
+  displayOrder: number;
+}
+
+/**
+ * First ACTIVE topic whose normalized name equals the candidate's, ordered by
+ * displayOrder ascending then id ascending; null when none. The caller
+ * passes active topics only. A duplicate-prevention rule, not a uniqueness
+ * guarantee: existing duplicates are not affected.
+ */
+export function findActiveNameConflict(
+  activeTopics: readonly ActiveTopicForNameCheck[],
+  candidateName: string,
+): { id: string; name: string } | null {
+  const key = normalizeTopicNameForMatch(candidateName);
+  let best: ActiveTopicForNameCheck | null = null;
+  for (const t of activeTopics) {
+    if (normalizeTopicNameForMatch(t.name) !== key) continue;
+    if (
+      best === null ||
+      t.displayOrder < best.displayOrder ||
+      (t.displayOrder === best.displayOrder && t.id < best.id)
+    ) {
+      best = t;
+    }
+  }
+  return best === null ? null : { id: best.id, name: best.name };
+}
+
+export const TOPIC_NAME_ACTIVE_CODE = "TOPIC_NAME_ACTIVE";
+export const TOPIC_CUSTOMIZATION_LOCKED_CODE = "TOPIC_CUSTOMIZATION_LOCKED";
+
+/**
+ * 409 error bodies of Add (TOPIC-003) and single restore (TOPIC-005),
+ * discriminated on `code`. Callers branch on `code`, never on a bare 409.
+ * `conflictingName` is the stored name: a string, possibly empty, never null.
+ */
+export type TopicNameActiveError = {
+  category: "precondition_failed";
+  code: typeof TOPIC_NAME_ACTIVE_CODE;
+  message: string;
+  correlationId: string;
+  conflictingTopicId: string;
+  conflictingName: string;
+};
+export type TopicCustomizationLockedError = {
+  category: "precondition_failed";
+  code: typeof TOPIC_CUSTOMIZATION_LOCKED_CODE;
+  message: string;
+  correlationId: string;
+};
+export type TopicConflictError = TopicNameActiveError | TopicCustomizationLockedError;
+
+/**
+ * Parity name pairs [existing, candidate, isDuplicate]. ONE fixture consumed
+ * by the pure-function, route-level and client legs. "Add" for an empty
+ * candidate is 422 before the rule runs; the route leg handles that.
+ */
+export const TOPIC_NAME_PARITY_PAIRS: ReadonlyArray<{ existing: string; candidate: string; duplicate: boolean }> = [
+  { existing: "Safety", candidate: "safety", duplicate: true },
+  { existing: "Safety", candidate: " Safety ", duplicate: true },
+  { existing: "Safety", candidate: "Safety ", duplicate: true },
+  { existing: " Safety ", candidate: "Safety", duplicate: true },
+  { existing: "Équipe", candidate: "Equipe", duplicate: false },
+  { existing: "\u00e9quipe", candidate: "e\u0301quipe", duplicate: false },
+  { existing: "A B", candidate: "A  B", duplicate: false },
+  { existing: "", candidate: "", duplicate: true },
+];
+
 export const BULK_RESTORE_SKIP_NAME_ACTIVE = "NAME_ACTIVE";
 
 export interface ArchivedDefaultForPlan {

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { planDefaultRestore, normalizeTopicNameForMatch } from "../index.js";
+import {
+  planDefaultRestore,
+  normalizeTopicNameForMatch,
+  findActiveNameConflict,
+  TOPIC_NAME_PARITY_PAIRS,
+} from "../index.js";
 
 const row = (id: string, name: string, displayOrder: number) => ({ id, name, displayOrder });
 
@@ -63,4 +68,15 @@ describe("planDefaultRestore", () => {
     const positions = plan.restore.map((r, i) => [r.id, base + 1 + i]);
     expect(positions).toEqual([["a", 11], ["b", 12]]);
   });
+});
+
+describe("name parity: findActiveNameConflict and planDefaultRestore agree on TOPIC_NAME_PARITY_PAIRS", () => {
+  for (const { existing, candidate, duplicate } of TOPIC_NAME_PARITY_PAIRS) {
+    it(`${JSON.stringify(existing)} vs ${JSON.stringify(candidate)} -> ${duplicate ? "duplicate" : "distinct"}`, () => {
+      const finder = findActiveNameConflict([{ id: "x", name: existing, displayOrder: 1 }], candidate);
+      expect(finder !== null).toBe(duplicate);
+      const plan = planDefaultRestore([row("d", candidate, 9)], [existing]);
+      expect(plan.skipped.length === 1).toBe(duplicate);
+    });
+  }
 });

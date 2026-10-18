@@ -65,7 +65,7 @@ Archived `display_order` values are not maintained after archive and may be stal
 
 ### Requirement: An archived default whose name matches an active topic is skipped and reported, never duplicated
 
-An archived default SHALL be skipped, and reported in `skipped` with reason `NAME_ACTIVE`, when its name matches, after `trim()` then `toLowerCase()` (no locale argument), the name of an active topic of the team or of an archived default restored earlier in the same batch. Names are compared by their current value (a renamed default is compared by its current name); `is_default` remains the only marker of a default. Prompts are not compared. Skipped topics SHALL remain archived and unchanged. This `trim().toLowerCase()` comparison implemented by `planDefaultRestore` is the only same-name rule for bulk restore; it is a UX and duplicate rule, not an identity check, and the template-based `defaultTopicsNotActive` and the client-side `findDuplicate` hint SHALL NOT be used to decide bulk availability. Evaluation SHALL be sequential in restore order, so of two archived defaults sharing one name at most one, the first in restore order, is restored.
+An archived default SHALL be skipped, and reported in `skipped` with reason `NAME_ACTIVE`, when its name matches, after `trim()` then `toLowerCase()` (no locale argument), the name of an active topic of the team or of an archived default restored earlier in the same batch. Names are compared by their current value (a renamed default is compared by its current name); `is_default` remains the only marker of a default. Prompts are not compared. Skipped topics SHALL remain archived and unchanged. This `trim().toLowerCase()` comparison uses the same shared normalizer (`normalizeTopicNameForMatch`) that Add and single restore use, through the shared finder, to reject with `409 TOPIC_NAME_ACTIVE` (see `add-custom-topic`, `restore-topic`). Bulk does not call that finder: it keeps its own sequential seen-set, and the parity scenario below guards against the two drifting. Bulk differs from the other doors in its outcome, which stays skip-and-report with reason `NAME_ACTIVE` (never an error response, no override for any role). The bulk response contract is byte-for-byte unchanged by this change: the skip reason stays `NAME_ACTIVE` and is never unified with the `TOPIC_NAME_ACTIVE` error code of the other two doors. It is a duplicate-prevention rule, not an identity check or a uniqueness guarantee, and the template-based `defaultTopicsNotActive` and the client-side `findDuplicate` hint SHALL NOT be used to decide bulk availability. Evaluation SHALL be sequential in restore order, so of two archived defaults sharing one name at most one, the first in restore order, is restored.
 
 #### Scenario: A name already active is skipped
 - **WHEN** the archived default "Code Quality" exists and an active topic named "code quality " (trailing space, different case) exists
@@ -90,6 +90,14 @@ An archived default SHALL be skipped, and reported in `skipped` with reason `NAM
 #### Scenario: Skipping is an outcome, not a failure
 - **WHEN** some archived defaults are skipped and others restored
 - **THEN** the response is `200 OK` with both arrays populated and the transaction commits
+
+#### Scenario: Bulk and Add or single restore agree on the same name pairs
+- **WHEN** the same name pairs ("Safety"/"safety", " Safety "/"Safety", "Safety"/"Safety " , "Équipe"/"Equipe", NFC/NFD, empty/empty) are run through bulk restore, Add and single restore
+- **THEN** each pair is a duplicate in all three or in none (bulk reports `NAME_ACTIVE`, the others `TOPIC_NAME_ACTIVE`)
+
+#### Scenario: Bulk concurrent with Add of a same-named topic
+- **WHEN** a bulk restore and an Add of a name matching an archived default are submitted concurrently
+- **THEN** the team ends with one active topic of that name: either the default is restored and the Add is rejected `TOPIC_NAME_ACTIVE`, or the Add succeeds and the default is skipped with `NAME_ACTIVE`
 
 ### Requirement: Only a standing facilitator or an administrator may bulk restore
 

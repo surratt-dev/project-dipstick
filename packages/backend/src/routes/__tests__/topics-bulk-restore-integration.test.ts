@@ -128,7 +128,7 @@ describe.skipIf(!infraUp)("POST .../topics/restore-defaults (real Postgres)", ()
     ]);
   });
 
-  it("skips a name-matched default and leaves it archived; single restore still restores it", async () => {
+  it("skips a name-matched default and leaves it archived; single restore now rejects it too (#299)", async () => {
     const { db, actor, team } = await setup();
     await fx.topic(team, { name: "code quality ", displayOrder: 1 });
     const dup = await archivedDefault(team, "Code Quality", 1);
@@ -141,7 +141,10 @@ describe.skipIf(!infraUp)("POST .../topics/restore-defaults (real Postgres)", ()
     expect((await db.query(`SELECT 1 FROM audit_log WHERE team_id = $1 AND operation = 'topic.defaults_restored'`, [team])).rows).toHaveLength(0);
 
     const single = await (await appFor(actor)).inject({ method: "POST", url: `/api/v1/teams/${team}/topics/${dup}/restore` });
-    expect(single.statusCode).toBe(200);
+    // #299: single restore enforces the same active-name rule as bulk.
+    expect(single.statusCode).toBe(409);
+    expect(single.json().error.code).toBe("TOPIC_NAME_ACTIVE");
+    expect((await db.query(`SELECT status FROM topics WHERE id = $1`, [dup])).rows[0]).toEqual({ status: "archived" });
   });
 
   it("two concurrent bulk requests partition the set and write one audit row", async () => {

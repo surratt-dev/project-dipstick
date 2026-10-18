@@ -7,6 +7,7 @@ import {
   deferred,
   dispatchBeforeUnload,
   envelope,
+  nameActiveConflict,
   installFetch,
   makeTopics,
   mockFetchResponse,
@@ -450,37 +451,94 @@ describe("the duplicate check", () => {
     await waitFor(() => expect(addPosts(fetchMock())).toHaveLength(1));
   });
 
-  it("an active name match warns, and 'Add anyway' sends the entered values", async () => {
-    installFetch({ adds: [created()], gets: [mockFetchResponse(makeTopics()), mockFetchResponse(withNewTopic())] });
+  // ---- #299: an active name match blocks; there is no override ------------
+  const BLOCK = (name: string) =>
+    `An active topic with this name already exists: "${name}". Choose a different name, or use the existing topic.`;
+  const noAddAnywayControl = () => {
+    expect(screen.queryByRole("button", { name: /add (it )?anyway/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("add-duplicate-add-anyway")).not.toBeInTheDocument();
+  };
+
+  it("an active name match blocks: no request, inline alert at Name, Submit disabled with a reason, no Add anyway", async () => {
+    installFetch();
     await renderPage();
     openForm();
     fill({ name: "pipeline", prompt: "Brand new question", vote: "roman" });
     fireEvent.click(submitButton());
 
     expect(addPosts(fetchMock())).toHaveLength(0);
-    expect(screen.getByTestId("add-duplicate-warning")).toHaveTextContent(
-      "This team already has an active topic called 'Pipeline'. Two topics with the same name or question can confuse people during the vote.",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Add anyway" }));
-
-    await waitFor(() => expect(addPosts(fetchMock())).toHaveLength(1));
-    expect(postedBody(fetchMock())).toMatchObject({ name: "pipeline", prompt: "Brand new question", voteType: "roman" });
+    const block = screen.getByTestId("add-topic-name-block");
+    expect(block).toHaveTextContent(BLOCK("Pipeline"));
+    expect(block).toHaveAttribute("role", "alert");
+    expect(field.name()).toHaveAttribute("aria-describedby", expect.stringContaining("add-topic-name-block"));
+    expect(submitButton()).toBeDisabled();
+    expect(screen.getByTestId("add-topic-submit-reason")).toHaveTextContent(/change the name/i);
+    expect(screen.queryByTestId("add-duplicate-warning")).not.toBeInTheDocument();
+    noAddAnywayControl();
   });
 
-  it("the archived message wins when both an active and an archived topic match", async () => {
+  it("editing Name dismisses the block and re-enables Submit; editing only Prompt does not", async () => {
+    installFetch({ adds: [created()], gets: [mockFetchResponse(makeTopics()), mockFetchResponse(withNewTopic())] });
+    await renderPage();
+    openForm();
+    fill({ name: "Pipeline", prompt: "Something", vote: "finger" });
+    fireEvent.click(submitButton());
+    expect(screen.getByTestId("add-topic-name-block")).toBeInTheDocument();
+
+    fill({ prompt: "Something else" });
+    expect(screen.getByTestId("add-topic-name-block")).toBeInTheDocument();
+    expect(submitButton()).toBeDisabled();
+
+    fill({ name: "Partner Integration" });
+    expect(screen.queryByTestId("add-topic-name-block")).not.toBeInTheDocument();
+    expect(submitButton()).toBeEnabled();
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(addPosts(fetchMock())).toHaveLength(1));
+  });
+
+  it("an active name match governs even when the prompt matches an archived topic", async () => {
     installFetch();
     await renderPage();
     openForm();
     fill({ name: "Pipeline", prompt: "Is the codebase easy to work with?", vote: "finger" });
     fireEvent.click(submitButton());
-    expect(screen.getByTestId("add-duplicate-warning")).toHaveTextContent(ARCHIVED_WARNING);
+    expect(screen.getByTestId("add-topic-name-block")).toHaveTextContent(BLOCK("Pipeline"));
+    expect(screen.queryByTestId("add-duplicate-warning")).not.toBeInTheDocument();
+    expect(addPosts(fetchMock())).toHaveLength(0);
   });
 
-  it("editing Prompt dismisses a name-match warning", async () => {
+  it("when an archived match and an active prompt-only match both exist, the archived message is shown", async () => {
     installFetch();
     await renderPage();
     openForm();
-    fill({ name: "Pipeline", prompt: "Something", vote: "finger" });
+    // Name matches the archived topic; prompt matches an ACTIVE topic's prompt.
+    fill({ name: "Codebase Health", prompt: "Confidence in the pipeline", vote: "finger" });
+    fireEvent.click(submitButton());
+    expect(screen.getByTestId("add-duplicate-warning")).toHaveTextContent(ARCHIVED_WARNING);
+  });
+
+  it("an active prompt-only match warns in different words and can still be added", async () => {
+    installFetch({ adds: [created()], gets: [mockFetchResponse(makeTopics()), mockFetchResponse(withNewTopic())] });
+    await renderPage();
+    openForm();
+    fill({ name: "Partner Integration", prompt: "  confidence in the PIPELINE ", vote: "roman" });
+    fireEvent.click(submitButton());
+
+    expect(addPosts(fetchMock())).toHaveLength(0);
+    const warning = screen.getByTestId("add-duplicate-warning");
+    expect(warning).toHaveTextContent("asks the same question");
+    expect(warning.textContent?.toLowerCase()).not.toContain("an active topic with this name already exists");
+    expect(screen.queryByTestId("add-topic-name-block")).not.toBeInTheDocument();
+    fireEvent.click(within(warning).getByRole("button", { name: "Add it anyway" }));
+    await waitFor(() => expect(addPosts(fetchMock())).toHaveLength(1));
+    expect(postedBody(fetchMock())).toMatchObject({ name: "Partner Integration" });
+  });
+
+  it("editing Prompt dismisses a non-blocking warning", async () => {
+    installFetch();
+    await renderPage();
+    openForm();
+    fill({ name: "Partner Integration", prompt: "Confidence in the pipeline", vote: "finger" });
     fireEvent.click(submitButton());
     expect(screen.getByTestId("add-duplicate-warning")).toBeInTheDocument();
 
@@ -488,13 +546,13 @@ describe("the duplicate check", () => {
     expect(screen.queryByTestId("add-duplicate-warning")).not.toBeInTheDocument();
   });
 
-  it("an override is not asked again on retry, until Name or Prompt is edited", async () => {
+  it("an archived-match override is not asked again on retry, until Name or Prompt is edited", async () => {
     installFetch({ adds: [new Error("offline"), envelope(500, "INTERNAL", "boom")] });
     await renderPage();
     openForm();
-    fill({ name: "Pipeline", prompt: "Something", vote: "finger" });
+    fill({ name: "Codebase Health", prompt: "Something", vote: "finger" });
     fireEvent.click(submitButton());
-    fireEvent.click(screen.getByRole("button", { name: "Add anyway" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add as a new topic anyway" }));
     await waitFor(() => expect(screen.getByTestId("add-form-error")).toHaveTextContent(RETRY));
 
     fireEvent.click(submitButton());
@@ -502,10 +560,125 @@ describe("the duplicate check", () => {
     await waitFor(() => expect(addPosts(fetchMock())).toHaveLength(2));
     await waitFor(() => expect(submitButton()).toHaveTextContent("Submit"));
 
-    fill({ name: "PIPELINE" });
+    fill({ name: "CODEBASE HEALTH" });
     fireEvent.click(submitButton());
     expect(screen.getByTestId("add-duplicate-warning")).toBeInTheDocument();
     expect(addPosts(fetchMock())).toHaveLength(2);
+  });
+
+  it("the retry exemption never applies to an active name match (a later Submit is blocked again)", async () => {
+    // Network failure after the topic was created: the refetch shows it, so
+    // the retry's check finds an ACTIVE name match and blocks.
+    installFetch({
+      adds: [new Error("offline")],
+      gets: [
+        mockFetchResponse(makeTopics()),
+        mockFetchResponse(withNewTopic(makeTopics(), "topic-ch", "Codebase Health")),
+      ],
+    });
+    await renderPage();
+    openForm();
+    fill({ name: "Codebase Health", prompt: "Something", vote: "finger" });
+    fireEvent.click(submitButton());
+    fireEvent.click(screen.getByRole("button", { name: "Add as a new topic anyway" }));
+    await waitFor(() => expect(screen.getByTestId("add-form-error")).toHaveTextContent(RETRY));
+
+    // Same form, override remembered; the list now has an active "Codebase Health".
+    fill({ description: "x" });
+    fireEvent.click(submitButton());
+    expect(addPosts(fetchMock())).toHaveLength(1);
+    expect(screen.getByTestId("add-topic-name-block")).toHaveTextContent('exists: "Codebase Health".');
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it("the name block and an interlock coincide: the inline message stays, Submit shows the interlock reason, then the name reason", async () => {
+    installFetch();
+    await renderPage();
+    openForm();
+    fill({ name: "Pipeline", prompt: "Something", vote: "finger" });
+    fireEvent.click(submitButton());
+    fireEvent.click(screen.getByTestId("move-down-topic-1"));
+
+    expect(screen.getByTestId("add-topic-name-block")).toBeInTheDocument();
+    expect(submitButton()).toBeDisabled();
+    expect(screen.getByTestId("add-topic-submit-reason")).toHaveTextContent(ORDER_REASON);
+
+    fireEvent.click(screen.getByTestId("reorder-discard"));
+    expect(screen.getByTestId("add-topic-name-block")).toBeInTheDocument();
+    expect(screen.getByTestId("add-topic-submit-reason")).toHaveTextContent(/change the name/i);
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it("a blank stored name reads 'a topic with no name' and a markup name renders as literal text", async () => {
+    const markup = "<img src=x onerror=alert(1)>";
+    installFetch({
+      gets: [mockFetchResponse(makeTopics({ active: [activeTopic("t-blank", "   "), activeTopic("t-x", markup)] }))],
+    });
+    await renderPage();
+    openForm();
+    fill({ name: markup, prompt: "Something", vote: "finger" });
+    fireEvent.click(submitButton());
+    expect(screen.getByTestId("add-topic-name-block")).toHaveTextContent(BLOCK(markup));
+    expect(document.querySelector("img")).toBeNull();
+
+    fill({ name: "  " });
+    expect(screen.queryByTestId("add-topic-name-block")).not.toBeInTheDocument();
+  });
+
+  it("a server 409 TOPIC_NAME_ACTIVE shows the same block, keeps values and focus, and refetches", async () => {
+    installFetch({
+      adds: [nameActiveConflict("Safety")],
+      gets: [mockFetchResponse(makeTopics()), mockFetchResponse(makeTopics())],
+    });
+    await renderPage();
+    openForm();
+    fill({ name: "safety", prompt: "Q?", vote: "finger" });
+    fireEvent.click(submitButton());
+
+    await waitFor(() => expect(screen.getByTestId("add-topic-name-block")).toHaveTextContent(BLOCK("Safety")));
+    expect(field.name()).toHaveValue("safety");
+    expect(field.prompt()).toHaveValue("Q?");
+    expect(field.name()).toHaveFocus();
+    expect(submitButton()).toBeDisabled();
+    noAddAnywayControl();
+    const gets = fetchMock().mock.calls.filter(([url, init]) => String(url).endsWith("/topics/all") && !init?.method);
+    expect(gets.length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByTestId("screen-message")).not.toBeInTheDocument();
+  });
+
+  it("a server 409 with an empty conflictingName reads 'a topic with no name'", async () => {
+    installFetch({ adds: [nameActiveConflict("")] });
+    await renderPage();
+    openForm();
+    fill(VALID);
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId("add-topic-name-block")).toHaveTextContent("exists: a topic with no name. Choose"));
+  });
+
+  it("a lock 409 is shown as the locked message, never as a name conflict", async () => {
+    installFetch({
+      adds: [envelope(409, "TOPIC_CUSTOMIZATION_LOCKED", "Locked.")],
+      gets: [mockFetchResponse(makeTopics()), mockFetchResponse(makeTopics({ isCustomizationLocked: true }))],
+    });
+    await renderPage();
+    openForm();
+    fill(VALID);
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId("screen-message")).toHaveTextContent("Topics can't be added"));
+    expect(screen.getByTestId("screen-message").textContent?.toLowerCase()).not.toContain(
+      "an active topic with this name already exists",
+    );
+    expect(screen.queryByTestId("add-topic-name-block")).not.toBeInTheDocument();
+  });
+
+  it("an unknown 409 code is not mistaken for a name conflict (generic retry path)", async () => {
+    installFetch({ adds: [envelope(409, "SOMETHING_ELSE", "x")] });
+    await renderPage();
+    openForm();
+    fill(VALID);
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId("add-form-error")).toHaveTextContent(RETRY));
+    expect(screen.queryByTestId("add-topic-name-block")).not.toBeInTheDocument();
   });
 
   // Security implementation review N-2: the duplicate warning is the third
@@ -945,8 +1118,8 @@ describe("a failed add", () => {
     expect(field.name()).toHaveValue(VALID.name);
 
     fireEvent.click(submitButton());
-    expect(screen.getByTestId("add-duplicate-warning")).toHaveTextContent(
-      "This team already has an active topic called 'Partner Integration'.",
+    expect(screen.getByTestId("add-topic-name-block")).toHaveTextContent(
+      'An active topic with this name already exists: "Partner Integration".',
     );
     expect(addPosts(fetchMock())).toHaveLength(1);
   });
@@ -1005,15 +1178,15 @@ describe("Submit is gated by other busy states", () => {
     expect(submitButton()).toHaveAttribute("title", DIALOG_REASON);
   });
 
-  it("'Add anyway' is gated like Submit while the reorder draft is dirty", async () => {
+  it("'Add as a new topic anyway' is gated like Submit while the reorder draft is dirty", async () => {
     installFetch();
     await renderPage();
     openForm();
-    fill({ name: "Pipeline", prompt: "New question", vote: "finger" });
+    fill({ name: "Codebase Health", prompt: "New question", vote: "finger" });
     fireEvent.click(submitButton());
     fireEvent.click(screen.getByTestId("move-down-topic-1"));
 
-    const addAnyway = screen.getByRole("button", { name: "Add anyway" });
+    const addAnyway = screen.getByRole("button", { name: "Add as a new topic anyway" });
     expect(addAnyway).toBeDisabled();
     expect(addAnyway).toHaveAttribute("title", ORDER_REASON);
     fireEvent.click(addAnyway);

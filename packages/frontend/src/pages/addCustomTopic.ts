@@ -1,4 +1,10 @@
-import type { AddCustomTopicRequest, GetAllTopicsResponse, VoteType } from "@dipstick/shared";
+import type { AddCustomTopicRequest, GetAllTopicsResponse, TopicConflictError, VoteType } from "@dipstick/shared";
+import {
+  TOPIC_CUSTOMIZATION_LOCKED_CODE,
+  TOPIC_NAME_ACTIVE_CODE,
+  findActiveNameConflict,
+  normalizeTopicNameForMatch,
+} from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
 // addCustomTopic — topic-add-form-and-empty-state, design.md Decisions 4, 5,
@@ -69,19 +75,31 @@ export function firstErrorField(errors: AddFieldErrors): AddFormField | null {
   return ADD_FORM_FIELD_ORDER.find((field) => errors[field] !== undefined) ?? null;
 }
 
+// #299: a non-blocking warning offered before the request. The active-name
+// match is NOT one of these: it blocks (see DuplicateFindings.activeName).
 export interface DuplicateMatch {
-  kind: "archived" | "active";
+  kind: "archived" | "activePrompt";
   topicId: string;
   name: string;
+}
+
+export interface DuplicateFindings {
+  // An ACTIVE topic with the same normalized name: blocking, governs over
+  // every other finding. Decided by the shared findActiveNameConflict, the
+  // same function the server runs, so hint and server cannot disagree.
+  activeName?: { topicId: string; name: string };
+  // An archived topic matching on name or prompt (non-blocking).
+  archived?: { topicId: string; name: string };
+  // An active topic matching on prompt only (non-blocking).
+  activePromptOnly?: { topicId: string; name: string };
 }
 
 type TopicLike = Pick<GetAllTopicsResponse["active"][number], "topicId" | "name" | "prompt">;
 
 // trim() then toLowerCase() with no locale argument; internal whitespace is
-// compared exactly as typed (design.md Decision 5). No fuzzy matching.
-function normalizeForDuplicate(value: string): string {
-  return value.trim().toLowerCase();
-}
+// compared exactly as typed (design.md Decision 5). No fuzzy matching. The
+// name rule is the shared normalizer; prompts use it too (same rule).
+const normalizeForDuplicate = normalizeTopicNameForMatch;
 
 function firstMatch(list: readonly TopicLike[], name: string, prompt: string): TopicLike | undefined {
   return list.find(
@@ -90,21 +108,89 @@ function firstMatch(list: readonly TopicLike[], name: string, prompt: string): T
 }
 
 /**
- * A likely duplicate among the topics the screen last loaded: a hint, not an
- * authoritative check. An archived match wins over an active one; within the
- * winning list, the first match in that list's display order is returned.
+ * Likely duplicates among the topics the screen last loaded: a hint, the
+ * server being the authority. Within each list the first match in that
+ * list's display order is returned. Callers apply the precedence: activeName
+ * blocks and governs; otherwise archived is shown before activePromptOnly.
  */
 export function findDuplicate(
   values: Pick<AddFormValues, "name" | "prompt">,
   active: readonly TopicLike[],
   archived: readonly TopicLike[],
-): DuplicateMatch | null {
+): DuplicateFindings {
   const name = normalizeForDuplicate(values.name);
   const prompt = normalizeForDuplicate(values.prompt);
+  const findings: DuplicateFindings = {};
+
+  // The lists arrive in display order, so the index stands in for displayOrder.
+  const conflict = findActiveNameConflict(
+    active.map((topic, index) => ({ id: topic.topicId, name: topic.name, displayOrder: index + 1 })),
+    values.name,
+  );
+  if (conflict) findings.activeName = { topicId: conflict.id, name: conflict.name };
+
   const archivedMatch = firstMatch(archived, name, prompt);
-  if (archivedMatch) return { kind: "archived", topicId: archivedMatch.topicId, name: archivedMatch.name };
-  const activeMatch = firstMatch(active, name, prompt);
-  if (activeMatch) return { kind: "active", topicId: activeMatch.topicId, name: activeMatch.name };
+  if (archivedMatch) findings.archived = { topicId: archivedMatch.topicId, name: archivedMatch.name };
+
+  const promptMatch = active.find((topic) => normalizeForDuplicate(topic.prompt) === prompt);
+  if (promptMatch && !conflict) findings.activePromptOnly = { topicId: promptMatch.topicId, name: promptMatch.name };
+
+  return findings;
+}
+
+// #299 copy. The phrase is shared by the Add blocking message and the
+// restore-row message and is NOT in the locked-team message (tests assert it
+// by phrase, case-insensitively). A blank stored name reads "a topic with no
+// name" in place of the quoted name. Stored names are rendered as React text
+// nodes only.
+export const ACTIVE_NAME_PHRASE = "an active topic with this name already exists";
+const NO_NAME = "a topic with no name";
+
+function quotedStoredName(storedName: string): string {
+  return storedName.trim() === "" ? NO_NAME : `"${storedName}"`;
+}
+
+export function addNameBlockedMessage(storedName: string): string {
+  return `An active topic with this name already exists: ${quotedStoredName(storedName)}. Choose a different name, or use the existing topic.`;
+}
+
+export function restoreNameActiveMessage(storedName: string): string {
+  return `Not restored. An active topic with this name already exists: ${quotedStoredName(storedName)}. Nothing was changed. Archive the active topic first if you want to restore this one.`;
+}
+
+// Submit's own disabled reason while an active-name block stands (the inline
+// message at the Name field is always visible; this is the button's reason).
+export const ADD_NAME_BLOCKED_SUBMIT_REASON = "Change the name first: the team already has an active topic with it.";
+
+/**
+ * Reads a 409 body as one of the two coded conflicts, or null (unknown code,
+ * wrong shape). Callers switch on `code` with a `never` default and never
+ * branch on a bare 409.
+ */
+export function parseTopicConflict(body: unknown): TopicConflictError | null {
+  const error = (body as { error?: Record<string, unknown> } | null)?.error;
+  if (typeof error !== "object" || error === null) return null;
+  const { code, message, correlationId } = error;
+  if (code === TOPIC_CUSTOMIZATION_LOCKED_CODE) {
+    return {
+      category: "precondition_failed",
+      code,
+      message: typeof message === "string" ? message : "",
+      correlationId: typeof correlationId === "string" ? correlationId : "",
+    };
+  }
+  if (code === TOPIC_NAME_ACTIVE_CODE) {
+    const { conflictingTopicId, conflictingName } = error;
+    if (typeof conflictingTopicId !== "string" || typeof conflictingName !== "string") return null;
+    return {
+      category: "precondition_failed",
+      code,
+      message: typeof message === "string" ? message : "",
+      correlationId: typeof correlationId === "string" ? correlationId : "",
+      conflictingTopicId,
+      conflictingName,
+    };
+  }
   return null;
 }
 

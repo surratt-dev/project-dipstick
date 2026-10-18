@@ -125,7 +125,7 @@ describe.skipIf(!infraUp)("bulk restore-defaults: races, sessions, cascade edges
       expect(bulkRes!.json()).toMatchObject({ restored: [], skipped: [{ topicId: dup, reason: "NAME_ACTIVE" }] });
       await fx.cleanup();
     }
-    // Bulk first: the default is restored and the later Add still succeeds (Add has no name check).
+    // Bulk first: the default is restored and the later Add is rejected (#299: Add enforces the active-name rule).
     {
       const { actor, team } = await setup();
       const dup = await archivedDefault(team, "Delivery", 1);
@@ -135,7 +135,8 @@ describe.skipIf(!infraUp)("bulk restore-defaults: races, sessions, cascade edges
         () => add(app, team),
       ]);
       expect(bulkRes!.json().restored.map((r: { topicId: string }) => r.topicId)).toEqual([dup]);
-      expect(addRes!.statusCode).toBe(201);
+      expect(addRes!.statusCode).toBe(409);
+      expect(addRes!.json().error.code).toBe("TOPIC_NAME_ACTIVE");
       const orders = (
         await mods.db.query<{ display_order: number }>(`SELECT display_order FROM topics WHERE team_id = $1 AND status = 'active'`, [team])
       ).rows.map((r) => r.display_order);

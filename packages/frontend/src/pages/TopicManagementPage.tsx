@@ -15,6 +15,7 @@ import type {
 import { arraysEqual, moveDown, moveToBottom, moveToTop, moveUp } from "./topicOrder.js";
 import { isTopicWritePause, topicWriteErrorMessage } from "./topicWriteRateLimit.js";
 import {
+  ADD_NAME_BLOCKED_SUBMIT_REASON,
   EMPTY_ADD_FORM_VALUES,
   VOTE_TYPE_LABELS,
   activeEmptyStateVariant,
@@ -23,6 +24,8 @@ import {
   findDuplicate,
   firstErrorField,
   isAddFormDirty,
+  parseTopicConflict,
+  restoreNameActiveMessage,
   validateAddForm,
 } from "./addCustomTopic.js";
 import type { AddFieldErrors, AddFormValues, DuplicateMatch } from "./addCustomTopic.js";
@@ -237,6 +240,9 @@ type AddFormState = {
   fieldErrors: AddFieldErrors;
   formError: string | null;
   duplicate: DuplicateMatch | null;
+  // #299: stored name of the ACTIVE topic blocking this name (from the client
+  // hint or a server 409 TOPIC_NAME_ACTIVE). Cleared only when Name changes.
+  nameBlock: string | null;
   // Set once "Add anyway" / "Add as a new topic anyway" is chosen; cleared
   // when Name or Prompt is edited, so a retry does not re-ask.
   duplicateOverride: boolean;
@@ -901,6 +907,10 @@ export function TopicManagementPage() {
         // controls it disables stay disabled, and a refetch failure never
         // replaces the screen (an open add form or draft survives it).
         await finishAfterTopicWrite(archivedRefetchFailedMessage(topic.name));
+        // #299: a successful archive may be what clears a restore-row
+        // name-conflict message (restoreState is a single slot). Only an
+        // error is cleared; an open restore dialog is left alone.
+        setRestoreState((current) => (current.status === "error" ? { status: "idle" } : current));
         // Implementation review S1: Remove stays enabled on other rows while
         // this one submits, so by now the dialog may belong to a second
         // Remove whose write is still in flight. Close it only if it is
@@ -946,6 +956,18 @@ export function TopicManagementPage() {
 
         if (!res.ok) {
           const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+          // #299: branch on the coded conflict, never on a bare 409. The
+          // name-conflict text is client-owned (the server message is
+          // contract text); the lock 409 keeps the generic path below.
+          const conflict = res.status === 409 ? parseTopicConflict(body) : null;
+          if (conflict && conflict.code === "TOPIC_NAME_ACTIVE") {
+            setRestoreState({
+              status: "error",
+              topicId: topic.topicId,
+              message: restoreNameActiveMessage(conflict.conflictingName),
+            });
+            return;
+          }
           setRestoreState({
             status: "error",
             topicId: topic.topicId,
@@ -1362,7 +1384,7 @@ export function TopicManagementPage() {
   // Design.md Decision 3: Submit (and "Add anyway") is gated by the other
   // busy states, first applicable reason in this order. The trigger and
   // fields stay usable meanwhile; only sending is gated.
-  const addSubmitBlockedReason =
+  const addInterlockReason =
     isDirty || isSaving
       ? LOCKED_BY_DRAFT_REASON
       : annotationBusy
@@ -1370,10 +1392,17 @@ export function TopicManagementPage() {
         : isTopicDialogOpen
           ? DEFINITION_DIALOG_OPEN_REASON
           : null;
+  // #299 D7: the active-name block also disables Submit. Both conditions
+  // disable it and nothing is hidden: the inline name message is always
+  // visible at the Name field; Submit's own reason is the interlock when one
+  // applies (an action the user can take now), the name block otherwise.
+  const addSubmitBlockedReason =
+    addInterlockReason ?? (addForm?.nameBlock != null ? ADD_NAME_BLOCKED_SUBMIT_REASON : null);
 
   // #200: Assign is gated by the same busy states as Add (and by an
-  // in-flight assignment, which the button shows itself).
-  const assignBlockedReason = addSubmitBlockedReason;
+  // in-flight assignment, which the button shows itself). Interlocks only:
+  // an Add form's name block is irrelevant to it.
+  const assignBlockedReason = addInterlockReason;
 
   // Design.md D7 / spec "Assign default topics action": one click sends the
   // request, no dialog (additive; the server refuses it on a team that has
@@ -1506,6 +1535,7 @@ export function TopicManagementPage() {
       fieldErrors: {},
       formError: null,
       duplicate: null,
+      nameBlock: null,
       duplicateOverride: false,
     });
     queueFocus([ADD_FORM_IDS.name]);
@@ -1522,9 +1552,11 @@ export function TopicManagementPage() {
     setAddForm((current) => {
       if (!current || current.phase === "submitting") return current;
       const values = { ...current.values, [field]: value };
-      // Editing Name or Prompt dismisses a duplicate warning and forgets an
-      // "Add anyway" override (design.md Decision 5).
-      return field === "name" || field === "prompt"
+      // Editing Name or Prompt dismisses a non-blocking duplicate warning and
+      // forgets an "Add anyway" override (design.md Decision 5). The
+      // active-name block (#299) clears only when Name changes.
+      if (field === "name") return { ...current, values, duplicate: null, nameBlock: null, duplicateOverride: false };
+      return field === "prompt"
         ? { ...current, values, duplicate: null, duplicateOverride: false }
         : { ...current, values };
     });
@@ -1643,16 +1675,37 @@ export function TopicManagementPage() {
         }
         return;
       }
-      if (res.status === 409 && body.error.code === "TOPIC_CUSTOMIZATION_LOCKED") {
-        const outcome = await fetchAllTopics();
-        setAddForm(null);
-        if (outcome.status === "ok") setData(outcome.data);
-        setScreenMessage({
-          kind: "alert",
-          text: outcome.status === "failed" ? ADD_LOCKED_REFETCH_FAILED_MESSAGE : ADD_LOCKED_MESSAGE,
-        });
-        queueFocus([ACTIVE_HEADING_ID]);
-        return;
+      // #299: branch on the coded conflict, never on a bare 409 (the lock
+      // and the name rule share the status).
+      const conflict = res.status === 409 ? parseTopicConflict(body) : null;
+      if (conflict) {
+        switch (conflict.code) {
+          case "TOPIC_CUSTOMIZATION_LOCKED": {
+            const outcome = await fetchAllTopics();
+            setAddForm(null);
+            if (outcome.status === "ok") setData(outcome.data);
+            setScreenMessage({
+              kind: "alert",
+              text: outcome.status === "failed" ? ADD_LOCKED_REFETCH_FAILED_MESSAGE : ADD_LOCKED_MESSAGE,
+            });
+            queueFocus([ACTIVE_HEADING_ID]);
+            return;
+          }
+          case "TOPIC_NAME_ACTIVE": {
+            // A stale list, a second tab or a race: show the same blocking
+            // message, keep the typed values and focus, and refetch so the
+            // hint reflects current data.
+            const outcome = await fetchAllTopics();
+            if (outcome.status === "ok") setData(outcome.data);
+            returnAddFormToEditing({ nameBlock: conflict.conflictingName, formError: null });
+            queueFocus([ADD_FORM_IDS.name]);
+            return;
+          }
+          default: {
+            const unreachable: never = conflict;
+            return unreachable;
+          }
+        }
       }
     }
     await refetchThenOfferRetry();
@@ -1669,9 +1722,21 @@ export function TopicManagementPage() {
       queueFocus([ADD_FORM_IDS[firstFailing]]);
       return;
     }
+    // #299: an active name match blocks and is never skipped, whatever the
+    // override state. The retry exemption applies only to the non-blocking
+    // warnings.
+    const findings = findDuplicate(addForm.values, data.active, data.archived);
+    if (findings.activeName) {
+      setAddForm({ ...addForm, fieldErrors: {}, formError: null, duplicate: null, nameBlock: findings.activeName.name });
+      return;
+    }
     const skipDuplicateCheck = override || addForm.duplicateOverride;
     if (!skipDuplicateCheck) {
-      const duplicate = findDuplicate(addForm.values, data.active, data.archived);
+      const duplicate: DuplicateMatch | null = findings.archived
+        ? { kind: "archived", ...findings.archived }
+        : findings.activePromptOnly
+          ? { kind: "activePrompt", ...findings.activePromptOnly }
+          : null;
       if (duplicate) {
         setAddForm({ ...addForm, fieldErrors: {}, formError: null, duplicate });
         return;
@@ -1687,6 +1752,7 @@ export function TopicManagementPage() {
       fieldErrors={addForm.fieldErrors}
       formError={addForm.formError}
       duplicate={addForm.duplicate}
+      nameBlock={addForm.nameBlock}
       submitDisabledReason={addForm.phase === "submitting" ? null : addSubmitBlockedReason}
       onChange={changeAddField}
       onSubmit={() => submitAddForm(false)}

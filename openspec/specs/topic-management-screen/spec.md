@@ -148,6 +148,23 @@ This confirmation copy does not state that a gap will become visible in trend vi
 - **THEN** the topic no longer appears in the archived-topics list
 - **AND** the topic appears in the active topic list
 
+### Requirement: A restore rejected for an active name conflict is explained at the row and changes nothing
+
+When a single-restore request is answered `409` with `TOPIC_NAME_ACTIVE`, the screen SHALL show a persistent inline message at the archived row (not a transient toast), announced to assistive technology, with the exact text `Not restored. An active topic with this name already exists: "<conflictingName>". Nothing was changed. Archive the active topic first if you want to restore this one.` (`a topic with no name` replaces the quoted name when `conflictingName` is empty). The row SHALL remain under Archived without a reload. The message SHALL NOT assume the reader belongs to the team. It persists (no timer) and SHALL clear only on: the next restore attempt on that row, a successful archive of any topic in the team (the refetched list replaces the row state), or a page reload. There is no separate Dismiss control. The message shares the phrase "an active topic with this name already exists" with the Add blocking message and does not share it with the locked-team message. The text is client-owned (the server `message` is not displayed), `conflictingName` is rendered as text only (never as HTML), and the screen SHALL branch on `code`, never on a bare `409`; the same holds for the bulk restore caller, whose skip report keeps the reason `NAME_ACTIVE`. After the facilitator archives the active topic, the same restore SHALL succeed.
+
+#### Scenario: Restore of a name-conflicting topic
+- **WHEN** a facilitator confirms restoring "Pairing" while "pairing" is active and the server answers `TOPIC_NAME_ACTIVE`
+- **THEN** an inline message at the "Pairing" row reads `Not restored. An active topic with this name already exists: "pairing". Nothing was changed. Archive the active topic first if you want to restore this one.`
+- **AND** "Pairing" is still listed under Archived
+
+#### Scenario: The restore-row message clears on the next attempt or an archive
+- **WHEN** the restore-row message is showing and the facilitator archives any topic in the team, or retries the restore on that row
+- **THEN** the message is no longer shown (and, if the conflict is gone, the retry succeeds)
+
+#### Scenario: Locked-team conflict reads differently
+- **WHEN** a restore is answered `409` with `TOPIC_CUSTOMIZATION_LOCKED`
+- **THEN** the locked-team message is shown, not the name-conflict message
+
 ### Requirement: No removed-topics list is empty-hidden, and re-adding is unavailable when none exist
 
 When a team has zero archived topics, the archived-topics view SHALL communicate this clearly (an explicit empty-state message) rather than hiding the section or leaving it ambiguous, and no restore action SHALL be shown.
@@ -651,14 +668,19 @@ On Submit, if the name or prompt is blank after trimming, or no vote type is sel
 - **AND** the server's `error.message` is not shown
 - **AND** every entered value is unchanged
 
-### Requirement: A likely duplicate of an active or archived topic is flagged before the request, without blocking it
+### Requirement: An active topic with the same name blocks Add; other likely duplicates are flagged before the request without blocking it
 
-After required-field validation passes, the screen SHALL compare the trimmed, case-folded name against the trimmed, case-folded name of every active and archived topic, and the trimmed, case-folded prompt against the trimmed, case-folded prompt of every active and archived topic. "Case-folded" means `String.prototype.toLowerCase()` with no locale argument. No other normalisation and no fuzzy matching SHALL apply; in particular, internal whitespace is compared exactly as typed. The comparison uses the active and archived topics most recently loaded by the screen. It is a hint, not an authoritative check: the server does not enforce uniqueness, and a topic added elsewhere since the last load is not detected. If any comparison matches, the screen SHALL send no request and SHALL show an inline warning in the form:
+After required-field validation passes, the screen SHALL compare the trimmed, lowercased name against the trimmed, lowercased name of every active and archived topic, and the trimmed, lowercased prompt against the trimmed, lowercased prompt of every active and archived topic. "Lowercased" means `String.prototype.toLowerCase()` with no locale argument, using the shared `normalizeTopicNameForMatch`. No other normalisation and no fuzzy matching SHALL apply; in particular, internal whitespace is compared exactly as typed. The comparison uses the topics most recently loaded by the screen. The server enforces the active-name rule (`409 TOPIC_NAME_ACTIVE`, see `add-custom-topic`); the screen's check is the normal path and the server is the backstop for a stale list, a second tab or a race. The server does not enforce prompt uniqueness.
 
-- Archived match: "This team has an archived topic called '<existing name>'. Restoring it keeps its history in one trend." with a primary action "Show it in Archived topics" and a secondary action "Add as a new topic anyway".
-- Active match (and no archived match): "This team already has an active topic called '<existing name>'. Two topics with the same name or question can confuse people during the vote." with an action "Add anyway".
+The screen SHALL distinguish three outcomes:
 
-When both an active and an archived topic match, the archived message SHALL be shown. When more than one topic of the winning kind matches (for example, the name matches one archived topic and the prompt another), the message SHALL name, and "Show it in Archived topics" SHALL focus, the first matching topic in that list's display order. "Show it in Archived topics" SHALL expand the Archived section and move focus to the matching archived row's heading (made programmatically focusable for this purpose), SHALL leave the form open with its values, and SHALL NOT restore anything. "Add anyway" and "Add as a new topic anyway" SHALL send the request unchanged. Editing Name or Prompt SHALL dismiss the warning, whichever field matched. The check runs on Submit only. Once the facilitator has chosen "Add anyway" or "Add as a new topic anyway", the check SHALL NOT run again on a later Submit of the same form (for example, a retry after a network failure) until Name or Prompt is edited.
+- **Active name match (blocking).** When the submitted name matches an active topic, whatever else matches, the screen SHALL send no request, SHALL disable Submit with the reason visible inline and announced to assistive technology (`role="alert"` or `aria-live`), and SHALL NOT render an "Add anyway" control (or any control that sends the request) for this match. The message text SHALL be exactly: `An active topic with this name already exists: "<stored name>". Choose a different name, or use the existing topic.` (for a blank stored name, `a topic with no name` replaces the quoted name). This block SHALL clear only when Name changes; editing Prompt alone SHALL NOT clear it or re-enable Submit. When the name also matches an archived topic, the archived topic may be offered as information ("Show it in Archived topics") but the active match governs and blocks.
+- **Archived name or prompt match (non-blocking).** "This team has an archived topic called '<existing name>'. Restoring it keeps its history in one trend." with a primary action "Show it in Archived topics" and a secondary action "Add as a new topic anyway". When both an archived match and an active prompt-only match exist, the archived message is shown.
+- **Active prompt-only match (non-blocking).** When only the prompt matches an active topic, the screen SHALL show a warning visibly different in wording from the blocking name message (same question, the facilitator can still add), with an action that sends the request unchanged.
+
+When more than one topic of the winning kind matches, the message SHALL name, and "Show it in Archived topics" SHALL focus, the first matching topic in that list's display order. "Show it in Archived topics" SHALL expand the Archived section and move focus to the matching archived row's heading (made programmatically focusable for this purpose), SHALL leave the form open with its values, and SHALL NOT restore anything. The sending actions of the non-blocking warnings SHALL send the request unchanged. Editing Name or Prompt SHALL dismiss a non-blocking warning (archived match or prompt-only match), whichever field matched. The active-name block is the exception, governed by the sentence above: it clears only when Name changes. The check runs on Submit only, except that the active-name block SHALL keep Submit disabled until Name is edited. Once the facilitator has chosen a sending action of a non-blocking warning, the check SHALL NOT run again on a later Submit of the same form (for example, a retry after a network failure) until Name or Prompt is edited; this exemption never applies to an active name match.
+
+When the server answers `409` with `TOPIC_NAME_ACTIVE` (a stale list, a second tab, a race), the screen SHALL show the same blocking message (identical text, naming `conflictingName`), SHALL keep the typed values and focus, SHALL refetch the topic list so the hint reflects current data, and SHALL branch on the `code` (never on a bare `409`, which `TOPIC_CUSTOMIZATION_LOCKED` also uses). The locked-team message (its existing text) does not contain the phrase "an active topic with this name already exists"; the Add blocking message and the restore-row message both do (compared case-insensitively). Tests assert this by phrase, not by visual judgment.
 
 #### Scenario: Retyping an archived default's question offers the archived topic first
 - **WHEN** a team has an archived topic named "Codebase Health" with prompt "Is the codebase easy to work with?", and a facilitator submits a new topic with prompt "  is the codebase easy to work with?  "
@@ -681,24 +703,44 @@ When both an active and an archived topic match, the archived message SHALL be s
 - **WHEN** the team has an active topic named "Codebase Health" and a facilitator submits a topic named "Codebase  Health" (two spaces) with a prompt that matches nothing
 - **THEN** no duplicate warning is shown and the request is sent
 
-#### Scenario: An override is not asked again on retry
-- **WHEN** a facilitator selects "Add anyway" on an active-match warning, the request fails with a network error, and the facilitator selects Submit again without editing Name or Prompt
+#### Scenario: An archived-match override is not asked again on retry
+- **WHEN** a facilitator selects "Add as a new topic anyway" on an archived-match warning, the request fails with a network error, and the facilitator selects Submit again without editing Name or Prompt
 - **THEN** no duplicate warning is shown and the request is sent
-- **AND WHEN** the facilitator then edits Name and selects Submit, and the new name still matches
-- **THEN** the duplicate warning is shown again and no request is sent
+- **AND WHEN** the facilitator then edits Name and selects Submit, and the new name still matches an archived topic
+- **THEN** the warning is shown again and no request is sent
 
-#### Scenario: An active name match warns and can be overridden
+#### Scenario: An active name match blocks and offers no override
 - **WHEN** a facilitator submits a topic named "pairing" and the team has an active topic named "Pairing"
-- **THEN** no request is sent and the active-match warning names "Pairing"
-- **AND WHEN** the facilitator selects "Add anyway"
-- **THEN** the request is sent with the entered values
+- **THEN** no request is sent and the blocking message names "Pairing"
+- **AND** Submit is disabled with the reason visible, and no "Add anyway" control exists in the DOM
+- **AND WHEN** the facilitator edits Name to a non-matching value
+- **THEN** the message is dismissed and Submit is enabled
 
-#### Scenario: Archived message wins when both match
+#### Scenario: Editing only Prompt leaves an active-name block in place
+- **WHEN** an active-name block is showing and the facilitator edits only Prompt
+- **THEN** the blocking message is still shown and Submit is still disabled
+- **AND WHEN** the facilitator then edits Name to a non-matching value
+- **THEN** the message is dismissed and Submit is enabled
+
+#### Scenario: An active prompt-only match warns and can still be added
+- **WHEN** a facilitator submits a name that matches nothing and a prompt equal to an active topic's prompt
+- **THEN** a non-blocking warning is shown whose wording differs from the blocking name message
+- **AND** its action sends the request unchanged
+
+#### Scenario: A server name conflict on a stale list
+- **WHEN** the screen's list lacks an active topic named "Safety" that another tab just added, and the facilitator submits "safety"
+- **THEN** the server answers `409` with `TOPIC_NAME_ACTIVE`, the form shows the blocking message naming "Safety", the typed values and focus are kept, and the topic list is refetched
+
+#### Scenario: A lock 409 is not shown as a name conflict
+- **WHEN** the server answers `409` with `TOPIC_CUSTOMIZATION_LOCKED`
+- **THEN** the locked-team message is shown, not the name-conflict message
+
+#### Scenario: The active name match governs when the prompt matches an archived topic
 - **WHEN** a submitted name matches an active topic and the submitted prompt matches an archived topic
-- **THEN** the archived-match warning is shown
+- **THEN** the blocking active-name message is shown and no request is sent
 
-#### Scenario: Editing Name or Prompt dismisses the warning
-- **WHEN** a duplicate warning is shown for a name match and the facilitator edits Prompt
+#### Scenario: Editing Name or Prompt dismisses a non-blocking warning
+- **WHEN** a non-blocking warning (archived match or active prompt-only match) is shown and the facilitator edits Prompt
 - **THEN** the warning is no longer shown
 
 ### Requirement: Submit outcomes keep typed text on failure and never invite a duplicate after success
@@ -829,7 +871,9 @@ Submit SHALL be disabled, with the first applicable reason in this order, while:
 2. a definition editor holds unsaved changes or is saving: "Save or cancel your definition changes first.";
 3. a Remove or Restore confirmation is open or submitting: "Finish or cancel the open remove or restore first.".
 
-The duplicate warning's "Add anyway" and "Add as a new topic anyway" actions each send the request, so they SHALL be disabled under the same conditions and with the same reasons as Submit.
+When an interlock reason above and the active-name block both apply, the interlock reason wins: Submit shows the first applicable interlock reason, and the active-name block's reason is shown only when no interlock applies (the block itself still prevents any request).
+
+The duplicate warning's sending actions ("Add as a new topic anyway" on an archived match, and the action on an active prompt-only warning) each send the request, so they SHALL be disabled under the same conditions and with the same reasons as Submit.
 
 When an add request is sent, any open definition editor with no unsaved changes SHALL close, matching the existing rule that a clean editor closes when a move begins or a Remove or Restore confirmation opens. (An editor with unsaved changes cannot be open at that moment, because rule 2 disables Submit.) While an add request is in flight, every move control, Save order, every Remove, every Restore, and every definition add/edit control SHALL be disabled with the reason exactly "Wait for the new topic to finish saving.", and that reason SHALL take precedence over every other disabled reason on those controls. While an add request is in flight the screen SHALL show that reason once as visible text near the Active Topics heading and SHALL NOT show any other visible disabled reason at the same time.
 
@@ -1176,7 +1220,7 @@ The screen SHALL show "Team not found." in its existing error state when the ini
 
 The screen SHALL render a "Restore default topics" control only when all three hold: (a) the named predicate `canShowRestoreControls` holds, the exact predicate that also gates single Restore (the view is not the read-only canonical default topics, #214; the implementation SHALL reuse it, not restate it). The caller's role is not re-derived on the client: the screen is reachable only by callers the server admits (standing facilitator or admin), and the server re-checks on every request, so a caller whose standing changed after load receives `403` and the screen refetches (see the result requirement); (b) the team is not locked, per the same lock indicator that hides single Restore; (c) the loaded data contains at least one archived default (`isDefault`) that the shared planner would restore. In an empty team the control is not rendered in the header actions; it appears as the primary action of the empty state instead. When (a) to (c) hold but an unsaved reorder exists or the open definition (annotation) editor is dirty, the control SHALL be disabled with the reason "Save or discard your edit first."; these two are the only disabling conditions (a modal dialog's focus trap makes "another dialog open" unreachable). The control SHALL NOT render a disabled "nothing to restore" state.
 
-Activating it SHALL open a confirmation dialog titled "Restore default topics" with exactly this content: a count line, "N topics will be added" (singular "1 topic will be added"; zero cannot occur because the control is hidden); the restorable topic names in restore order, each rendered in full (wrapped, never ellipsized), in a list region with a maximum height that is keyboard-focusable and whose every entry is reachable by keyboard; the sentence "They will be added to the end of your list, in the order shown." (singular: "It will be added to the end of your list."; neither claims any prior order); the sentence "Your custom topics, the current order, and annotations are not changed."; for each default that will not return, listed in restore order under "Not restored", the literal line "<name>: a topic with this name is already in your list"; and the sentence "To bring back only some topics, restore them one at a time from the archived list." (no link). The dialog and result text SHALL NOT contain the words "reset", "canonical", "trend" or "history lost", and SHALL NOT claim the original wording returns. A topic skipped by the dialog remains reachable by single restore from the archived list.
+Activating it SHALL open a confirmation dialog titled "Restore default topics" with exactly this content: a count line, "N topics will be added" (singular "1 topic will be added"; zero cannot occur because the control is hidden); the restorable topic names in restore order, each rendered in full (wrapped, never ellipsized), in a list region with a maximum height that is keyboard-focusable and whose every entry is reachable by keyboard; the sentence "They will be added to the end of your list, in the order shown." (singular: "It will be added to the end of your list."; neither claims any prior order); the sentence "Your custom topics, the current order, and annotations are not changed."; for each default that will not return, listed in restore order under "Not restored", the literal line "<name>: an active topic with this name already exists"; and the sentence "To bring back only some topics, restore them one at a time from the archived list." (no link). The dialog and result text SHALL NOT contain the words "reset", "canonical", "trend" or "history lost", and SHALL NOT claim the original wording returns. A topic skipped by the dialog remains reachable by single restore from the archived list.
 
 #### Scenario: Control visible only when something is restorable
 - **WHEN** a facilitator opens the screen for a team whose archived defaults are all matched by active names
@@ -1204,7 +1248,7 @@ Activating it SHALL open a confirmation dialog titled "Restore default topics" w
 
 #### Scenario: Dialog states what changes and what does not
 - **WHEN** the dialog opens with three restorable and one name-matched default
-- **THEN** it shows "3 topics will be added", the three names in full in restore order, "They will be added to the end of your list, in the order shown.", "Your custom topics, the current order, and annotations are not changed.", the line "<name>: a topic with this name is already in your list", and the single-restore sentence
+- **THEN** it shows "3 topics will be added", the three names in full in restore order, "They will be added to the end of your list, in the order shown.", "Your custom topics, the current order, and annotations are not changed.", the line "<name>: an active topic with this name already exists", and the single-restore sentence
 
 #### Scenario: Singular count
 - **WHEN** exactly one default is restorable
@@ -1244,7 +1288,7 @@ After a `200` response the screen SHALL show one line stating the actual count a
 
 #### Scenario: Skipped after confirm
 - **WHEN** a name became active after the preview so a previewed topic is skipped
-- **THEN** the delta line is shown and the skipped topic appears with "<name>: a topic with this name is already in your list"
+- **THEN** the delta line is shown and the skipped topic appears with "<name>: an active topic with this name already exists"
 
 #### Scenario: Nothing to restore
 - **WHEN** the response is `200` with empty `restored`
