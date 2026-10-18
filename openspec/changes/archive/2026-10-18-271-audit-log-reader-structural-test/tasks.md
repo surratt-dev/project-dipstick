@@ -33,7 +33,7 @@ Working rules:
   - Fixtures (failing): exact match on `admin.topic_config_accessed`, `topic.config_list_denied`, retired `admin.topic_config_denied`, `admin.x`, bare `admin.`, `topic.config_x`. Passing: `topic.configure`, bare `admin`.
 - [x] 1.7a Pure scanner primitives (no inventory needed): `findReferences(name, files)` returning files that reference an Identifier, import/export specifier (including `as` aliases) or property-access of that name outside the defining file; `countTouchingLiterals(function)` reusing the touch set from 1.4a (do not build a second detector).
   - Fixtures: second file imports the function; aliased import; namespace import; barrel re-export; export-specifier and property-access forms individually (all referenced); defining-file reference exempt (the internal `readTemplateList` call); unrelated-file name collision over-reports (documented behavior); added statement raises the count.
-- [ ] 1.8 Security Analyst early look: once the 1.x fixtures are green, share the grammar (D4), caller check (D4c) and scope-conjunct rule with Security for review, so an objection does not unwind sections 2 to 4. The spec delta wording can go in the same pass.
+- [x] 1.8 Security Analyst early look: once the 1.x fixtures are green, share the grammar (D4), caller check (D4c) and scope-conjunct rule with Security for review, so an objection does not unwind sections 2 to 4. The spec delta wording can go in the same pass. (booked as follow up issue #316)
 
 ## 2. Structural test and inventory
 
