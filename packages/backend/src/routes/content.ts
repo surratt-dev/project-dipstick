@@ -28,6 +28,7 @@ import type {
   GetActiveTopicsResponse,
   GetAllTopicsResponse,
 } from "@dipstick/shared";
+import { normalizeTopicNameForMatch } from "@dipstick/shared";
 import { DEFAULT_TOPICS_TEAM_ID, canonicalDefaultsWhere } from "../sessions/default-topics.js";
 import { isTemplateTeam } from "../teams/template-team-guard.js";
 import { buildErrorEnvelope, teamNotFoundEnvelope } from "./error-envelope.js";
@@ -968,23 +969,26 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
       [teamId],
     );
 
-    // One row per canonical default, preferring an ACTIVE team topic of the
-    // same name (#200 D3a). A plain LEFT JOIN yields a row per matching team
-    // topic, so an archived "X" next to an active "X" listed X as restorable;
-    // restore (TOPIC-005) has no name-collision check, so acting on that
-    // listing would create two active topics of one name.
+    // One row per canonical default (#200 D3a), matched to the team's row by the
+    // durable link topics.template_topic_id (#311), never by name: a template
+    // rename or a same-named custom topic cannot change the match. The lateral
+    // ordering is load-bearing: a team can hold several rows linked to one
+    // default (for example an archived row and a fresh row from a later
+    // zero-topic assign-defaults), and an ACTIVE linked row must win so the
+    // default is not listed; otherwise the lowest id.
     const defaultTopicsResult = await db.query<{
       default_topic_id: string;
       default_topic_name: string;
       team_topic_id: string | null;
+      team_topic_name: string | null;
       team_topic_status: string | null;
     }>(
       `SELECT dt.id AS default_topic_id, dt.name AS default_topic_name,
-              t.id AS team_topic_id, t.status AS team_topic_status
+              t.id AS team_topic_id, t.name AS team_topic_name, t.status AS team_topic_status
        FROM topics dt
        LEFT JOIN LATERAL (
-         SELECT id, status FROM topics
-         WHERE team_id = $1 AND name = dt.name
+         SELECT id, name, status FROM topics
+         WHERE team_id = $1 AND template_topic_id = dt.id
          ORDER BY (status = 'active') DESC, id
          LIMIT 1
        ) t ON true
@@ -992,6 +996,31 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
        ORDER BY dt.display_order ASC`,
       [teamId, DEFAULT_TOPICS_TEAM_ID],
     );
+
+    // Suppression by active name (#311 Decision 8): an entry is dropped when an
+    // ACTIVE team topic other than its own linked row already has the name it
+    // would be restored under, compared exactly as #299's restore does, because
+    // restoring it would be rejected (409 TOPIC_NAME_ACTIVE). Reads the active
+    // rows fetched above (every active row, unfiltered, with its name).
+    const activeIdsByName = new Map<string, Set<string>>();
+    for (const row of activeResult.rows) {
+      const key = normalizeTopicNameForMatch(row.name);
+      const ids = activeIdsByName.get(key) ?? new Set<string>();
+      ids.add(row.id);
+      activeIdsByName.set(key, ids);
+    }
+    const defaultTopicsNotActive = defaultTopicsResult.rows
+      .filter((row) => row.team_topic_status !== "active")
+      .map((row) => ({
+        topicId: row.team_topic_id ?? row.default_topic_id,
+        name: row.team_topic_id !== null ? (row.team_topic_name ?? row.default_topic_name) : row.default_topic_name,
+        isArchived: row.team_topic_status === "archived",
+      }))
+      .filter((entry) => {
+        const holders = activeIdsByName.get(normalizeTopicNameForMatch(entry.name));
+        // The entry's own linked row is archived, so it is never an active holder.
+        return !holders;
+      });
 
     // template-team-not-usable (#214) D6: the same getTopicLockState TOPIC-001
     // calls. The template reads locked with reason "canonical_defaults".
@@ -1062,13 +1091,7 @@ export async function contentRoutes(app: FastifyInstance): Promise<void> {
             : null,
         ...annotationFields(row),
       })),
-      defaultTopicsNotActive: defaultTopicsResult.rows
-        .filter((row) => row.team_topic_status !== "active")
-        .map((row) => ({
-          topicId: row.team_topic_id ?? row.default_topic_id,
-          name: row.default_topic_name,
-          isArchived: row.team_topic_status === "archived",
-        })),
+      defaultTopicsNotActive,
     };
 
     // #232 D5: every admin 200 writes exactly one text-free access row (every

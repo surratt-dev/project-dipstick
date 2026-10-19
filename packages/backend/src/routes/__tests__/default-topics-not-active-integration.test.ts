@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { probeInfra, requireInfraOrThrow, loadModules, buildFullApp, Fixture } from "./helpers/real-db.js";
+import { probeInfra, requireInfraOrThrow, loadModules, buildFullApp, Fixture, SENTINEL_TEAM_ID } from "./helpers/real-db.js";
 import { holdTemplateLockPerTest } from "./helpers/assign-defaults.js";
 import type { Mods } from "./helpers/real-db.js";
 import { snapshotTemplate } from "./helpers/template-snapshot.js";
@@ -98,9 +98,16 @@ describe.skipIf(!infraUp)("defaultTopicsNotActive lists only genuinely absent de
     const owner = await fx.user("facilitator");
     const teamId = await fx.team(owner);
     const shared = defaultNames[0]!;
+    // #311: matching is by link, so the archived copies are linked to the template default.
+    const templateId = (
+      await mods.db.query<{ id: string }>(
+        `SELECT id FROM topics WHERE team_id = $1 AND is_default = true AND status = 'active' AND name = $2`,
+        [SENTINEL_TEAM_ID, shared],
+      )
+    ).rows[0]!.id;
     const archivedIds = [
-      await fx.topic(teamId, { name: shared, displayOrder: 1, status: "archived" }),
-      await fx.topic(teamId, { name: shared, displayOrder: 2, status: "archived" }),
+      await fx.topic(teamId, { name: shared, displayOrder: 1, status: "archived", templateTopicId: templateId }),
+      await fx.topic(teamId, { name: shared, displayOrder: 2, status: "archived", templateTopicId: templateId }),
     ];
 
     const listed = await notActive(teamId, admin);

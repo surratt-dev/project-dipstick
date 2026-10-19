@@ -398,3 +398,44 @@ describe.skipIf(!infraUp)("migration 23: template cleanup and constraints (real 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #311 tasks.md 2.3 (Security S5): the sentinel literal in migration 24's CHECK
+// is spelled out in SQL, so a wrong literal would silently disable the
+// invariant. Beside the migration-23 coverage of the same constant.
+// ---------------------------------------------------------------------------
+describe.skipIf(!infraUp)("migration 24: the sentinel literal matches DEFAULT_TOPICS_TEAM_ID (#311)", () => {
+  it("every uuid literal in migration 24 equals the constant, and the live CHECK refuses a link on a template-team row", async () => {
+    const sql = await readFile(
+      fileURLToPath(new URL("../../../migrations/24_template_topic_id.sql", import.meta.url)),
+      "utf8",
+    );
+    const uuids = [...sql.matchAll(/'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'/g)].map((m) => m[1]);
+    expect(uuids.length).toBeGreaterThan(0);
+    expect(new Set(uuids)).toEqual(new Set([TEMPLATE]));
+
+    const { db } = await import("../../db.js");
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const tpl = (
+        await client.query<{ id: string }>(
+          `INSERT INTO topics (team_id, name, prompt, vote_type, display_order, is_default, status)
+           VALUES ($1, 'mig24 drift tpl', 'p', 'finger', 9301, true, 'archived') RETURNING id`,
+          [TEMPLATE],
+        )
+      ).rows[0]!.id;
+      expect(
+        await sqlState(
+          client,
+          `INSERT INTO topics (team_id, name, prompt, vote_type, display_order, is_default, status, template_topic_id)
+           VALUES ($1, 'mig24 drift linked', 'p', 'finger', 9302, true, 'archived', $2)`,
+          [TEMPLATE, tpl],
+        ),
+      ).toBe("23514");
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
+});

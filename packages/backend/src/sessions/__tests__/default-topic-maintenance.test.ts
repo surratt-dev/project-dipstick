@@ -204,6 +204,16 @@ describe("constants", () => {
     expect(SCOPE_STATEMENT).toMatch(/^Applies to teams created from now on/);
     expect(RENAME_NOTICE).toMatch(/^Renamed\./);
   });
+
+  // #311: the pinned text, plus the phrases that described the old name-based pairing.
+  it("RENAME_NOTICE equals the exact pinned text and contains none of the forbidden phrases", () => {
+    expect(RENAME_NOTICE).toBe(
+      "Renamed. Existing teams keep their own copy of this topic under its current name. The rename does not change any team's topics. Teams that never had this topic will see the new name.",
+    );
+    for (const phrase of ["stop matching", "name-based", "no longer", "match", "pair"]) {
+      expect(RENAME_NOTICE.toLowerCase(), phrase).not.toContain(phrase);
+    }
+  });
 });
 
 describe("add", () => {

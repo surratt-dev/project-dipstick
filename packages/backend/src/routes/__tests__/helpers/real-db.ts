@@ -261,13 +261,16 @@ export class Fixture {
       status?: "active" | "archived";
       annotation?: string | null;
       voteType?: string;
+      /** #311: a linked default. Setting templateTopicId makes the row is_default (the CHECK requires it). */
+      templateTopicId?: string | null;
+      isDefault?: boolean;
     },
   ): Promise<string> {
     const id = randomUUID();
     await this.db.query(
-      `INSERT INTO topics (id, team_id, name, prompt, vote_type, display_order, status, is_default, team_annotation, archived_at)
-       VALUES ($1, $2, $3, $4, $5::vote_type, $6, $7::topic_status, false, $8,
-               CASE WHEN $7::text = 'archived' THEN NOW() END)`,
+      `INSERT INTO topics (id, team_id, name, prompt, vote_type, display_order, status, is_default, team_annotation, archived_at, template_topic_id)
+       VALUES ($1, $2, $3, $4, $5::vote_type, $6, $7::topic_status, $9, $8,
+               CASE WHEN $7::text = 'archived' THEN NOW() END, $10)`,
       [
         id,
         teamId,
@@ -277,6 +280,8 @@ export class Fixture {
         opts.displayOrder,
         opts.status ?? "active",
         opts.annotation ?? null,
+        opts.isDefault ?? opts.templateTopicId != null,
+        opts.templateTopicId ?? null,
       ],
     );
     return id;

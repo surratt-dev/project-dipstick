@@ -1106,7 +1106,7 @@ The screen SHALL NOT poll or subscribe for changes made by another person, and S
 
 ### Requirement: The screen does not read `defaultTopicsNotActive`
 
-The Topic Management screen SHALL NOT read or render `defaultTopicsNotActive` from the TOPIC-002 response, including in the empty state. Its name-based join produces wrong rows when a custom topic shares a default topic's name, and its `topicId` can refer to the template team. Re-adding is offered only through the team's own archived topics.
+The Topic Management screen SHALL NOT read or render `defaultTopicsNotActive` from the TOPIC-002 response, including in the empty state. Its `topicId` can refer to the template team for a default the team has no linked row for. (Since #311 the field is matched by the `template_topic_id` link rather than by name, so a same-name custom topic no longer produces wrong rows; the screen still has no need for it.) Re-adding is offered only through the team's own archived topics.
 
 #### Scenario: A team whose default topics are missing offers only its own archive
 - **WHEN** an unlocked team has no active topics, two archived topics, and a TOPIC-002 response whose `defaultTopicsNotActive` lists twelve entries
@@ -1247,7 +1247,7 @@ Activating it SHALL open a confirmation dialog titled "Restore default topics" w
 - **THEN** the control is disabled and the reason "Save or discard your edit first." is shown
 
 #### Scenario: Dialog states what changes and what does not
-- **WHEN** the dialog opens with three restorable and one name-matched default
+- **WHEN** the dialog opens with three restorable and one default blocked by an active same-name topic
 - **THEN** it shows "3 topics will be added", the three names in full in restore order, "They will be added to the end of your list, in the order shown.", "Your custom topics, the current order, and annotations are not changed.", the line "<name>: an active topic with this name already exists", and the single-restore sentence
 
 #### Scenario: Singular count
