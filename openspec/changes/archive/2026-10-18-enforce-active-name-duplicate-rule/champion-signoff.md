@@ -21,5 +21,5 @@ Clean sign-off on the core constraints, with two non-blocking notes.
 
 ## Notes (not blocking)
 
-1. FR-8.6 "restorable at any time" is now narrowed to "restorable once the conflicting active topic is archived". The proposal records this as pending PO confirmation. It needs to be raised in the PR, not left silent. I accept the reading.
+1. FR-8.6 "restorable at any time" is now narrowed to "restorable once the conflicting active topic is archived". The Product Owner confirmed this reading on 2026-10-18. I accept the reading.
 2. Single restore reversing the #218 decision must be called out plainly in the PR and release notes. Look-alike names (internal whitespace, NFC/NFD) remain a known, accepted gap against the "which Safety are we on?" problem.

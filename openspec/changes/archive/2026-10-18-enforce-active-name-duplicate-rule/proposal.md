@@ -41,7 +41,7 @@ FR-8.6 says the default set must remain restorable at any time. After this chang
 
 ## Product Owner confirmations
 
-The PO decided in this session: remove "Add anyway" on an active-name match; no override of any kind; 409 `TOPIC_NAME_ACTIVE` on Add and single restore; bulk keeps skipping. The two items below were NOT put to the PO; they are team proposals awaiting PO confirmation, to be raised in the PR description for review.
+The PO decided in this session: remove "Add anyway" on an active-name match; no override of any kind; 409 `TOPIC_NAME_ACTIVE` on Add and single restore; bulk keeps skipping. The two items below were put to the PO afterwards and confirmed on 2026-10-18.
 
 1. Look-alike names (internal whitespace, NFC/NFD) are accepted as a known limitation, out of scope (BA review M2).
 2. "Restorable at any time" in FR-8.6 now means "restorable once the conflicting active topic is archived" (BA review M1).
