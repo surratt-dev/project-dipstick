@@ -38,6 +38,7 @@ import type {
   RestoreDefaultsResponse,
   VoteType,
 } from "@dipstick/shared";
+import { findActiveNameConflict } from "@dipstick/shared";
 import { MAX_ANNOTATION_LENGTH, normalizeAnnotation, planDefaultRestore } from "@dipstick/shared";
 
 // ---------------------------------------------------------------------------
@@ -971,9 +972,32 @@ async function checkAssignDefaultsAuthorization(
   return { rejected: false, actorGlobalRole: "application_admin" };
 }
 
+// #299 D4: the one 409 TOPIC_NAME_ACTIVE reply for Add and single restore.
+// `conflictingName` is the stored name (a string, possibly empty); the
+// submitted name is never echoed. Cache-Control: no-store because the body
+// carries a topic name.
+const TOPIC_NAME_ACTIVE_MESSAGE = "An active topic with this name already exists.";
+
+function sendTopicNameActive(reply: FastifyReply, conflict: { id: string; name: string }): FastifyReply {
+  return reply
+    .code(409)
+    .header("Cache-Control", "no-store")
+    .send(
+      buildErrorEnvelope("precondition_failed", TOPIC_NAME_ACTIVE_MESSAGE, "TOPIC_NAME_ACTIVE", undefined, {
+        conflictingTopicId: conflict.id,
+        conflictingName: conflict.name,
+      }),
+    );
+}
+
 export async function topicRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   // POST /api/v1/teams/:teamId/topics  (TOPIC-003, Add Custom Topic)
+  //
+  // After the 422 validation (#299): inside the per-team advisory lock, before
+  // the display_order read, 409 TOPIC_NAME_ACTIVE when the trimmed,
+  // lowercased name equals an ACTIVE topic's (findActiveNameConflict). No
+  // override for any role or body field.
   // -------------------------------------------------------------------------
   app.post<{
     Params: { teamId: string };
@@ -1063,6 +1087,25 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
       await client.query("BEGIN");
 
       await lockTeamTopics(client, teamId);
+
+      // #299 D2/D5: the active-name rule, in JS, inside the lock and before
+      // the MAX read. A handled exit, not a throw: one ROLLBACK here, so the
+      // catch below (which also ROLLBACKs) is never reached. Reaches the
+      // return before topicId/createdAt/displayOrder are assigned. No audit
+      // row; no log line containing the submitted or conflicting name.
+      const activeResult = await client.query<{ id: string; name: string; display_order: number }>(
+        `SELECT id, name, display_order FROM topics WHERE team_id = $1 AND status = 'active'`,
+        [teamId],
+      );
+      const conflict = findActiveNameConflict(
+        activeResult.rows.map((r) => ({ id: r.id, name: r.name, displayOrder: r.display_order })),
+        name,
+      );
+      if (conflict) {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return sendTopicNameActive(reply, conflict);
+      }
 
       const maxResult = await client.query<{ next_display_order: number }>(
         `SELECT COALESCE(MAX(display_order), -1) + 1 AS next_display_order
@@ -1554,9 +1597,12 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
   //   2. Team existence (reused unchanged from TOPIC-003/004) -- 404.
   //   3. Customization lock (reused unchanged from TOPIC-003/004) -- 409
   //      TOPIC_CUSTOMIZATION_LOCKED, audited via writeLockDenialAudit.
-  //   4. Topic existence/ownership -- 404 TOPIC_NOT_FOUND.
-  //   5. Topic status -- 422 TOPIC_ALREADY_ACTIVE.
-  //   6. Advisory-lock-guarded append-position reposition and status flip
+  //   4. Topic existence/ownership -- 404 TOPIC_NOT_FOUND.   (before the txn)
+  //   5. Topic status -- 422 TOPIC_ALREADY_ACTIVE.            (before the txn)
+  //   In the advisory lock (#299): re-read the target; no longer archived ->
+  //   422 TOPIC_ALREADY_ACTIVE (precedes the name rule); then
+  //   6. Active-name rule -- 409 TOPIC_NAME_ACTIVE (findActiveNameConflict).
+  //   7. Advisory-lock-guarded append-position reposition and status flip
   //      (Decision 3) -- 200 OK.
   //
   // One step shorter than TOPIC-004's cascade by design: restoring a topic
@@ -1632,6 +1678,41 @@ export async function topicRoutes(app: FastifyInstance): Promise<void> {
     try {
       await client.query("BEGIN");
       await lockTeamTopics(client, teamId);
+
+      // #299 D3: re-read the target inside the lock (name is immutable for
+      // team topics, status is not). Row missing (unreachable today: topics
+      // are never hard-deleted and the pre-check found it) or no longer
+      // archived is the same race answer as the zero-row UPDATE below, and
+      // takes precedence over the name rule.
+      const targetResult = await client.query<{ id: string; name: string; status: string }>(
+        `SELECT id, name, status FROM topics WHERE id = $1 AND team_id = $2`,
+        [topicId, teamId],
+      );
+      const target = targetResult.rows[0];
+      if (!target || target.status !== "archived") {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return reply
+          .code(422)
+          .send(buildErrorEnvelope("invalid_request", "This topic is already active.", "TOPIC_ALREADY_ACTIVE"));
+      }
+
+      // #299 D1/D2: the active-name rule, in JS (never SQL lower()), inside
+      // the lock. The target is archived so it cannot match itself. No
+      // audit row, and no log line containing either name.
+      const activeResult = await client.query<{ id: string; name: string; display_order: number }>(
+        `SELECT id, name, display_order FROM topics WHERE team_id = $1 AND status = 'active'`,
+        [teamId],
+      );
+      const conflict = findActiveNameConflict(
+        activeResult.rows.map((r) => ({ id: r.id, name: r.name, displayOrder: r.display_order })),
+        target.name,
+      );
+      if (conflict) {
+        await client.query("ROLLBACK");
+        await applyTimingFloor(startTime);
+        return sendTopicNameActive(reply, conflict);
+      }
 
       const maxResult = await client.query<{ new_position: number }>(
         `SELECT COALESCE(MAX(display_order), 0) + 1 AS new_position

@@ -164,7 +164,7 @@ describe("5.2 the dialog", () => {
     await renderPage();
     open();
     expect(screen.getByTestId("bulk-restore-count")).toHaveTextContent("2 topics will be added");
-    expect(screen.getByTestId("bulk-restore-skipped")).toHaveTextContent("Pipeline: a topic with this name is already in your list");
+    expect(screen.getByTestId("bulk-restore-skipped")).toHaveTextContent("Pipeline: an active topic with this name already exists");
   });
 
   it("moves focus into the dialog, and Cancel closes it and returns focus to the control", async () => {
@@ -265,7 +265,7 @@ describe("5.5 result rendering", () => {
     fireEvent.click(screen.getByTestId("bulk-restore-confirm"));
     await waitFor(() => screen.getByTestId("bulk-restore-result-skipped"));
     const skipped = screen.getByTestId("bulk-restore-result-skipped");
-    expect(skipped).toHaveTextContent("Old: a topic with this name is already in your list");
+    expect(skipped).toHaveTextContent("Old: an active topic with this name already exists");
     expect(skipped).toHaveTextContent("Odd: not restored");
   });
 

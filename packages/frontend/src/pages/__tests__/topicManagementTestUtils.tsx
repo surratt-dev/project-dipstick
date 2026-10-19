@@ -106,9 +106,10 @@ export function envelope(
   message: string,
   field?: string,
   headers?: Record<string, string>,
+  extra?: Record<string, string>,
 ): Response {
   return mockFetchResponse(
-    { error: { category: "x", code, message, correlationId: "c-1", ...(field ? { field } : {}) } },
+    { error: { category: "x", code, message, correlationId: "c-1", ...(field ? { field } : {}), ...(extra ?? {}) } },
     status,
     headers,
   );
@@ -241,4 +242,12 @@ export function dispatchBeforeUnload() {
   const event = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(event);
   return event;
+}
+
+/** #299: a 409 TOPIC_NAME_ACTIVE reply naming the conflicting active topic. */
+export function nameActiveConflict(conflictingName: string, conflictingTopicId = "topic-2"): Response {
+  return envelope(409, "TOPIC_NAME_ACTIVE", "server text, never shown", undefined, undefined, {
+    conflictingTopicId,
+    conflictingName,
+  });
 }

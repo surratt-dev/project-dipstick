@@ -54,6 +54,10 @@ export type {
   DefaultRestorePlan,
   BulkRestoreSkipReason,
   RestoreDefaultsResponse,
+  ActiveTopicForNameCheck,
+  TopicNameActiveError,
+  TopicCustomizationLockedError,
+  TopicConflictError,
 } from "./types/topic.js";
 export {
   MAX_ANNOTATION_LENGTH,
@@ -61,6 +65,10 @@ export {
   normalizeTopicNameForMatch,
   planDefaultRestore,
   BULK_RESTORE_SKIP_NAME_ACTIVE,
+  findActiveNameConflict,
+  TOPIC_NAME_ACTIVE_CODE,
+  TOPIC_CUSTOMIZATION_LOCKED_CODE,
+  TOPIC_NAME_PARITY_PAIRS,
 } from "./types/topic.js";
 export type { ActionItem, ActionItemStatus, ActionItemHistory } from "./types/action-item.js";
 export type {

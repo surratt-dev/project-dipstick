@@ -558,6 +558,7 @@ The topic customization lock stops topic changes on a locked team. One path is d
 
 - **(g) What a facilitator sees.** The facilitator is the first to notice (room open answers `NO_ACTIVE_TOPICS`), and recovery is an `application_admin` calling assign-defaults, which also depends on the template being non-empty, so facilitators deliberately have no self-service recovery, which costs a wait on an administrator before a scheduled session, while pacing, reveal, readiness and outlier behavior are unaffected.
 - **(h) Reopen triggers.** This assessment must be revisited if any of the following occurs: a second exception to the topic customization lock is introduced; any topic-writing endpoint accepts text from a caller-supplied source (copy from another team, partial top-up, custom text); anyone other than an `application_admin` (for example a facilitator or manager) is allowed to trigger assign-defaults; the way the `application_admin` role is granted, or who can grant it, changes; who can edit the default template, or what it can contain, changes; an `application_admin` account is compromised or suspected of it, or a `topic.defaults_assigned` row does not correspond to a known recovery; audit-log hardening or monitoring (#131) lands, or the Redis limiter or `trustProxy` configuration changes materially (the rating may then move either way); a change to cookie SameSite policy or session transport; a change to how often the stored role refreshes from the identity provider; security or compliance requires a second approver or step-up authentication for admin writes; or the number of zero-active-topic teams is found to be non-trivial (for example when the 'Zero-topic teams' check in `docs/deployment.md` is run, or when `topic.defaults_assigned` rows accumulate beyond a handful). Any reopen decision must weigh recovery speed and the affected population against the exposure at that time.
+- **(i) Name-conflict disclosure (#299).** `TOPIC_NAME_ACTIVE` 409 returns the conflicting active topic's id and name to the caller (identical for every role, including `application_admin`) unaudited; accepted, bounded by the per-actor topic-write rate limit; no reopen trigger hit.
 
 ### 8.2 Controls by Layer
 
@@ -575,6 +576,7 @@ The topic customization lock stops topic changes on a locked team. One path is d
 - Every route enforces authorization independently
 - Authorization logic lives in the backend; frontend rendering decisions are not a substitute
 - Pre-reveal vote values are never returned by any API endpoint, regardless of the caller's role
+- `TOPIC_NAME_ACTIVE` 409 (Add, single restore) returns the conflicting active topic's id and name to the caller (identical for every role, including `application_admin`) unaudited; accepted, bounded by the per-actor topic-write rate limit; no reopen trigger hit (8.1.1 (i)).
 - The topic customization lock has exactly one carve-out (assign-defaults). A source test (`assign-defaults-lock-gate-source.test.ts`) pins the list of topic routes, requires the five lock-gated writes to call the lock gate, and requires assign-defaults not to.
 
 **WebSocket Security**

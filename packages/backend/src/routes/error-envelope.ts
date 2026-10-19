@@ -31,7 +31,17 @@ export type ErrorCategory =
   | "service_unavailable";
 
 export interface ErrorEnvelope {
-  error: { category: ErrorCategory; code?: string; field?: string; message: string; correlationId: string };
+  error: {
+    category: ErrorCategory;
+    code?: string;
+    field?: string;
+    message: string;
+    correlationId: string;
+    // enforce-active-name-duplicate-rule (#299) D4: optional string extras
+    // (TOPIC_NAME_ACTIVE's conflictingTopicId / conflictingName).
+    conflictingTopicId?: string;
+    conflictingName?: string;
+  };
 }
 
 export function buildErrorEnvelope(
@@ -39,9 +49,13 @@ export function buildErrorEnvelope(
   message: string,
   code?: string,
   field?: string,
+  // Spread BEFORE the base keys so it can never overwrite category, code,
+  // message or correlationId. Omitted: output is byte-identical to before.
+  extra?: Record<string, string>,
 ): ErrorEnvelope {
   return {
     error: {
+      ...(extra ?? {}),
       category,
       ...(code ? { code } : {}),
       ...(field ? { field } : {}),

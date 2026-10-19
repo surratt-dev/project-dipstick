@@ -120,6 +120,7 @@ function mockSuccessfulInsertTransaction(opts: { topicId?: string; nextDisplayOr
   const client = makeMockClient([
     { rows: [] }, // BEGIN
     { rows: [] }, // pg_advisory_xact_lock
+    { rows: [] }, // active topics (name rule, #299)
     { rows: [{ next_display_order: nextDisplayOrder }] }, // MAX read
     { rows: [{ id: topicId, created_at: createdAt }] }, // INSERT topics
     { rows: [] }, // INSERT audit_log
@@ -610,6 +611,7 @@ describe("POST /api/v1/teams/:teamId/topics — concurrency (design.md Decision 
       makeMockClient([
         { rows: [] },
         { rows: [] },
+        { rows: [] },
         { rows: [{ next_display_order: 0 }] },
         { rows: [{ id: "topic-a", created_at: new Date() }] },
         { rows: [] },
@@ -618,6 +620,7 @@ describe("POST /api/v1/teams/:teamId/topics — concurrency (design.md Decision 
     );
     mockDbConnect.mockResolvedValueOnce(
       makeMockClient([
+        { rows: [] },
         { rows: [] },
         { rows: [] },
         { rows: [{ next_display_order: 1 }] },
@@ -1642,7 +1645,7 @@ function mockPassAllRestoreGates(topicStatus: "archived" = "archived") {
 
 /**
  * Mock client for the restore handler's transaction. Queue order:
- * BEGIN, pg_advisory_xact_lock, MAX(display_order) read,
+ * BEGIN, pg_advisory_xact_lock, target re-read, active topics, MAX(display_order) read,
  * UPDATE ... RETURNING (empty rows on the zero-rows race branch),
  * [INSERT audit_log, COMMIT] or [ROLLBACK].
  */
@@ -1651,12 +1654,15 @@ function mockRestoreTransaction(opts: {
   name?: string;
   restoredAt?: Date;
   zeroRows?: boolean;
+  activeTopics?: Array<{ id: string; name: string; display_order: number }>;
 }) {
   const { newPosition, name = "Topic A", restoredAt = new Date("2026-09-30T00:00:00.000Z"), zeroRows = false } =
     opts;
   const responses: Array<{ rows: unknown[] }> = [
     { rows: [] }, // BEGIN
     { rows: [] }, // pg_advisory_xact_lock
+    { rows: [{ id: "70000000-0000-4000-8000-000000000001", name, status: "archived" }] }, // target re-read (#299)
+    { rows: opts.activeTopics ?? [] }, // active topics (name rule, #299)
     { rows: [{ new_position: newPosition }] }, // MAX read
   ];
 
@@ -2901,4 +2907,130 @@ describe("topic write routes — template audit insert failure (#188, tasks.md 2
       );
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// enforce-active-name-duplicate-rule (#299) -- handled-exit mechanics with a
+// mocked client: exactly one ROLLBACK, no audit INSERT, the timing floor
+// called, the exact error key set. Behaviour against real Postgres (parity,
+// concurrency, rate limiter) is in topic-name-active-integration.test.ts.
+// ---------------------------------------------------------------------------
+describe("TOPIC_NAME_ACTIVE handled exit (#299 D4/D5)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  const TEAM = "11111111-1111-4111-8111-111111111111";
+  const TOPIC = "70000000-0000-4000-8000-000000000001";
+  const ACTIVE = { id: "80000000-0000-4000-8000-000000000001", name: "Safety", display_order: 1 };
+
+  function sqlOf(client: ReturnType<typeof makeMockClient>): string[] {
+    return client.query.mock.calls.map((c) => String(c[0]));
+  }
+
+  function expectNoNameLeak(res: { body: string }, ...names: string[]) {
+    for (const n of names) expect(res.body.includes(n)).toBe(false);
+  }
+
+  it("Add: 409 with the exact key set, no-store, one ROLLBACK, floor applied, no INSERT or audit", async () => {
+    mockPassAllGates();
+    const client = makeMockClient([{ rows: [] }, { rows: [] }, { rows: [ACTIVE] }, { rows: [] }]);
+    mockDbConnect.mockResolvedValueOnce(client);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/v1/teams/${TEAM}/topics`,
+      payload: { ...VALID_BODY, name: "  SAFETY ", force: true },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const err = res.json().error;
+    expect(Object.keys(err).sort()).toEqual(
+      ["category", "code", "conflictingName", "conflictingTopicId", "correlationId", "message"].sort(),
+    );
+    expect(err).toMatchObject({
+      category: "precondition_failed",
+      code: "TOPIC_NAME_ACTIVE",
+      conflictingTopicId: ACTIVE.id,
+      conflictingName: "Safety",
+    });
+    expectNoNameLeak(res, "SAFETY");
+    const sql = sqlOf(client);
+    expect(sql.filter((s) => s === "ROLLBACK")).toHaveLength(1);
+    expect(sql.some((s) => s.includes("INSERT INTO topics"))).toBe(false);
+    expect(sql.some((s) => s.includes("audit_log"))).toBe(false);
+    expect(sql.some((s) => s.includes("COMMIT"))).toBe(false);
+    expect(mockApplyTimingFloor).toHaveBeenCalled();
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("Restore: 409 with the exact key set, conflictingName a string, one ROLLBACK, no UPDATE or audit", async () => {
+    mockPassAllRestoreGates();
+    const client = mockRestoreTransaction({ newPosition: 3, name: " safety", activeTopics: [ACTIVE] });
+
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: `/api/v1/teams/${TEAM}/topics/${TOPIC}/restore`, payload: { force: true } });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(Object.keys(res.json().error).sort()).toEqual(
+      ["category", "code", "conflictingName", "conflictingTopicId", "correlationId", "message"].sort(),
+    );
+    expect(res.json().error).toMatchObject({ code: "TOPIC_NAME_ACTIVE", conflictingName: "Safety", conflictingTopicId: ACTIVE.id });
+    const sql = sqlOf(client);
+    expect(sql.filter((s) => s === "ROLLBACK")).toHaveLength(1);
+    expect(sql.some((s) => s.includes("UPDATE topics"))).toBe(false);
+    expect(sql.some((s) => s.includes("audit_log"))).toBe(false);
+    expect(mockApplyTimingFloor).toHaveBeenCalled();
+    expect(mockEmitAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it("Restore: a legacy blank name conflicting with a blank active name yields conflictingName \"\"", async () => {
+    mockPassAllRestoreGates();
+    mockRestoreTransaction({ newPosition: 3, name: "", activeTopics: [{ ...ACTIVE, name: " " }] });
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: `/api/v1/teams/${TEAM}/topics/${TOPIC}/restore` });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.conflictingName).toBe(" ");
+    expect(typeof res.json().error.conflictingName).toBe("string");
+  });
+
+  it("Restore: target no longer archived in the lock answers 422 even when its name would conflict", async () => {
+    mockPassAllRestoreGates();
+    const client = makeMockClient([
+      { rows: [] },
+      { rows: [] },
+      { rows: [{ id: TOPIC, name: "Safety", status: "active" }] },
+      { rows: [] },
+    ]);
+    mockDbConnect.mockResolvedValueOnce(client);
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: `/api/v1/teams/${TEAM}/topics/${TOPIC}/restore` });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
+    expect(sqlOf(client).filter((s) => s === "ROLLBACK")).toHaveLength(1);
+  });
+
+  it("Restore: target row missing in the lock answers the same 422", async () => {
+    mockPassAllRestoreGates();
+    mockDbConnect.mockResolvedValueOnce(makeMockClient([{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }]));
+    const app = await buildApp();
+    const res = await app.inject({ method: "POST", url: `/api/v1/teams/${TEAM}/topics/${TOPIC}/restore` });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("TOPIC_ALREADY_ACTIVE");
+  });
+
+  it("a locked team gets the lock 409 with no conflicting fields (Add and Restore)", async () => {
+    mockAuthQuery("facilitator", false);
+    mockTeamExists(true);
+    mockLockCount(0);
+    mockDenialAuditInsert();
+    const app = await buildApp();
+    const add = await app.inject({ method: "POST", url: `/api/v1/teams/${TEAM}/topics`, payload: VALID_BODY });
+    expect(add.statusCode).toBe(409);
+    expect(add.json().error.code).toBe("TOPIC_CUSTOMIZATION_LOCKED");
+    expect(add.json().error).not.toHaveProperty("conflictingName");
+    expect(add.json().error).not.toHaveProperty("conflictingTopicId");
+  });
 });

@@ -34,7 +34,7 @@ export const bulkCountLine = (n: number) => `${n} ${n === 1 ? "topic" : "topics"
 export const bulkPlacementSentence = (n: number) =>
   n === 1 ? "It will be added to the end of your list." : "They will be added to the end of your list, in the order shown.";
 export const skippedLine = (name: string, reason: string) =>
-  reason === "NAME_ACTIVE" ? `${name}: a topic with this name is already in your list` : `${name}: not restored`;
+  reason === "NAME_ACTIVE" ? `${name}: an active topic with this name already exists` : `${name}: not restored`;
 
 export const bulkResultLine = (actual: number, previewed: number) =>
   actual !== previewed
