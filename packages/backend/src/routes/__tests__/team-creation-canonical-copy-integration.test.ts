@@ -95,7 +95,10 @@ describe.skipIf(!infraUp)("team creation copies the canonical defaults (#215)", 
   afterEach(async () => {
     await app?.close();
     if (extras.length > 0) {
-      await mods.db.query(`DELETE FROM topics WHERE id = ANY($1::uuid[])`, [extras.splice(0)]);
+      const ids = extras.splice(0);
+      // #311: teams created in the test link to these template rows (FK RESTRICT); unlink first.
+      await mods.db.query(`UPDATE topics SET template_topic_id = NULL WHERE template_topic_id = ANY($1::uuid[])`, [ids]);
+      await mods.db.query(`DELETE FROM topics WHERE id = ANY($1::uuid[])`, [ids]);
     }
     if (snap) await restoreTemplate(mods.db, snap);
   });

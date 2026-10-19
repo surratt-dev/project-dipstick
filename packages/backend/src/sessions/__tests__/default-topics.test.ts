@@ -43,6 +43,20 @@ describe("copyCanonicalDefaults return value (#200 2.3)", () => {
     expect(sql).not.toContain(DEFAULT_TOPICS_TEAM_ID);
   });
 
+  // #311 E8: the copy is exactly one INSERT ... SELECT that sets the link in the
+  // same statement; no UPDATE pass and no ON CONFLICT (regex on the SQL text).
+  it("is one INSERT INTO topics ... SELECT whose column list includes template_topic_id, with no UPDATE and no ON CONFLICT", async () => {
+    const { client, query } = clientReturning([{ id: "a" }]);
+    await copyCanonicalDefaults(client, "team-1");
+
+    expect(query).toHaveBeenCalledTimes(1);
+    const [sql] = query.mock.calls[0] as [string];
+    expect(sql.match(/\bINSERT\s+INTO\s+topics\b/gi)).toHaveLength(1);
+    expect(sql).toMatch(/\bINSERT\s+INTO\s+topics\s*\([^)]*\btemplate_topic_id\b[^)]*\)\s*SELECT\b[\s\S]*,\s*id\s+FROM\s+topics\b/i);
+    expect(sql).not.toMatch(/\bUPDATE\b/i);
+    expect(sql).not.toMatch(/\bON\s+CONFLICT\b/i);
+  });
+
   it("returns [] when the source has no active defaults (the caller decides what that means)", async () => {
     const { client } = clientReturning([]);
 

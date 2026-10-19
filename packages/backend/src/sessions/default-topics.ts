@@ -40,6 +40,9 @@ export function canonicalDefaultsWhere(alias: "dt" | "topics", paramIndex: numbe
  * The column list stays explicit: team_annotation, annotation_updated_by and
  * annotation_updated_at are deliberately excluded so a new team never
  * inherits a definition from the template (topic-annotation Decision 9).
+ * template_topic_id (#311) records the source template row in the same single
+ * statement; no second statement or UPDATE pass sets it, and this is the only
+ * production SQL that writes the link (structural test).
  *
  * Returns the ids of the rows it inserted (#200), so a caller that needs the
  * count (assign-defaults' topicCount and audit topic_count) reads exactly
@@ -58,9 +61,9 @@ export async function copyCanonicalDefaults(
 ): Promise<string[]> {
   const result = await client.query<{ id: string }>(
     `INSERT INTO topics
-       (team_id, name, prompt, vote_type, display_order, is_default, first_session_description)
+       (team_id, name, prompt, vote_type, display_order, is_default, first_session_description, template_topic_id)
      SELECT $1, name, prompt, vote_type,
-            row_number() OVER (ORDER BY display_order, id), is_default, first_session_description
+            row_number() OVER (ORDER BY display_order, id), is_default, first_session_description, id
      FROM topics
      WHERE ${canonicalDefaultsWhere("topics", 2)}
      RETURNING id`,

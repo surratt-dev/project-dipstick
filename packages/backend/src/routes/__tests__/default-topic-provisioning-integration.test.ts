@@ -79,6 +79,12 @@ async function swapSentinelTopicsAtomically(
   const client = await db.connect();
   try {
     await client.query("BEGIN");
+    // #311: team defaults link to template rows (FK RESTRICT); unlink them before the swap.
+    await client.query(
+      `UPDATE topics SET template_topic_id = NULL
+        WHERE template_topic_id IN (SELECT id FROM topics WHERE team_id = $1 AND is_default = true)`,
+      [SENTINEL_TEAM_ID],
+    );
     await client.query(`DELETE FROM topics WHERE team_id = $1 AND is_default = true`, [SENTINEL_TEAM_ID]);
     await insertRows(client);
     await client.query("COMMIT");

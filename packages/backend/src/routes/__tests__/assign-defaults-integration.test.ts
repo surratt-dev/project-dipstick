@@ -715,7 +715,14 @@ describe.skipIf(!infraUp)("POST /api/v1/teams/:teamId/topics/assign-defaults (re
       const owner = await fx.user("facilitator");
       const teamId = await fx.team(owner);
       const defaults = await templateDefaults(mods);
-      await fx.topic(teamId, { displayOrder: 1, status: "archived", name: defaults[0]!.name });
+      // #311: matching is by link, so the archived copy is linked to its template default.
+      const templateId = (
+        await mods.db.query<{ id: string }>(
+          `SELECT id FROM topics WHERE team_id = $1 AND is_default = true AND status = 'active' AND name = $2`,
+          [SENTINEL_TEAM_ID, defaults[0]!.name],
+        )
+      ).rows[0]!.id;
+      await fx.topic(teamId, { displayOrder: 1, status: "archived", name: defaults[0]!.name, templateTopicId: templateId });
       const admin = await fx.user("application_admin");
       const logged = await as(admin);
 

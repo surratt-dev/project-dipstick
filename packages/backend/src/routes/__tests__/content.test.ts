@@ -2978,3 +2978,104 @@ describe("GET /api/v1/teams/:teamId/topics/all -- canAssignDefaults truth table 
     expect(res.json()).toMatchObject({ canAssignDefaults: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #311: defaultTopicsNotActive is matched by link; the mocked row shape carries
+// the team row's name (team_topic_name). Mapping and suppression in
+// application code; the SQL join itself is covered against real Postgres in
+// default-topics-not-active-integration.test.ts.
+// ---------------------------------------------------------------------------
+describe("GET /api/v1/teams/:teamId/topics/all -- defaultTopicsNotActive by link (#311)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbQuery.mockReset();
+    unroutedSql = [];
+  });
+  afterEach(() => expect(unroutedSql).toEqual([]));
+
+  const activeRow = (id: string, name: string) => ({
+    id,
+    name,
+    prompt: "p",
+    vote_type: "numeric",
+    is_default: false,
+    display_order: 1,
+    first_session_description: null,
+    created_at: new Date("2026-01-01T00:00:00Z"),
+    updated_at: new Date("2026-01-01T00:00:00Z"),
+    team_annotation: null,
+    annotation_updated_at: null,
+    annotation_updated_by: null,
+    annotation_updated_by_display_name: null,
+  });
+  const defaultRow = (over: Record<string, unknown>) => ({
+    default_topic_id: "tpl-1",
+    default_topic_name: "Heartbeat",
+    team_topic_id: null,
+    team_topic_name: null,
+    team_topic_status: null,
+    ...over,
+  });
+  async function read(fixture: Parameters<typeof routeTopic002>[0]) {
+    routeTopic002(fixture);
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
+    expect(res.statusCode).toBe(200);
+    return res.json().defaultTopicsNotActive as Array<{ topicId: string; name: string; isArchived: boolean }>;
+  }
+
+  it("joins on the link, not the name, and selects the team row's name", async () => {
+    await read({ defaults: [] });
+    const sql = String(sqlCallsMatching(/FROM topics dt/)[0]![0]);
+    expect(sql).toMatch(/template_topic_id = dt\.id/);
+    expect(sql).not.toMatch(/name = dt\.name/);
+    expect(sql).toMatch(/ORDER BY \(status = 'active'\) DESC, id\s+LIMIT 1/);
+  });
+
+  it("an archived linked default is offered under the team's own name and row id", async () => {
+    const out = await read({
+      defaults: [defaultRow({ team_topic_id: "team-row", team_topic_name: "Pulse", team_topic_status: "archived" })],
+    });
+    expect(out).toEqual([{ topicId: "team-row", name: "Pulse", isArchived: true }]);
+  });
+
+  it("an active linked default is omitted even when the team renamed it", async () => {
+    const out = await read({
+      defaults: [defaultRow({ team_topic_id: "team-row", team_topic_name: "Our pulse", team_topic_status: "active" })],
+      active: [activeRow("team-row", "Our pulse")],
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("an unlinked default is offered under the template id and name", async () => {
+    const out = await read({ defaults: [defaultRow({})] });
+    expect(out).toEqual([{ topicId: "tpl-1", name: "Heartbeat", isArchived: false }]);
+  });
+
+  it("an active same-name row suppresses the offer, ignoring case and surrounding spaces", async () => {
+    const out = await read({ defaults: [defaultRow({})], active: [activeRow("c1", "  HEARTBEAT ")] });
+    expect(out).toEqual([]);
+  });
+
+  it("an active row with a different name hides nothing", async () => {
+    const out = await read({ defaults: [defaultRow({})], active: [activeRow("c1", "Something else")] });
+    expect(out).toHaveLength(1);
+  });
+
+  it("suppresses an archived linked entry when another active row holds its name", async () => {
+    const out = await read({
+      defaults: [defaultRow({ team_topic_id: "team-row", team_topic_name: "Pulse", team_topic_status: "archived" })],
+      active: [activeRow("other", "pulse")],
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("never exposes templateTopicId or the team row's raw columns", async () => {
+    routeTopic002({
+      defaults: [defaultRow({ team_topic_id: "team-row", team_topic_name: "Pulse", team_topic_status: "archived" })],
+    });
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: TOPIC_002_URL });
+    expect(res.body).not.toMatch(/template_?topic_?id/i);
+  });
+});

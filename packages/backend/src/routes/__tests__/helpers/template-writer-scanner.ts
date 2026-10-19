@@ -119,3 +119,39 @@ export function scanSource(file: string, text: string): WriteFinding[] {
   visit(sf);
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// #311: SQL that WRITES topics.template_topic_id. Shares the parsing, literal
+// extraction and enclosing-function logic above. Matches the two write forms by
+// regex on the SQL text (not substring counts): `INSERT INTO topics (... template_topic_id ...)`
+// and `UPDATE topics ... SET ... template_topic_id` (the SET clause ends at WHERE).
+// ---------------------------------------------------------------------------
+const LINK_WRITE_PATTERNS: RegExp[] = [
+  new RegExp(String.raw`\bINSERT\s+INTO\s+${TABLE}\s*\([^)]*\btemplate_topic_id\b`, "i"),
+  new RegExp(String.raw`\bUPDATE\s+${TABLE}[\s\S]*?\bSET\s+(?:(?!\bWHERE\b)[\s\S])*?\btemplate_topic_id\b`, "i"),
+];
+
+export interface LinkWriteFinding {
+  file: string;
+  fn: string;
+  statement: string;
+}
+
+/** True when the SQL text writes topics.template_topic_id (exported for the structural tests). */
+export function writesTemplateLink(sql: string): boolean {
+  return LINK_WRITE_PATTERNS.some((p) => p.test(sql));
+}
+
+export function scanLinkWriters(file: string, text: string): LinkWriteFinding[] {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const out: LinkWriteFinding[] = [];
+  const visit = (node: ts.Node): void => {
+    const lit = literalText(node);
+    if (lit !== null && writesTemplateLink(lit)) {
+      out.push({ file, fn: enclosingFunction(node), statement: lit.replace(/\s+/g, " ").trim().slice(0, 120) });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return out;
+}

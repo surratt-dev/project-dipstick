@@ -42,9 +42,9 @@ export * from "./default-topic-validation.js";
 /** The scope statement every write response carries, verbatim. */
 export const SCOPE_STATEMENT = "Applies to teams created from now on. Existing teams keep their current topics.";
 
-/** The rename notice, verbatim (design E5). */
+/** The rename notice, verbatim (#311 spec; wording changes only with Facilitator sign-off). */
 export const RENAME_NOTICE =
-  "Renamed. Existing teams' topics are not renamed, and name-based matching for existing teams (restoring a default topic, and the defaultTopicsNotActive list) will no longer pair them with this default.";
+  "Renamed. Existing teams keep their own copy of this topic under its current name. The rename does not change any team's topics. Teams that never had this topic will see the new name.";
 
 const LOCK_TIMEOUT = "3s";
 const STATEMENT_TIMEOUT = "10s";

@@ -120,6 +120,15 @@ async function restoreWholeTemplate(
   try {
     await client.query("BEGIN");
     const ids = [...full.keys()];
+    // #311: team rows may link to template rows created since startedAt (a test that adds a
+    // default and then creates a team). The FK is RESTRICT, so unlink them first; NULL always
+    // satisfies the CHECK, and doing it before the DELETE makes the order independent.
+    await client.query(
+      `UPDATE topics SET template_topic_id = NULL
+        WHERE template_topic_id IN (
+          SELECT id FROM topics WHERE team_id = $1 AND created_at >= $2 AND NOT (id = ANY($3::uuid[])))`,
+      [SENTINEL_TEAM_ID, startedAt, ids],
+    );
     await client.query(
       `DELETE FROM topics WHERE team_id = $1 AND created_at >= $2 AND NOT (id = ANY($3::uuid[]))`,
       [SENTINEL_TEAM_ID, startedAt, ids],

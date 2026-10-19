@@ -230,7 +230,7 @@
 
 ## Notes
 - **Existing teams keep their copy.** The copy-on-create rule (BRD 6.4) is unchanged: an edit changes what future teams, and teams recovered from zero topics, receive. A team created before an edit and still locked before its first session keeps the set it was created with.
-- **Accepted consequences, documented.** A rename is not propagated, and name-based matching for existing teams (restore, bulk restore, the `defaultTopicsNotActive` list) stops pairing them with the renamed default; restoring a default on a team returns that team's own superseded wording; teams created at different times can show different wording for the "same" topic.
+- **Accepted consequences, documented.** A rename is not propagated: each team keeps its own copy of the topic under its current name, and the link from a team's default to its template default (`template_topic_id`, #311) survives the rename, so restore, bulk restore and the `defaultTopicsNotActive` list keep working; only teams that never had the topic see the new name; restoring a default on a team returns that team's own superseded wording; teams created at different times can show different wording for the "same" topic.
 - **Single administrator control.** A change needs one administrator and no approver; it is detected (a structured log event per write) rather than prevented. Reopen if the number of administrators grows beyond a handful or after an incident.
 - Operational detail (audit queries, retention, redaction, alerting) is in `docs/deployment.md`, "Default topic maintenance".
 

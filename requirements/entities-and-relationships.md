@@ -61,6 +61,7 @@
 | Session | is an instance of | Engineering Health Check |
 | Topic | uses | Vote |
 | Topic | is accompanied by | Prompt |
+| Topic (a team's copy of a default) | is copied from (internal link, never exposed) | Topic (the template default) |
 | Finger Vote | is a type of | Vote |
 | Roman Vote | is a type of | Vote |
 | Modified Roman Vote | is a type of | Vote |

@@ -332,6 +332,65 @@ Note that `actor_roles` reflects `users.roles` at request time; a user who has n
 
 **Future consideration (deferred, GitHub issue #3):** a startup check that verifies audit events actually reach their configured sink was requested in issue #3 but is not built in this change, because no transport is configured anywhere in this codebase today — building a reachability check against a failure mode that doesn't yet exist would be premature engineering. This is not a nice-to-have to revisit "if" the `emitAuditEvent` rework above happens to get to it: given the events above, a filtering transport shipped without this check risks silently losing the authentication and session-lifecycle audit trail with zero indication anything was lost. Build this check alongside the `emitAuditEvent` rework, before that transport goes to production.
 
+## Template topic link (migration 24, #311)
+
+*(`311-template-topic-id-matching`.)* Migration 24 adds `topics.template_topic_id`, the durable link from a team's default topic to the template default it was copied from, and backfills it by name once. Template defaults are archived, never deleted: the foreign key is `ON DELETE RESTRICT`. The migration runs as one implicit transaction (a failure leaves nothing applied), takes `lock_timeout = '200ms'`, and `VALIDATE CONSTRAINT` scans `topics` once while holding an ACCESS EXCLUSIVE lock on `topics` (the migration's `lock_timeout` bounds only lock acquisition, not the scan), so topic reads and writes block briefly during the scan; time it on a production-sized copy first. It prints nothing containing an id, team id or topic name.
+
+**Legacy rows stay unlinked.** Team defaults that match no template row by exact name (the template was reseeded by migrations 4 and 11, or a default was renamed) keep a NULL link. That is expected; issue #310 handles them. The `defaultTopicsNotActive` list offers a default the team holds only as an unlinked row under its template name, and restoring it is refused with `409 TOPIC_NAME_ACTIVE` when an active topic already has that name.
+
+**Count the unlinked defaults (read-only; counts only go into a PR or ticket, never row-level output).** Run per environment before and after the deploy:
+
+```sql
+SELECT count(*)::int AS unlinked_defaults
+  FROM topics
+ WHERE is_default = true
+   AND template_topic_id IS NULL
+   AND team_id <> '00000000-0000-0000-0000-000000000001'::uuid;
+```
+
+Row-level listing for the operator only (team id, row id, name; never paste it into a PR or issue):
+
+```sql
+SELECT team_id, id, name
+  FROM topics
+ WHERE is_default = true
+   AND template_topic_id IS NULL
+   AND team_id <> '00000000-0000-0000-0000-000000000001'::uuid
+ ORDER BY team_id, name, id;
+```
+
+**Re-run the backfill after old instances drain.** An old instance can create a team during the deploy window, leaving NULL links. After the last old instance is gone, run this statement once under the **migration database role** (not an application role), keeping the `is_default` and non-template predicates exactly as written. It is a manual write with no `audit_log` row, so record **who ran it, when, and the updated-row count in the deployment ticket**. Run it a second time: it must update 0 rows. Do this promptly after the drain, and always before any template topic is renamed: a rename while links are still NULL breaks the by-name backfill match.
+
+```sql
+WITH team_rows AS (
+  SELECT id, team_id, name,
+         row_number() OVER (PARTITION BY team_id, name ORDER BY (status = 'active') DESC, id) AS rn
+    FROM topics
+   WHERE is_default = true
+     AND template_topic_id IS NULL
+     AND team_id <> '00000000-0000-0000-0000-000000000001'::uuid
+),
+template_rows AS (
+  SELECT id, name,
+         row_number() OVER (PARTITION BY name ORDER BY (status = 'active') DESC, id) AS rn
+    FROM topics
+   WHERE is_default = true
+     AND team_id = '00000000-0000-0000-0000-000000000001'::uuid
+)
+UPDATE topics t
+   SET template_topic_id = tr.id
+  FROM team_rows c
+  JOIN template_rows tr ON tr.name = c.name AND tr.rn = 1
+ WHERE t.id = c.id
+   AND c.rn = 1
+   AND NOT EXISTS (
+     SELECT 1 FROM topics x
+      WHERE x.team_id = c.team_id AND x.template_topic_id = tr.id
+   );
+```
+
+**Rollback.** Redeploy the previous build; optionally run `down 24`, which drops the CHECK and then the column and loses no user data (the link is recomputable by re-running the backfill).
+
 ## Zero-topic teams
 
 *(`zero-topic-team-recovery`, #200.)* A team with no ACTIVE topic cannot open a room: room open answers `409 NO_ACTIVE_TOPICS`, and while the team is locked (no completed session) nobody can add or restore a topic either. New teams cannot end up this way (team creation rolls back on an empty template), so this is legacy data or a data fault, and the expected count is 0.
@@ -401,7 +460,7 @@ ORDER BY "timestamp" DESC, id DESC LIMIT 50;
 
 `metadata` is `{ topicId, operation, changedFields, before, after }` (a reorder has no `topicId` and its `before`/`after` are the full id lists). **These five operations are a scoped exception to the "no topic text in audit rows" convention**: they hold the full before and after name, prompt and description, because template text is global and there is no version table. Refusals are `topic.default_maintenance_denied` rows (`team_id` NULL; `metadata` is `endpoint` (the method plus the route template, never the raw URL), `http_status`, `reason` and `correlation_id`), bounded to 10 per actor per minute; beyond that only a log-only `topic.denial_audit_suppressed` event with `family: "/api/v1/admin/default-topics"` is emitted (its `suppressedCount` is sampled at 1, 2, 4, 8, ..., so it is not an exact count). During a Redis outage a refused attempt leaves no row (one log event per actor per minute says so).
 
-**Undo means editing the value back.** There is no undo or revert operation. Read the history, take the row's `before` value, and `PATCH` it back (this writes a new audit row). A rename is not propagated: existing teams' topics are not renamed, and name-based matching for existing teams (single restore, bulk restore, the `defaultTopicsNotActive` list) stops pairing them with the renamed default. Restoring a default returns the team's own superseded wording, and teams created at different times can have different wording. These are accepted consequences, tracked in the follow-up issues (#307, #308, #309, #310, #311).
+**Undo means editing the value back.** There is no undo or revert operation. Read the history, take the row's `before` value, and `PATCH` it back (this writes a new audit row). A rename is not propagated: each team keeps its own copy of the topic under its current name, because a team's default is linked to its template default by id (`topics.template_topic_id`, #311) and the link survives the rename; the rename changes no team's topics, and only teams that never had the topic see the new name. Restoring a default returns the team's own superseded wording, and teams created at different times can have different wording. These are accepted consequences, tracked in the follow-up issues (#307, #308, #309, #310, #311).
 
 **Audit retention.** The five maintenance operations on the template are **exempt from routine `audit_log` retention** (they are few and small): any retention job must exclude rows with `team_id = '00000000-0000-0000-0000-000000000001'` and those five names. The list's per-row `lastChangedAt` and `lastChangedBy` are derived from these rows and silently become null if they are purged. They are not "never deletable": see the redaction procedure.
 
